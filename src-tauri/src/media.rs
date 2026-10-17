@@ -26,9 +26,9 @@ pub fn init(app: &AppHandle) -> Media {
     std::thread::spawn(move || {
         // Unique per process (MPRIS "instance" convention): a taken name makes souvlaki panic,
         // which aborts the whole app in release builds (panic = "abort").
-        let dbus_name = format!("pixelplay_desktop.instance{}", std::process::id());
+        let dbus_name = format!("neptunus.instance{}", std::process::id());
         let cfg = PlatformConfig {
-            display_name: "PixelPlay",
+            display_name: "Neptunus",
             dbus_name: &dbus_name,
             hwnd: hwnd.map(|h| h as *mut c_void),
         };

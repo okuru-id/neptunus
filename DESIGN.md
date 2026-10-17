@@ -57,7 +57,7 @@ PixelPlay Desktop uses **Material 3 Expressive**, matching PixelPlayer Android. 
   - `--frame-radius` 16px (M3 large corner) with `contain: paint`, so fixed layers are clipped too.
   - A 1px `outline-variant` hairline sits on top via `body::after`.
   - When maximized, `html.maximized` sets the radius to 0 and hides the hairline.
-- `src/lib/TitleBar.vue` is a 48px drag region (`data-tauri-drag-region`, double-click maximizes). It carries the brand (30px cookie mark + "PixelPlay", `pointer-events: none` so it still drags) on the left, level with the M3 pill window controls on the right: minimize, maximize/restore (outlined symbols), and close (hover turns error red `#b3261e`).
+- `src/lib/TitleBar.vue` is a 48px drag region (`data-tauri-drag-region`, double-click maximizes). It carries the brand (30px cookie mark + "Neptunus", `pointer-events: none` so it still drags) on the left, level with the M3 pill window controls on the right: minimize, maximize/restore (outlined symbols), and close (hover turns error red `#b3261e`).
 - **Frame and sheet**: the window background (`--frame-bg`) is darker than the content: `surface-container-lowest` in dark mode, `surface-container-high` in light. The titlebar sits directly on it.
   - The drawer and main area live in one rounded content sheet (`.app`, `surface` background) with only the top corners rounded (`--sheet-radius` 20px). It runs flush to the window edges on the sides and bottom (`--sheet-gap` 0), where the window frame radius takes over.
   - Now Playing uses the same sheet geometry.

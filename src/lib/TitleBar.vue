@@ -25,7 +25,7 @@ onUnmounted(() => off?.then((f) => f()));
     <!-- pointer-events: none so clicks on the brand still land on the drag region -->
     <div class="brand">
       <span class="mark" :style="{ clipPath: 'url(#shape-cookie9)' }"><Icon name="note" :size="18" /></span>
-      <span class="name">PixelPlay</span>
+      <span class="name">Neptunus</span>
     </div>
     <div class="controls">
       <button @click="win.minimize()" title="Minimalkan" aria-label="Minimalkan">

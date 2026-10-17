@@ -2,7 +2,7 @@ use lofty::{file::TaggedFileExt, probe::Probe, tag::ItemKey};
 use std::{hash::{Hash, Hasher}, path::Path, time::Duration};
 use tauri::{AppHandle, Manager};
 
-const UA: &str = concat!("PixelPlay Desktop/", env!("CARGO_PKG_VERSION"));
+const UA: &str = concat!("Neptunus/", env!("CARGO_PKG_VERSION"));
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -53,7 +53,7 @@ const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).p
           <strong>{{ np.title }}</strong>
           <span>{{ np.artist }}</span>
         </div>
-        <button class="icon-btn" @click="invoke('open_main')" title="Buka PixelPlay"><Icon name="openMain" :size="20" /></button>
+        <button class="icon-btn" @click="invoke('open_main')" title="Buka Neptunus"><Icon name="openMain" :size="20" /></button>
         <button class="icon-btn" @click="close" title="Tutup" aria-label="Tutup"><Icon name="close" :size="20" /></button>
       </div>
       <div class="seek">
@@ -80,7 +80,7 @@ const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).p
       <button class="icon-btn corner" @click="close" title="Tutup" aria-label="Tutup"><Icon name="close" :size="20" /></button>
       <div class="mark" :style="{ clipPath: 'url(#shape-cookie9)' }"><Icon name="note" :size="28" /></div>
       <p>Tidak ada lagu yang diputar</p>
-      <button class="btn" @click="invoke('open_main')"><Icon name="openMain" :size="18" />Buka PixelPlay</button>
+      <button class="btn" @click="invoke('open_main')"><Icon name="openMain" :size="18" />Buka Neptunus</button>
     </div>
   </div>
 </template>

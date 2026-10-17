@@ -12,7 +12,7 @@ People who keep their own music collection (local folders, optionally an S3-comp
 
 ## Product Purpose
 
-PixelPlay Desktop is a lightweight desktop music player: scan a folder, browse by song, album, artist and playlist, and play with gapless transitions, synced lyrics and OS media controls. Success means a large personal library feels fast to browse and pleasant to live with.
+Neptunus is a lightweight desktop music player: scan a folder, browse by song, album, artist and playlist, and play with gapless transitions, synced lyrics and OS media controls. Success means a large personal library feels fast to browse and pleasant to live with.
 
 ## Positioning
 
@@ -26,14 +26,14 @@ Desktop sibling of PixelPlayer for Android. It carries over that app's Material 
 
 ## Capabilities and Constraints
 
-- Tauri 2 + Vue 3 (Composition API, `<script setup>`, Vite; two entries: `index.html` main window, `mini.html` tray mini player). Rust backend: rodio playback, lofty tags, SQLite library, souvlaki media controls, rust-s3 mirror. System tray: on Linux a StatusNotifierItem via ksni (transparent icon; a click opens the menu, a left double click opens the mini player under the icon, since GNOME's AppIndicator extension only forwards double clicks; app runs through XWayland so windows can be positioned, `PIXELPLAY_WAYLAND=1` opts out; no libayatana), Tauri tray on Windows/macOS (mini player above the tray icon).
+- Tauri 2 + Vue 3 (Composition API, `<script setup>`, Vite; two entries: `index.html` main window, `mini.html` tray mini player). Rust backend: rodio playback, lofty tags, SQLite library, souvlaki media controls, rust-s3 mirror. System tray: on Linux a StatusNotifierItem via ksni (transparent icon; a click opens the menu, a left double click opens the mini player under the icon, since GNOME's AppIndicator extension only forwards double clicks; app runs through XWayland so windows can be positioned, `NEPTUNUS_WAYLAND=1` opts out; no libayatana), Tauri tray on Windows/macOS (mini player above the tray icon).
 - Features: folder scan, library persisted, songs/albums/artists/playlists views, search, queue with shuffle/repeat, gapless, Now Playing with synced lyrics, S3 sync to local cache.
 - UI copy is Indonesian (hardcoded, no i18n yet).
 - Undecided: crossfade, streaming S3 without full download, light theme preference default (follows OS).
 
 ## Brand Commitments
 
-- Name: PixelPlay.
+- Name: Neptunus (neptunus.id). Formerly PixelPlay.
 - Visual language: Material 3 Expressive, matching PixelPlayer Android (user-confirmed).
 
 ## Evidence on Hand

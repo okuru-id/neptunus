@@ -80,6 +80,25 @@ pub(crate) fn cover_bytes(path: &str) -> Option<(String, Vec<u8>)> {
     Some((mime.to_owned(), pic.data().to_vec()))
 }
 
+/// The app was called PixelPlay (identifier `com.pixelplay.desktop`); move its library, settings and
+/// caches over under the new identifier. Per entry, because the webview has already created the new
+/// data dir by the time setup runs; what is left of the old dir is webview cache and is dropped.
+fn migrate_old_dirs(app: &tauri::AppHandle) {
+    let p = app.path();
+    for dir in [p.app_data_dir(), p.app_cache_dir()].into_iter().flatten() {
+        let Some(old) = dir.parent().map(|d| d.join("com.pixelplay.desktop")) else { continue };
+        let Ok(entries) = std::fs::read_dir(&old) else { continue };
+        let _ = std::fs::create_dir_all(&dir);
+        for e in entries.flatten() {
+            let to = dir.join(e.file_name());
+            if !to.exists() {
+                let _ = std::fs::rename(e.path(), to);
+            }
+        }
+        let _ = std::fs::remove_dir_all(&old);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -87,6 +106,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_positioner::init())
         .setup(|app| {
+            migrate_old_dirs(app.handle());
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
             app.manage(Db::open(&dir.join("library.db"))?);

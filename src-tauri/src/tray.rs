@@ -168,16 +168,16 @@ mod backend {
 
     impl ksni::Tray for Tray {
         fn id(&self) -> String {
-            "pixelplay".into()
+            "neptunus".into()
         }
         fn title(&self) -> String {
-            "PixelPlay".into()
+            "Neptunus".into()
         }
         fn icon_pixmap(&self) -> Vec<ksni::Icon> {
             self.icon.clone()
         }
         fn tool_tip(&self) -> ksni::ToolTip {
-            let title = if self.now.loaded() { format!("{} · {}", self.now.title(), self.now.artist()) } else { "PixelPlay".into() };
+            let title = if self.now.loaded() { format!("{} · {}", self.now.title(), self.now.artist()) } else { "Neptunus".into() };
             ksni::ToolTip { title, ..Default::default() }
         }
         fn activate(&mut self, x: i32, y: i32) {
@@ -202,7 +202,7 @@ mod backend {
                 item("next", "⏭  Berikutnya", s.loaded()),
                 MenuItem::Separator,
                 item("mini", "Mini player", true),
-                item("show", "Tampilkan PixelPlay", true),
+                item("show", "Tampilkan Neptunus", true),
                 item("quit", "Keluar", true),
             ]
         }
@@ -263,7 +263,7 @@ mod backend {
                 &item("next", "⏭  Berikutnya", s.loaded())?,
                 &PredefinedMenuItem::separator(app)?,
                 &item("mini", "Mini player", true)?,
-                &item("show", "Tampilkan PixelPlay", true)?,
+                &item("show", "Tampilkan Neptunus", true)?,
                 &item("quit", "Keluar", true)?,
             ],
         )
@@ -271,7 +271,7 @@ mod backend {
 
     pub fn init(app: &AppHandle) -> tauri::Result<()> {
         let mut tray = TrayIconBuilder::with_id("main")
-            .tooltip("PixelPlay")
+            .tooltip("Neptunus")
             .menu(&build_menu(app, &NowMenu::default())?)
             .show_menu_on_left_click(false)
             .on_menu_event(|app, e| menu_event(app, e.id.as_ref()))

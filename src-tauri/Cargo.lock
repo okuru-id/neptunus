@@ -2813,6 +2813,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "neptunus"
+version = "0.1.0"
+dependencies = [
+ "attohttpc",
+ "base64 0.23.1",
+ "image",
+ "ksni",
+ "lofty",
+ "rodio",
+ "rusqlite",
+ "rust-s3",
+ "serde",
+ "serde_json",
+ "souvlaki",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+ "tauri-plugin-positioner",
+ "walkdir",
+]
+
+[[package]]
 name = "new_debug_unreachable"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3357,29 +3380,6 @@ dependencies = [
  "atomic-waker",
  "fastrand 2.5.0",
  "futures-io",
-]
-
-[[package]]
-name = "pixelplay-desktop"
-version = "0.1.0"
-dependencies = [
- "attohttpc",
- "base64 0.23.1",
- "image",
- "ksni",
- "lofty",
- "rodio",
- "rusqlite",
- "rust-s3",
- "serde",
- "serde_json",
- "souvlaki",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-opener",
- "tauri-plugin-positioner",
- "walkdir",
 ]
 
 [[package]]

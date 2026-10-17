@@ -1,10 +1,12 @@
-# PixelPlay Desktop
+# Neptunus
+
+**[neptunus.id](https://neptunus.id)**
 
 A lightweight desktop music player for Linux, Windows and macOS, built with Tauri 2, Rust and Vue 3.
 
 Inspired by [**PixelPlayer**](https://github.com/PixelPlayerHQ/PixelPlayer), the beautiful Material 3 Expressive music player for Android. If you're on Android, go check it out and give it a star.
 
-> **Not affiliated.** PixelPlay Desktop is an independent, from-scratch project. It shares PixelPlayer's design ideas (expressive shapes, colour from the album art) but contains none of its code or assets, and is not endorsed by its author.
+> **Not affiliated.** Neptunus is an independent, from-scratch project. It shares PixelPlayer's design ideas (expressive shapes, colour from the album art) but contains none of its code or assets, and is not endorsed by its author.
 
 ## Features
 
@@ -43,7 +45,7 @@ npm run tauri build
 
 ### Linux notes
 
-- On Wayland the app runs through XWayland, because Wayland doesn't let apps position their own windows and the mini player has to open under the tray icon. Set `PIXELPLAY_WAYLAND=1` to run natively on Wayland instead.
+- On Wayland the app runs through XWayland, because Wayland doesn't let apps position their own windows and the mini player has to open under the tray icon. Set `NEPTUNUS_WAYLAND=1` to run natively on Wayland instead.
 - The tray icon needs a StatusNotifierItem host. On GNOME that is the AppIndicator extension, which Ubuntu ships by default.
 
 ## Tech stack

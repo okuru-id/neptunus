@@ -75,12 +75,22 @@ fn add_to_playlist(db: State<Db>, id: i64, path: String) -> R<()> { db.add_to_pl
 #[tauri::command]
 fn remove_from_playlist(db: State<Db>, id: i64, path: String) -> R<()> { db.remove_from_playlist(id, &path).map_err(e) }
 
-/// Returns the embedded cover as a data URL, if any.
+/// Returns the embedded cover as a data URL, shrunk to at most 512px and re-encoded as JPEG: full-size
+/// covers can be megabytes each, and the webview keeps every one it has shown.
 #[tauri::command]
 async fn get_cover(path: String) -> Option<String> {
     tauri::async_runtime::spawn_blocking(move || {
         let (mime, data) = cover_bytes(&path)?;
-        Some(format!("data:{mime};base64,{}", STANDARD.encode(data)))
+        let small = image::load_from_memory(&data).ok().and_then(|img| {
+            let img = if img.width().max(img.height()) > 512 { img.resize(512, 512, image::imageops::FilterType::Triangle) } else { img };
+            let mut out = Vec::new();
+            img.to_rgb8().write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Jpeg).ok()?;
+            Some(out)
+        });
+        Some(match small {
+            Some(jpeg) => format!("data:image/jpeg;base64,{}", STANDARD.encode(jpeg)),
+            None => format!("data:{mime};base64,{}", STANDARD.encode(data)),
+        })
     })
     .await
     .ok()

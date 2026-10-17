@@ -1,28 +1,13 @@
-use std::{
-    sync::{
-        atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering},
-        Mutex,
-    },
-    time::{SystemTime, UNIX_EPOCH},
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Mutex,
 };
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewWindow};
-
-/// When the mini player last hid itself on blur. Clicking the tray icon steals focus first,
-/// so without this the click would immediately re-open the popover it just closed.
-static LAST_BLUR_HIDE: AtomicU64 = AtomicU64::new(0);
-
-/// Physical screen point of the tray icon from the last click (`i64::MIN` = unknown).
-static TRAY_X: AtomicI64 = AtomicI64::new(i64::MIN);
-static TRAY_Y: AtomicI64 = AtomicI64::new(i64::MIN);
+use tauri::{AppHandle, Emitter, Manager};
 
 /// Bumped on every track change so a slow cover decode can't overwrite a newer track's art.
 static TRACK_GEN: AtomicUsize = AtomicUsize::new(0);
 
-fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
-}
-
-/// Playback state mirrored into the tray menu, so the dropdown itself works as a mini player.
+/// Playback state mirrored into the tray menu, so the dropdown works as a small player.
 #[derive(Default, Clone)]
 struct NowMenu {
     title: String,
@@ -50,28 +35,8 @@ impl NowMenu {
     }
 }
 
-/// The last known tray point is saved, so the mini player can open under the icon even when it is opened
-/// from the menu (GNOME only reports the icon position on a double click).
-fn pos_file(app: &AppHandle) -> Option<std::path::PathBuf> {
-    app.path().app_data_dir().ok().map(|d| d.join("tray-pos"))
-}
-
-fn set_tray_point(app: &AppHandle, x: i64, y: i64) {
-    TRAY_X.store(x, Ordering::Relaxed);
-    TRAY_Y.store(y, Ordering::Relaxed);
-    if let Some(f) = pos_file(app) {
-        let _ = std::fs::write(f, format!("{x} {y}"));
-    }
-}
-
 pub fn init(app: &AppHandle) -> tauri::Result<()> {
     app.manage(Mutex::new(NowMenu::default()));
-    if let Some(s) = pos_file(app).and_then(|f| std::fs::read_to_string(f).ok()) {
-        if let Some((x, y)) = s.split_once(' ').and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?))) {
-            TRAY_X.store(x, Ordering::Relaxed);
-            TRAY_Y.store(y, Ordering::Relaxed);
-        }
-    }
     backend::init(app)
 }
 
@@ -141,7 +106,6 @@ fn art(img: &image::DynamicImage, size: u32, radius: u32) -> image::RgbaImage {
 fn menu_event(app: &AppHandle, id: &str) {
     match id {
         "toggle" | "prev" | "next" => { let _ = app.emit("media-key", id); }
-        "mini" => toggle_mini(app),
         "show" | "np-title" | "np-artist" => show_main(app),
         "quit" => app.exit(0),
         _ => {}
@@ -150,7 +114,7 @@ fn menu_event(app: &AppHandle, id: &str) {
 
 /// Linux: a StatusNotifierItem (AppIndicator), drawn by the desktop with real transparency. GNOME's
 /// extension opens the menu on any single click and only forwards a left double click (`Activate`),
-/// so a double click opens the mini player.
+/// so a double click shows the main window.
 #[cfg(target_os = "linux")]
 mod backend {
     use super::*;
@@ -183,9 +147,8 @@ mod backend {
             let title = if self.now.loaded() { format!("{} · {}", self.now.title(), self.now.artist()) } else { "Neptunus".into() };
             ksni::ToolTip { title, ..Default::default() }
         }
-        fn activate(&mut self, x: i32, y: i32) {
-            set_tray_point(&self.app, x as i64, y as i64);
-            toggle_mini(&self.app);
+        fn activate(&mut self, _x: i32, _y: i32) {
+            show_main(&self.app);
         }
         fn menu(&self) -> Vec<MenuItem<Self>> {
             let std = |id: &'static str, label: &str, enabled: bool| StandardItem {
@@ -204,7 +167,6 @@ mod backend {
                 item("prev", "⏮  Sebelumnya", s.loaded()),
                 item("next", "⏭  Berikutnya", s.loaded()),
                 MenuItem::Separator,
-                item("mini", "Mini player", true),
                 item("show", "Tampilkan Neptunus", true),
                 item("quit", "Keluar", true),
             ]
@@ -278,7 +240,6 @@ mod backend {
                 &item("prev", "⏮  Sebelumnya", s.loaded())?,
                 &item("next", "⏭  Berikutnya", s.loaded())?,
                 &PredefinedMenuItem::separator(app)?,
-                &item("mini", "Mini player", true)?,
                 &item("show", "Tampilkan Neptunus", true)?,
                 &item("quit", "Keluar", true)?,
             ],
@@ -292,10 +253,8 @@ mod backend {
             .show_menu_on_left_click(false)
             .on_menu_event(|app, e| menu_event(app, e.id.as_ref()))
             .on_tray_icon_event(|tray, event| {
-                if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, rect, .. } = event {
-                    let (pos, size) = (rect.position.to_physical::<f64>(1.0), rect.size.to_physical::<f64>(1.0));
-                    set_tray_point(tray.app_handle(), (pos.x + size.width / 2.0) as i64, (pos.y + size.height / 2.0) as i64);
-                    toggle_mini(tray.app_handle());
+                if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                    show_main(tray.app_handle());
                 }
             });
         if let Some(icon) = app.default_window_icon() {
@@ -312,69 +271,10 @@ mod backend {
     }
 }
 
-/// Centre the popover on the tray icon: under the panel when the tray is at the top of the screen
-/// (Linux, macOS), above the taskbar when it is at the bottom (Windows), clamped to the work area.
-fn place(mini: &WebviewWindow) {
-    let (tx, ty) = (TRAY_X.load(Ordering::Relaxed), TRAY_Y.load(Ordering::Relaxed));
-    let known = tx != i64::MIN;
-    let monitor = known
-        .then(|| mini.monitor_from_point(tx as f64, ty as f64).ok().flatten())
-        .flatten()
-        .or_else(|| mini.primary_monitor().ok().flatten());
-    let Some(m) = monitor else { return };
-    let area = m.work_area();
-    let (ax, ay, aw, ah) = (area.position.x, area.position.y, area.size.width as i32, area.size.height as i32);
-    // a window that was never shown can report 0×0; fall back to its size in tauri.conf.json
-    let (w, h) = match mini.outer_size() {
-        Ok(s) if s.width > 1 => (s.width as i32, s.height as i32),
-        _ => mini
-            .config()
-            .app
-            .windows
-            .iter()
-            .find(|w| w.label == mini.label())
-            .map(|w| ((w.width * m.scale_factor()) as i32, (w.height * m.scale_factor()) as i32))
-            .unwrap_or((360, 176)),
-    };
-    let gap = (12.0 * m.scale_factor()) as i32;
-
-    // unknown tray (e.g. opened from the menu before any click): the usual corner per OS
-    let at_bottom = if known { ty as i32 > ay + ah / 2 } else { cfg!(target_os = "windows") };
-    let cx = if known { tx as i32 } else { ax + aw - w / 2 - gap };
-    let x = (cx - w / 2).clamp(ax + gap, (ax + aw - w - gap).max(ax + gap));
-    let y = if at_bottom { ay + ah - h - gap } else { ay + gap };
-    let _ = mini.set_position(PhysicalPosition::new(x, y));
-}
-
-pub fn toggle_mini(app: &AppHandle) {
-    let Some(mini) = app.get_webview_window("mini") else { return };
-    if mini.is_visible().unwrap_or(false) {
-        let _ = mini.hide();
-    } else if now_ms() - LAST_BLUR_HIDE.load(Ordering::Relaxed) > 300 {
-        place(&mini);
-        let _ = mini.show();
-        place(&mini); // again: before the first show the window manager may not report the final size
-        let _ = mini.set_focus();
-    }
-}
-
-pub fn hide_mini_on_blur(mini: &tauri::Window) {
-    LAST_BLUR_HIDE.store(now_ms(), Ordering::Relaxed);
-    let _ = mini.hide();
-}
-
 pub fn show_main(app: &AppHandle) {
-    if let Some(mini) = app.get_webview_window("mini") {
-        let _ = mini.hide();
-    }
     if let Some(main) = app.get_webview_window("main") {
         let _ = main.unminimize();
         let _ = main.show();
         let _ = main.set_focus();
     }
-}
-
-#[tauri::command]
-pub fn open_main(app: AppHandle) {
-    show_main(&app);
 }

@@ -8,10 +8,6 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(() => ({
   plugins: [vue()],
 
-  // two windows: the main app and the tray mini player
-  build: {
-    rollupOptions: { input: { main: "index.html", mini: "mini.html" } },
-  },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

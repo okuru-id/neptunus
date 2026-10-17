@@ -15,9 +15,7 @@ Inspired by [**PixelPlayer**](https://github.com/PixelPlayerHQ/PixelPlayer), the
 - **Material 3 Expressive UI:** the whole interface takes its colours from the playing cover, with expressive clip shapes and spring motion.
 - **Synced lyrics:** looked up in this order: a sidecar `.lrc` file, the embedded lyrics tag, then [LRCLIB](https://lrclib.net). Lyrics fetched from LRCLIB are cached locally, so each song is only downloaded once.
 - **OS media controls:** MPRIS on Linux, SMTC on Windows, Now Playing on macOS.
-- **System tray mini player:** the tray menu has playback controls and the cover. The mini player opens next to the tray icon:
-  - Linux: double click the icon.
-  - Windows and macOS: click the icon.
+- **System tray:** the tray menu has playback controls and the cover. Double click (Linux) or click (Windows and macOS) the icon to show the window.
 - **S3 source:** stream music from an S3-compatible bucket without downloading it (tags, cover and `.lrc` files are read with range requests).
 - **Small:** uses the system webview, so there is no bundled browser runtime.
 
@@ -59,7 +57,7 @@ Release builds are made on Ubuntu 22.04 so the binaries run on more distros (old
 
 ### Linux notes
 
-- On Wayland the app runs natively. Wayland doesn't let apps position their own windows, so the tray mini player can't open next to the tray icon. Set `NEPTUNUS_X11=1` to run through XWayland instead, which restores that, but the window can sometimes stay unclickable there.
+- The app runs natively on Wayland by default. Set `NEPTUNUS_X11=1` to run through XWayland instead; the window can sometimes stay unclickable there.
 - The tray icon needs a StatusNotifierItem host. On GNOME that is the AppIndicator extension, which Ubuntu ships by default.
 
 ## Tech stack

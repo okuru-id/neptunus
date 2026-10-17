@@ -120,7 +120,6 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_positioner::init())
         .setup(|app| {
             migrate_old_dirs(app.handle());
             let dir = app.path().app_data_dir()?;
@@ -155,7 +154,6 @@ pub fn run() {
             player::status,
             media::media_metadata,
             media::media_playback,
-            tray::open_main
         ])
         .on_window_event(|window, event| match (window.label(), event) {
             // While music plays, closing the main window keeps it running in the tray (quit from the
@@ -169,7 +167,6 @@ pub fn run() {
                     window.app_handle().exit(0);
                 }
             }
-            ("mini", tauri::WindowEvent::Focused(false)) => tray::hide_mini_on_blur(window),
             _ => {}
         })
         .run(tauri::generate_context!())

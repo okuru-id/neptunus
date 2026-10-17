@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { invoke } from "@tauri-apps/api/core";
-import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { computed, onMounted, onUnmounted, ref, watch, watchEffect } from "vue";
 import CoverArt from "./lib/CoverArt.vue";
@@ -319,17 +319,6 @@ watch([current, paused], () => {
   invoke("media_playback", { playing: current.value < 0 ? null : !paused.value, position: position.value });
 }, { immediate: true });
 
-// Mirror now-playing state to the tray mini player window (it sends commands back as media-key/media-seek).
-const npRequests = ref(0);
-watchEffect(() => {
-  void npRequests.value;
-  const n = now.value;
-  emit("np-state", n ? {
-    title: n.title, artist: unknown(n.artist), album: unknown(n.album),
-    cover: covers[n.path] ?? null, paused: paused.value, position: position.value, duration: n.duration_secs,
-  } : null);
-});
-
 function onKey(e: KeyboardEvent) {
   if (e.key === "Escape" && addMenu.value) return void (addMenu.value = null);
   const el = e.target as HTMLElement;
@@ -362,7 +351,6 @@ onMounted(async () => {
       await invoke("seek", { secs: payload });
       position.value = payload;
     }),
-    listen("np-request", () => npRequests.value++),
   );
   applyTheme(DEFAULT_SEED);
   rawLibrary.value = await invoke<Track[]>("load_library");

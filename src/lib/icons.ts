@@ -26,10 +26,8 @@ import playlistAdd from "@material-symbols/svg-400/rounded/playlist_add-fill.svg
 import minimize from "@material-symbols/svg-400/rounded/minimize-fill.svg?raw";
 import maximize from "@material-symbols/svg-400/rounded/crop_square.svg?raw";
 import restore from "@material-symbols/svg-400/rounded/filter_none.svg?raw";
-import openMain from "@material-symbols/svg-400/rounded/open_in_full.svg?raw";
 
 export const icons = {
-  openMain,
   minimize,
   maximize,
   restore,

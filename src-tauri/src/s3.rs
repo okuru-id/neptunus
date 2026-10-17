@@ -157,11 +157,52 @@ pub async fn s3_sync(app: AppHandle, db: State<'_, Db>) -> Result<Vec<Track>, St
         .filter(|o| wanted(&o.key) && !o.key.to_lowercase().ends_with(".lrc"))
         .collect();
 
-    let mut indexed = Vec::new();
-    for (i, o) in objects.iter().enumerate() {
-        let _ = app.emit("s3-progress", (i + 1, objects.len()));
-        indexed.extend(read_track(&track_path(&cfg.bucket, &o.key)));
+    // Skip songs already in the library; read the rest 8 at a time and save after each batch so an
+    // interrupted sync keeps its progress.
+    let known: std::collections::HashSet<String> = db.all().map_err(|e| e.to_string())?.into_iter().map(|t| t.path).collect();
+    let todo: Vec<String> = objects.iter().map(|o| track_path(&cfg.bucket, &o.key)).filter(|p| !known.contains(p)).collect();
+    let total = todo.len();
+    for (b, batch) in todo.chunks(8).enumerate() {
+        let found: Vec<Track> = std::thread::scope(|s| {
+            let handles: Vec<_> = batch.iter().map(|p| s.spawn(|| read_track(p))).collect();
+            handles.into_iter().filter_map(|h| h.join().ok().flatten()).collect()
+        });
+        db.upsert(&found).map_err(|e| e.to_string())?;
+        let _ = app.emit("s3-progress", ((b * 8 + batch.len()).min(total), total));
     }
-    db.upsert(&indexed).map_err(|e| e.to_string())?;
+    db.all().map_err(|e| e.to_string())
+}
+
+/// Saves an S3 track (and its `.lrc`, if any) to `~/Music/Neptunus`, adds the local file to the library
+/// and returns the library. Emits `s3-download` (path, bytes done, bytes total) while copying.
+#[tauri::command]
+pub async fn s3_download(app: AppHandle, db: State<'_, Db>, path: String) -> Result<Vec<Track>, String> {
+    use std::io::Write;
+    let mut r = reader(&path).ok_or("bukan lagu S3")??;
+    let dir = app.path().audio_dir().map_err(|e| e.to_string())?.join("Neptunus");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let name = Path::new(&r.key).file_name().ok_or("nama file tidak valid")?.to_owned();
+    let dest = dir.join(name);
+    let part = dest.with_extension("part");
+    let mut f = std::fs::File::create(&part).map_err(|e| e.to_string())?;
+    let (total, mut done) = (r.len(), 0u64);
+    let mut buf = vec![0u8; 256 * 1024];
+    loop {
+        let n = r.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        f.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+        done += n as u64;
+        let _ = app.emit("s3-download", (&path, done, total));
+    }
+    drop(f);
+    std::fs::rename(&part, &dest).map_err(|e| e.to_string())?;
+    if let Some(Some(lrc)) = sidecar(&path) {
+        let _ = std::fs::write(dest.with_extension("lrc"), lrc);
+    }
+    if let Some(t) = read_track(&dest.to_string_lossy()) {
+        db.upsert(&[t]).map_err(|e| e.to_string())?;
+    }
     db.all().map_err(|e| e.to_string())
 }

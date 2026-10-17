@@ -24,7 +24,16 @@ const NAV: { id: View; label: string; icon: IconName }[] = [
   { id: "s3", label: "Cloud", icon: "cloud" },
 ];
 
-const library = ref<Track[]>([]);
+const rawLibrary = ref<Track[]>([]);
+// A cloud song is hidden when a local one has the same title and artist (and about the same length).
+const sameSong = (t: Track) => `${t.title.trim().toLowerCase()}\u0000${t.artist.trim().toLowerCase()}`;
+const library = computed(() => {
+  const local = new Map<string, number[]>();
+  for (const t of rawLibrary.value) if (!t.path.startsWith("s3://")) local.set(sameSong(t), [...(local.get(sameSong(t)) ?? []), t.duration_secs]);
+  return rawLibrary.value.filter(
+    (t) => !t.path.startsWith("s3://") || !local.get(sameSong(t))?.some((d) => Math.abs(d - t.duration_secs) <= 3),
+  );
+});
 const playlists = ref<Playlist[]>([]);
 const loading = ref(false);
 
@@ -124,6 +133,23 @@ async function deletePlaylist(id: number) {
 // In-page menu rather than a native <select>: WebKitGTK shows that as a GTK popup whose pointer grab can
 // get stuck under XWayland, leaving the whole window unclickable.
 const addMenu = ref<string | null>(null);
+const progress = ref<Record<string, number>>({}); // percent per downloading cloud song
+const downloads = computed(() =>
+  Object.entries(progress.value).map(([path, pct]) => ({ path, pct, title: rawLibrary.value.find((t) => t.path === path)?.title ?? "" })),
+);
+const isS3 = (path: string) => path.startsWith("s3://");
+async function download(path: string) {
+  progress.value = { ...progress.value, [path]: 0 };
+  try {
+    // the saved copy joins the library, which hides the cloud version of the same song
+    rawLibrary.value = await invoke<Track[]>("s3_download", { path });
+  } catch (e) {
+    s3Status.value = `Gagal mengunduh: ${e}`;
+  } finally {
+    const { [path]: _, ...rest } = progress.value;
+    progress.value = rest;
+  }
+}
 async function addTo(id: number, path: string) {
   addMenu.value = null;
   await invoke("add_to_playlist", { id, path });
@@ -148,7 +174,7 @@ async function pickFolder() {
   if (!dir) return;
   loading.value = true;
   try {
-    library.value = await invoke<Track[]>("scan_folder", { path: dir });
+    rawLibrary.value = await invoke<Track[]>("scan_folder", { path: dir });
     setView("songs");
   } finally {
     loading.value = false;
@@ -164,13 +190,21 @@ async function s3Sync() {
   s3Status.value = "Menghubungkan…";
   try {
     await s3Save();
-    library.value = await invoke<Track[]>("s3_sync");
+    rawLibrary.value = await invoke<Track[]>("s3_sync");
     s3Status.value = "Selesai. Lagu sudah masuk ke library.";
   } catch (e) {
     s3Status.value = `Gagal: ${e}`;
   } finally {
     s3Busy.value = false;
   }
+}
+
+// File to decode: the local copy of a cloud song when there is one, so it is never streamed needlessly.
+function source(t: Track): string {
+  if (!isS3(t.path)) return t.path;
+  const key = sameSong(t);
+  const twin = rawLibrary.value.find((l) => !isS3(l.path) && sameSong(l) === key && Math.abs(l.duration_secs - t.duration_secs) <= 3);
+  return twin?.path ?? t.path;
 }
 
 async function playAt(list: Track[], i: number) {
@@ -180,7 +214,7 @@ async function playAt(list: Track[], i: number) {
   preloaded = -1;
   position.value = 0;
   paused.value = false;
-  await invoke("play", { path: list[i].path, volume: volume.value });
+  await invoke("play", { path: source(list[i]), volume: volume.value });
 }
 
 function nextIndex(auto: boolean): number | null {
@@ -235,7 +269,7 @@ async function poll() {
     const i = nextIndex(true);
     if (i !== null) {
       preloaded = i;
-      invoke("queue_next", { path: queue.value[i].path }).catch(() => (preloaded = -1));
+      invoke("queue_next", { path: source(queue.value[i]) }).catch(() => (preloaded = -1));
     }
   }
 }
@@ -311,8 +345,13 @@ onMounted(async () => {
   window.addEventListener("pointerdown", closeMenu);
   pollId = setInterval(poll, 500);
   subs.push(
-    listen<[number, number]>("s3-progress", ({ payload: [i, n] }) => {
+    listen<[string, number, number]>("s3-download", ({ payload: [path, done, total] }) => {
+      if (path in progress.value) progress.value = { ...progress.value, [path]: total ? Math.round((done / total) * 100) : 0 };
+    }),
+    listen<[number, number]>("s3-progress", async ({ payload: [i, n] }) => {
       s3Status.value = `Membaca ${i} dari ${n} lagu…`;
+      // each batch is saved before this event, so the songs read so far can show up right away
+      rawLibrary.value = await invoke<Track[]>("load_library");
     }),
     listen<string>("media-key", ({ payload }) => {
       if (payload === "next") next();
@@ -326,7 +365,7 @@ onMounted(async () => {
     listen("np-request", () => npRequests.value++),
   );
   applyTheme(DEFAULT_SEED);
-  library.value = await invoke<Track[]>("load_library");
+  rawLibrary.value = await invoke<Track[]>("load_library");
   await refreshPlaylists();
   s3.value = await invoke<S3Config>("s3_get_config");
 });
@@ -463,9 +502,18 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
                 </span>
               </span>
               <span class="meta">
-                <strong>{{ t.title }}</strong>
+                <strong><Icon v-if="isS3(t.path)" name="cloud" :size="16" class="cloud-mark" title="Di-stream dari S3" />{{ t.title }}</strong>
                 <span>{{ unknown(t.artist) }} · {{ unknown(t.album) }}</span>
               </span>
+            </button>
+            <button class="icon-btn row-act" title="Putar" :aria-label="`Putar ${t.title}`" @click="playAt(shown, i)">
+              <Icon name="play" :size="22" />
+            </button>
+            <button v-if="isS3(t.path)" class="icon-btn row-act dl" :disabled="t.path in progress"
+              :title="t.path in progress ? `Mengunduh ${progress[t.path]}%` : 'Unduh ke folder Musik'"
+              :aria-label="`Unduh ${t.title}`" @click="download(t.path)">
+              <span v-if="t.path in progress" class="pct">{{ progress[t.path] }}%</span>
+              <Icon v-else name="download" :size="20" />
             </button>
             <button v-if="view === 'playlists'" class="icon-btn row-act" title="Hapus dari playlist" @click="removeFrom(t.path)"><Icon name="close" :size="20" /></button>
             <div v-else-if="playlists.length" class="row-menu" :class="{ open: addMenu === t.path }">
@@ -511,6 +559,14 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
       </div>
     </div>
   </section>
+
+  <div v-if="downloads.length" class="downloads" :class="{ above: now }" role="status">
+    <div v-for="d in downloads" :key="d.path" class="dl-item">
+      <span class="dl-title">Mengunduh {{ d.title }}</span>
+      <span class="dl-bar"><i :style="{ width: `${d.pct}%` }"></i></span>
+      <span class="pct">{{ d.pct }}%</span>
+    </div>
+  </div>
 
   <footer v-if="now" class="player">
     <button class="np" @click="showNow = !showNow" :title="showNow ? 'Tutup layar putar' : 'Buka layar putar'">
@@ -644,6 +700,15 @@ h1 {
 .art-overlay { position: absolute; inset: 0; display: grid; place-items: center; border-radius: 12px; background: rgb(0 0 0 / 0.45); color: #fff; }
 .meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
 .meta strong { font-size: 16px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.downloads { position: fixed; right: 24px; bottom: 24px; z-index: 25; display: flex; flex-direction: column; gap: 8px; width: min(360px, calc(100vw - 48px)); }
+.downloads.above { bottom: 128px; }
+.dl-item { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; padding: 12px 16px; border-radius: 16px; background: var(--secondary-container); color: var(--on-secondary-container); box-shadow: 0 4px 16px rgb(0 0 0 / 0.25); font-size: 14px; }
+.dl-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dl-bar { grid-column: 1 / -1; grid-row: 2; height: 4px; border-radius: 2px; background: color-mix(in srgb, currentColor 20%, transparent); overflow: hidden; }
+.dl-bar i { display: block; height: 100%; background: var(--primary); transition: width 0.2s; }
+.dl-item .pct { font-variant-numeric: tabular-nums; font-weight: 600; }
+.dl .pct { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.cloud-mark { vertical-align: -2px; margin-right: 6px; color: var(--primary); }
 .meta span { font-size: 14px; color: var(--on-surface-variant); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 li.active .meta span { color: inherit; opacity: 0.8; }
 .dur { font-size: 14px; color: var(--on-surface-variant); font-variant-numeric: tabular-nums; min-width: 3.5ch; text-align: right; }

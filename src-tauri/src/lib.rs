@@ -137,6 +137,7 @@ pub fn run() {
             s3::s3_get_config,
             s3::s3_save_config,
             s3::s3_sync,
+            s3::s3_download,
             load_library,
             list_playlists,
             create_playlist,

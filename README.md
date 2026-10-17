@@ -59,7 +59,7 @@ Release builds are made on Ubuntu 22.04 so the binaries run on more distros (old
 
 ### Linux notes
 
-- On Wayland the app runs through XWayland, because Wayland doesn't let apps position their own windows and the mini player has to open under the tray icon. Set `NEPTUNUS_WAYLAND=1` to run natively on Wayland instead.
+- On Wayland the app runs natively. Wayland doesn't let apps position their own windows, so the tray mini player can't open next to the tray icon. Set `NEPTUNUS_X11=1` to run through XWayland instead, which restores that, but the window can sometimes stay unclickable there.
 - The tray icon needs a StatusNotifierItem host. On GNOME that is the AppIndicator extension, which Ubuntu ships by default.
 
 ## Tech stack

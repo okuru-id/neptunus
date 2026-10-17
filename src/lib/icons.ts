@@ -15,6 +15,8 @@ import album from "@material-symbols/svg-400/rounded/album-fill.svg?raw";
 import artist from "@material-symbols/svg-400/rounded/person-fill.svg?raw";
 import playlist from "@material-symbols/svg-400/rounded/queue_music-fill.svg?raw";
 import cloud from "@material-symbols/svg-400/rounded/cloud-fill.svg?raw";
+import download from "@material-symbols/svg-400/rounded/download-fill.svg?raw";
+import downloadDone from "@material-symbols/svg-400/rounded/download_done-fill.svg?raw";
 import addFolder from "@material-symbols/svg-400/rounded/create_new_folder-fill.svg?raw";
 import add from "@material-symbols/svg-400/rounded/add-fill.svg?raw";
 import close from "@material-symbols/svg-400/rounded/close-fill.svg?raw";
@@ -47,6 +49,8 @@ export const icons = {
   artist,
   playlist,
   cloud,
+  download,
+  downloadDone,
   addFolder,
   add,
   close,

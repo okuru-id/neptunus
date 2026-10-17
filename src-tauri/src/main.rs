@@ -2,13 +2,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    // Wayland doesn't let apps place their own windows, so the tray mini player couldn't open under
-    // the tray icon. Run through XWayland; NEPTUNUS_WAYLAND=1 opts out. GDK_BACKEND is overridden on
-    // purpose: some terminals export GDK_BACKEND=wayland to every shell.
+    // Native Wayland is the default: under XWayland the window sometimes stays unclickable (stuck pointer
+    // grab). Wayland lets apps position nothing, so the tray mini player can't open under the tray icon
+    // there; NEPTUNUS_X11=1 runs through XWayland to get that back. GDK_BACKEND is overridden on purpose:
+    // some terminals export it to every shell.
     #[cfg(target_os = "linux")]
-    if std::env::var_os("WAYLAND_DISPLAY").is_some() && std::env::var_os("NEPTUNUS_WAYLAND").is_none() {
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        let backend = if std::env::var_os("NEPTUNUS_X11").is_some() { "x11" } else { "wayland" };
         // SAFETY: single-threaded at this point, before Tauri/GTK start.
-        unsafe { std::env::set_var("GDK_BACKEND", "x11") };
+        unsafe { std::env::set_var("GDK_BACKEND", backend) };
     }
     neptunus_lib::run()
 }

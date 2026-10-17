@@ -1,4 +1,4 @@
-use lofty::{file::TaggedFileExt, probe::Probe, tag::ItemKey};
+use lofty::{file::TaggedFileExt, tag::ItemKey};
 use std::{hash::{Hash, Hasher}, path::Path, time::Duration};
 use tauri::{AppHandle, Manager};
 
@@ -18,11 +18,15 @@ impl Lrclib {
 }
 
 /// Sidecar `.lrc`, then the embedded lyrics tag.
-fn local(path: &Path) -> Option<String> {
-    if let Ok(txt) = std::fs::read_to_string(path.with_extension("lrc")) {
-        return Some(txt);
+fn local(path: &str) -> Option<String> {
+    let sidecar = match crate::s3::sidecar(path) {
+        Some(txt) => txt,
+        None => std::fs::read_to_string(Path::new(path).with_extension("lrc")).ok(),
+    };
+    if sidecar.is_some() {
+        return sidecar;
     }
-    let file = Probe::open(path).ok()?.read().ok()?;
+    let file = crate::probe(path)?;
     let tag = file.primary_tag().or_else(|| file.first_tag())?;
     tag.get_string(ItemKey::Lyrics).map(str::to_owned)
 }
@@ -51,7 +55,7 @@ fn lrclib(title: &str, artist: &str, album: &str, duration: f64) -> Result<Optio
 #[tauri::command]
 pub async fn get_lyrics(app: AppHandle, path: String, title: String, artist: String, album: String, duration: f64) -> Option<String> {
     tauri::async_runtime::spawn_blocking(move || {
-        if let Some(txt) = local(Path::new(&path)) {
+        if let Some(txt) = local(&path) {
             return Some(txt);
         }
         if title.is_empty() || artist.is_empty() {

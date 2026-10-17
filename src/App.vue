@@ -312,7 +312,7 @@ onMounted(async () => {
   pollId = setInterval(poll, 500);
   subs.push(
     listen<[number, number]>("s3-progress", ({ payload: [i, n] }) => {
-      s3Status.value = `Mengunduh ${i} dari ${n}…`;
+      s3Status.value = `Membaca ${i} dari ${n} lagu…`;
     }),
     listen<string>("media-key", ({ payload }) => {
       if (payload === "next") next();
@@ -413,7 +413,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
         </div>
       </section>
       <form v-else-if="view === 's3'" class="panel" @submit.prevent="s3Sync">
-        <p class="hint">Lagu diunduh ke cache lokal, lalu masuk ke library. File yang sudah ada dilewati.</p>
+        <p class="hint">Lagu tidak diunduh: hanya metadata yang dibaca, lalu lagu di-stream langsung dari bucket saat diputar.</p>
         <div class="fields">
           <label class="field wide">Endpoint<input v-model="s3.endpoint" placeholder="Kosongkan untuk AWS, mis. https://minio.contoh.com" /></label>
           <label class="field">Region<input v-model="s3.region" /></label>

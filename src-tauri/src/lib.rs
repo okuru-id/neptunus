@@ -10,14 +10,25 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use lofty::{file::{AudioFile, TaggedFileExt}, probe::Probe, tag::Accessor};
 use walkdir::WalkDir;
 
+/// App data dir, for code that has no `AppHandle` (the audio thread reading S3 objects).
+pub(crate) static DATA_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
 pub(crate) const EXTS: &[&str] = &["mp3", "flac", "m4a", "aac", "ogg", "opus", "wav"];
 
-pub(crate) fn read_track(path: &std::path::Path) -> Option<Track> {
-    let file = Probe::open(path).ok()?.read().ok()?;
+/// Opens the tags of a local file or an `s3://bucket/key` object (read with range requests).
+pub(crate) fn probe(path: &str) -> Option<lofty::file::TaggedFile> {
+    match s3::reader(path) {
+        Some(r) => Probe::new(r.ok()?).guess_file_type().ok()?.read().ok(),
+        None => Probe::open(path).ok()?.read().ok(),
+    }
+}
+
+pub(crate) fn read_track(path: &str) -> Option<Track> {
+    let file = probe(path)?;
     let tag = file.primary_tag().or_else(|| file.first_tag());
-    let stem = path.file_stem()?.to_string_lossy().into_owned();
+    let stem = std::path::Path::new(path).file_stem()?.to_string_lossy().into_owned();
     Some(Track {
-        path: path.to_string_lossy().into_owned(),
+        path: path.to_owned(),
         title: tag.and_then(|t| t.title().map(|s| s.into_owned())).unwrap_or(stem),
         artist: tag.and_then(|t| t.artist().map(|s| s.into_owned())).unwrap_or_default(),
         album: tag.and_then(|t| t.album().map(|s| s.into_owned())).unwrap_or_default(),
@@ -29,7 +40,7 @@ type R<T> = Result<T, String>;
 fn e(err: rusqlite::Error) -> String { err.to_string() }
 
 #[tauri::command]
-fn scan_folder(db: State<Db>, path: String) -> R<Vec<Track>> {
+async fn scan_folder(db: State<'_, Db>, path: String) -> R<Vec<Track>> {
     let found: Vec<Track> = WalkDir::new(path)
         .into_iter()
         .filter_map(Result::ok)
@@ -37,7 +48,7 @@ fn scan_folder(db: State<Db>, path: String) -> R<Vec<Track>> {
             e.path().extension().and_then(|x| x.to_str())
                 .is_some_and(|x| EXTS.contains(&x.to_lowercase().as_str()))
         })
-        .filter_map(|e| read_track(e.path()))
+        .filter_map(|e| read_track(&e.path().to_string_lossy()))
         .collect();
     db.upsert(&found).map_err(e)?;
     db.all().map_err(e)
@@ -66,14 +77,19 @@ fn remove_from_playlist(db: State<Db>, id: i64, path: String) -> R<()> { db.remo
 
 /// Returns the embedded cover as a data URL, if any.
 #[tauri::command]
-fn get_cover(path: String) -> Option<String> {
-    let (mime, data) = cover_bytes(&path)?;
-    Some(format!("data:{mime};base64,{}", STANDARD.encode(data)))
+async fn get_cover(path: String) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (mime, data) = cover_bytes(&path)?;
+        Some(format!("data:{mime};base64,{}", STANDARD.encode(data)))
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 /// Embedded cover art as (mime type, raw image bytes).
 pub(crate) fn cover_bytes(path: &str) -> Option<(String, Vec<u8>)> {
-    let file = Probe::open(path).ok()?.read().ok()?;
+    let file = probe(path)?;
     let tag = file.primary_tag().or_else(|| file.first_tag())?;
     let pic = tag.pictures().first()?;
     let mime = pic.mime_type().map(|m| m.as_str()).unwrap_or("image/jpeg");
@@ -109,6 +125,7 @@ pub fn run() {
             migrate_old_dirs(app.handle());
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
+            let _ = DATA_DIR.set(dir.clone());
             app.manage(Db::open(&dir.join("library.db"))?);
             app.manage(media::init(app.handle()));
             tray::init(app.handle())?;

@@ -1,7 +1,8 @@
 use crate::{Db, EXTS, Track, read_track};
+use std::io::{self, Read, Seek, SeekFrom};
 use s3::{Bucket, Region, creds::Credentials};
 use serde::{Deserialize, Serialize};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 #[derive(Serialize, Deserialize, Default)]
@@ -45,10 +46,13 @@ fn open_bucket(c: &S3Config) -> Result<Box<Bucket>, String> {
     Ok(if c.endpoint.is_empty() { bucket } else { bucket.with_path_style() })
 }
 
-/// Cache location for an object key; rejects keys that would escape the cache directory.
-fn local_path(cache: &Path, key: &str) -> Option<PathBuf> {
-    let rel = Path::new(key);
-    rel.components().all(|c| matches!(c, Component::Normal(_))).then(|| cache.join(rel))
+const SCHEME: &str = "s3://";
+/// Bytes fetched per range request while playing; the decoder reads on the audio thread, so fewer is better.
+const CHUNK: u64 = 1 << 20;
+
+/// Track path for an object: `s3://bucket/key`.
+fn track_path(bucket: &str, key: &str) -> String {
+    format!("{SCHEME}{bucket}/{key}")
 }
 
 fn wanted(key: &str) -> bool {
@@ -59,36 +63,104 @@ fn wanted(key: &str) -> bool {
         .is_some_and(|x| x == "lrc" || EXTS.contains(&x.as_str()))
 }
 
-/// Mirrors audio files (and `.lrc` sidecars) under the configured prefix into the local cache,
-/// indexes them, and returns the full library. Files already cached with the same size are skipped.
+/// An S3 object as `Read + Seek`, fetched in chunks with range requests (nothing is written to disk).
+pub struct S3Reader {
+    bucket: Box<Bucket>,
+    key: String,
+    len: u64,
+    pos: u64,
+    buf: Vec<u8>,
+    buf_start: u64,
+}
+
+impl S3Reader {
+    pub fn len(&self) -> u64 {
+        self.len
+    }
+}
+
+impl Read for S3Reader {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        if self.pos >= self.len || out.is_empty() {
+            return Ok(0);
+        }
+        if self.pos < self.buf_start || self.pos >= self.buf_start + self.buf.len() as u64 {
+            let end = (self.pos + CHUNK).min(self.len) - 1;
+            let r = self.bucket.get_object_range(&self.key, self.pos, Some(end)).map_err(io::Error::other)?;
+            if r.status_code() >= 300 {
+                return Err(io::Error::other(format!("{}: HTTP {}", self.key, r.status_code())));
+            }
+            self.buf = r.bytes().to_vec();
+            self.buf_start = self.pos;
+        }
+        let off = (self.pos - self.buf_start) as usize;
+        let n = out.len().min(self.buf.len() - off);
+        out[..n].copy_from_slice(&self.buf[off..off + n]);
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+
+impl Seek for S3Reader {
+    fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
+        let new = match to {
+            SeekFrom::Start(n) => Some(n),
+            SeekFrom::End(d) => self.len.checked_add_signed(d),
+            SeekFrom::Current(d) => self.pos.checked_add_signed(d),
+        };
+        self.pos = new.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "seek before start"))?;
+        Ok(self.pos)
+    }
+}
+
+fn open_object(bucket: Box<Bucket>, key: &str) -> Result<S3Reader, String> {
+    let (head, _) = bucket.head_object(key).map_err(|e| format!("{key}: {e}"))?;
+    let len = head.content_length.unwrap_or(0).max(0) as u64;
+    Ok(S3Reader { bucket, key: key.to_owned(), len, pos: 0, buf: Vec::new(), buf_start: 0 })
+}
+
+/// `Some` when `path` is an `s3://bucket/key` track; the credentials come from the saved config.
+pub fn reader(path: &str) -> Option<Result<S3Reader, String>> {
+    let (_, key) = path.strip_prefix(SCHEME)?.split_once('/')?;
+    // the bucket in the path is the one the track was synced from; credentials are the saved ones
+    let open = || -> Result<S3Reader, String> {
+        let dir = crate::DATA_DIR.get().ok_or("no app data dir")?;
+        let cfg: S3Config = std::fs::read_to_string(dir.join("s3.json"))
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .ok_or("S3 belum dikonfigurasi")?;
+        open_object(open_bucket(&cfg)?, key)
+    };
+    Some(open())
+}
+
+/// Text of the `.lrc` next to an S3 track. Outer `None` = not an S3 path; inner `None` = no sidecar.
+pub fn sidecar(path: &str) -> Option<Option<String>> {
+    let mut r = reader(path)?.ok()?;
+    r.key = Path::new(&r.key).with_extension("lrc").to_string_lossy().into_owned();
+    let got = r.bucket.get_object(&r.key).ok().filter(|o| o.status_code() < 300);
+    Some(got.and_then(|o| String::from_utf8(o.bytes().to_vec()).ok()))
+}
+
+/// Indexes audio files under the configured prefix (tags are read with range requests, nothing is
+/// downloaded) and returns the full library.
 #[tauri::command]
-pub fn s3_sync(app: AppHandle, db: State<Db>) -> Result<Vec<Track>, String> {
+pub async fn s3_sync(app: AppHandle, db: State<'_, Db>) -> Result<Vec<Track>, String> {
     let cfg = s3_get_config(app.clone())?;
     let bucket = open_bucket(&cfg)?;
-    let cache = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("s3").join(&cfg.bucket);
 
     let objects: Vec<_> = bucket
         .list(cfg.prefix.clone(), None)
         .map_err(|e| e.to_string())?
         .into_iter()
         .flat_map(|r| r.contents)
-        .filter(|o| wanted(&o.key))
+        .filter(|o| wanted(&o.key) && !o.key.to_lowercase().ends_with(".lrc"))
         .collect();
 
     let mut indexed = Vec::new();
     for (i, o) in objects.iter().enumerate() {
         let _ = app.emit("s3-progress", (i + 1, objects.len()));
-        let Some(dest) = local_path(&cache, &o.key) else { continue };
-        if std::fs::metadata(&dest).ok().map(|m| m.len()) != Some(o.size) {
-            std::fs::create_dir_all(dest.parent().unwrap()).map_err(|e| e.to_string())?;
-            let part = dest.with_extension("part");
-            let mut f = std::fs::File::create(&part).map_err(|e| e.to_string())?;
-            bucket.get_object_to_writer(&o.key, &mut f).map_err(|e| format!("{}: {e}", o.key))?;
-            std::fs::rename(&part, &dest).map_err(|e| e.to_string())?;
-        }
-        if !o.key.to_lowercase().ends_with(".lrc") {
-            indexed.extend(read_track(&dest));
-        }
+        indexed.extend(read_track(&track_path(&cfg.bucket, &o.key)));
     }
     db.upsert(&indexed).map_err(|e| e.to_string())?;
     db.all().map_err(|e| e.to_string())

@@ -18,7 +18,7 @@ Inspired by [**PixelPlayer**](https://github.com/PixelPlayerHQ/PixelPlayer), the
 - **System tray mini player:** the tray menu has playback controls and the cover. The mini player opens next to the tray icon:
   - Linux: double click the icon.
   - Windows and macOS: click the icon.
-- **S3 source:** mirror music (and `.lrc` files) from an S3-compatible bucket into a local cache.
+- **S3 source:** stream music from an S3-compatible bucket without downloading it (tags, cover and `.lrc` files are read with range requests).
 - **Small:** uses the system webview, so there is no bundled browser runtime.
 
 The UI text is currently in Indonesian.
@@ -42,6 +42,20 @@ Build an installer for the current OS (`.deb`/`.AppImage`, `.msi`/`.exe` or `.dm
 ```bash
 npm run tauri build
 ```
+
+### Building on Debian / Ubuntu
+
+```bash
+sudo apt update
+sudo apt install -y build-essential curl wget file pkg-config libssl-dev \
+  libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev patchelf
+npm ci
+npm run tauri build
+```
+
+Output is in `src-tauri/target/release/bundle/` (`deb/`, `appimage/`, `rpm/`). To build only the `.deb`, run `npm run tauri build -- --bundles deb`, then install it with `sudo apt install ./Neptunus_*.deb`.
+
+Release builds are made on Ubuntu 22.04 so the binaries run on more distros (older glibc). Pushing a `v*` tag builds installers for all three OSes in CI and attaches them to a draft release.
 
 ### Linux notes
 

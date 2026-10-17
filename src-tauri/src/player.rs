@@ -42,10 +42,21 @@ impl AudioState {
     }
 }
 
+/// A local file, or an `s3://` object streamed with range requests.
+fn decode(path: &str) -> Result<Box<dyn rodio::Source + Send>, String> {
+    if let Some(r) = crate::s3::reader(path) {
+        let r = r?;
+        let len = r.len();
+        let d = Decoder::builder().with_data(r).with_byte_len(len).build().map_err(|e| e.to_string())?;
+        return Ok(Box::new(d));
+    }
+    let file = File::open(path).map_err(|e| e.to_string())?;
+    Ok(Box::new(Decoder::try_from(file).map_err(|e| e.to_string())?))
+}
+
 #[tauri::command]
-pub fn play(state: tauri::State<AudioState>, path: String, volume: f32) -> Result<(), String> {
-    let file = File::open(&path).map_err(|e| e.to_string())?;
-    let source = Decoder::try_from(file).map_err(|e| e.to_string())?;
+pub async fn play(state: tauri::State<'_, AudioState>, path: String, volume: f32) -> Result<(), String> {
+    let source = decode(&path)?;
     let player = Player::connect_new(&state.mixer);
     player.set_volume(volume as _);
     player.append(source);
@@ -55,9 +66,8 @@ pub fn play(state: tauri::State<AudioState>, path: String, volume: f32) -> Resul
 
 /// Appends a track to the running player so it starts with no gap when the current one ends.
 #[tauri::command]
-pub fn queue_next(state: tauri::State<AudioState>, path: String) -> Result<(), String> {
-    let file = File::open(&path).map_err(|e| e.to_string())?;
-    let source = Decoder::try_from(file).map_err(|e| e.to_string())?;
+pub async fn queue_next(state: tauri::State<'_, AudioState>, path: String) -> Result<(), String> {
+    let source = decode(&path)?;
     if let Some(p) = state.player.lock().unwrap().as_ref() {
         p.append(source);
     }

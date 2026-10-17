@@ -8,7 +8,7 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "check": "vue-tsc --noEmit",
-    "tauri": "tauri"
+    "tauri": "node scripts/tauri.mjs"
   },
   "license": "MIT",
   "dependencies": {

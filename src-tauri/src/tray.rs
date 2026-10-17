@@ -154,10 +154,13 @@ fn menu_event(app: &AppHandle, id: &str) {
 #[cfg(target_os = "linux")]
 mod backend {
     use super::*;
-    use ksni::{blocking::{Handle, TrayMethods}, menu::StandardItem, MenuItem};
-    use std::sync::OnceLock;
+    use ksni::{blocking::TrayMethods, menu::StandardItem, MenuItem};
+    use std::sync::{mpsc, OnceLock};
 
-    static HANDLE: OnceLock<Handle<Tray>> = OnceLock::new();
+    /// Updates go through a worker thread: `Handle::update` waits for the tray service, which may itself be
+    /// waiting on the main thread (a tray click calls window methods), so calling it from a command on the
+    /// main thread could deadlock.
+    static UPDATES: OnceLock<mpsc::Sender<NowMenu>> = OnceLock::new();
 
     struct Tray {
         app: AppHandle,
@@ -218,24 +221,37 @@ mod backend {
             })
             .unwrap_or_default();
         let tray = Tray { app: app.clone(), now: NowMenu::default(), icon, art_png: Vec::new() };
-        match tray.spawn() {
-            Ok(h) => { let _ = HANDLE.set(h); }
-            Err(e) => eprintln!("tray: {e}"),
-        }
+        let h = match tray.spawn() {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("tray: {e}");
+                return Ok(());
+            }
+        };
+        let (tx, rx) = mpsc::channel::<NowMenu>();
+        std::thread::spawn(move || {
+            while let Ok(mut now) = rx.recv() {
+                while let Ok(newer) = rx.try_recv() {
+                    now = newer; // skip to the latest state
+                }
+                let mut art_png = Vec::new();
+                if let Some(a) = &now.art {
+                    let _ = a.write_to(&mut std::io::Cursor::new(&mut art_png), image::ImageFormat::Png);
+                }
+                h.update(move |t| {
+                    t.now = now;
+                    t.art_png = art_png;
+                });
+            }
+        });
+        let _ = UPDATES.set(tx);
         Ok(())
     }
 
     pub fn refresh(_app: &AppHandle, now: &NowMenu) {
-        let Some(h) = HANDLE.get() else { return };
-        let mut art_png = Vec::new();
-        if let Some(a) = &now.art {
-            let _ = a.write_to(&mut std::io::Cursor::new(&mut art_png), image::ImageFormat::Png);
+        if let Some(tx) = UPDATES.get() {
+            let _ = tx.send(now.clone());
         }
-        let now = now.clone();
-        h.update(move |t| {
-            t.now = now;
-            t.art_png = art_png;
-        });
     }
 }
 

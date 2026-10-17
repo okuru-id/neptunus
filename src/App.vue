@@ -121,12 +121,16 @@ async function deletePlaylist(id: number) {
   if (plId.value === id) { plId.value = null; plTracks.value = []; }
   await refreshPlaylists();
 }
-async function addTo(e: Event, path: string) {
-  const sel = e.currentTarget as HTMLSelectElement;
-  if (!sel.value) return;
-  await invoke("add_to_playlist", { id: +sel.value, path });
-  if (plId.value === +sel.value) await openPlaylist(plId.value);
-  sel.value = "";
+// In-page menu rather than a native <select>: WebKitGTK shows that as a GTK popup whose pointer grab can
+// get stuck under XWayland, leaving the whole window unclickable.
+const addMenu = ref<string | null>(null);
+async function addTo(id: number, path: string) {
+  addMenu.value = null;
+  await invoke("add_to_playlist", { id, path });
+  if (plId.value === id) await openPlaylist(plId.value);
+}
+function closeMenu(e: PointerEvent) {
+  if (!(e.target as HTMLElement).closest(".row-menu")) addMenu.value = null;
 }
 async function removeFrom(path: string) {
   if (plId.value === null) return;
@@ -293,6 +297,7 @@ watchEffect(() => {
 });
 
 function onKey(e: KeyboardEvent) {
+  if (e.key === "Escape" && addMenu.value) return void (addMenu.value = null);
   const el = e.target as HTMLElement;
   if (el.closest("input, select, textarea, button")) return;
   if (e.code === "Space") { e.preventDefault(); togglePause(); }
@@ -303,6 +308,7 @@ let pollId = 0;
 const subs: Promise<UnlistenFn>[] = [];
 onMounted(async () => {
   window.addEventListener("keydown", onKey);
+  window.addEventListener("pointerdown", closeMenu);
   pollId = setInterval(poll, 500);
   subs.push(
     listen<[number, number]>("s3-progress", ({ payload: [i, n] }) => {
@@ -326,6 +332,7 @@ onMounted(async () => {
 });
 onUnmounted(() => {
   window.removeEventListener("keydown", onKey);
+  window.removeEventListener("pointerdown", closeMenu);
   clearInterval(pollId);
   subs.forEach((p) => p.then((off) => off()));
 });
@@ -461,13 +468,16 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
               </span>
             </button>
             <button v-if="view === 'playlists'" class="icon-btn row-act" title="Hapus dari playlist" @click="removeFrom(t.path)"><Icon name="close" :size="20" /></button>
-            <label v-else-if="playlists.length" class="icon-btn row-act" title="Tambah ke playlist">
-              <Icon name="playlistAdd" :size="20" />
-              <select @change="addTo($event, t.path)" :aria-label="`Tambah ${t.title} ke playlist`">
-                <option value="">Tambah ke playlist</option>
-                <option v-for="p in playlists" :key="p.id" :value="p.id">{{ p.name }}</option>
-              </select>
-            </label>
+            <div v-else-if="playlists.length" class="row-menu" :class="{ open: addMenu === t.path }">
+              <button class="icon-btn row-act" title="Tambah ke playlist" :aria-label="`Tambah ${t.title} ke playlist`"
+                :aria-expanded="addMenu === t.path" @click="addMenu = addMenu === t.path ? null : t.path">
+                <Icon name="playlistAdd" :size="20" />
+              </button>
+              <div v-if="addMenu === t.path" class="pl-menu" role="menu">
+                <p>Tambah ke playlist</p>
+                <button v-for="p in playlists" :key="p.id" role="menuitem" @click="addTo(p.id, t.path)">{{ p.name }}</button>
+              </div>
+            </div>
             <span class="dur">{{ fmt(t.duration_secs) }}</span>
           </li>
           <p v-if="!shown.length" class="none">
@@ -639,8 +649,16 @@ li.active .meta span { color: inherit; opacity: 0.8; }
 .dur { font-size: 14px; color: var(--on-surface-variant); font-variant-numeric: tabular-nums; min-width: 3.5ch; text-align: right; }
 li.active .dur { color: inherit; }
 .row-act { position: relative; opacity: 0; transition: opacity 0.15s; }
-li:hover .row-act, .row-act:focus-within, .row-act:focus-visible { opacity: 1; }
-.row-act select { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+li:hover .row-act, .row-act:focus-visible, .row-menu.open .row-act { opacity: 1; }
+.row-menu { position: relative; }
+.pl-menu {
+  position: absolute; right: 0; top: calc(100% + 4px); z-index: 5; min-width: 200px; max-height: 280px; overflow-y: auto;
+  display: flex; flex-direction: column; padding: 8px 0; border-radius: 16px;
+  background: var(--surface-container-high); box-shadow: 0 4px 16px rgb(0 0 0 / 0.35);
+}
+.pl-menu p { margin: 0; padding: 4px 16px 8px; font-size: 12px; font-weight: 600; color: var(--on-surface-variant); }
+.pl-menu button { padding: 10px 16px; text-align: left; font-size: 14px; }
+.pl-menu button:hover, .pl-menu button:focus-visible { background: var(--surface-container-highest); }
 .none { color: var(--on-surface-variant); font-size: 15px; padding: 24px 12px; }
 
 .eq { display: inline-flex; align-items: flex-end; gap: 3px; height: 18px; }

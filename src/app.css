@@ -1,0 +1,62 @@
+/* Theme roles are written by lib/theme; registering them lets the whole UI glide to a new cover's colours. */
+@property --primary { syntax: "<color>"; inherits: true; initial-value: #ffb59d; }
+@property --on-primary { syntax: "<color>"; inherits: true; initial-value: #5d1900; }
+@property --primary-container { syntax: "<color>"; inherits: true; initial-value: #7e2c0d; }
+@property --on-primary-container { syntax: "<color>"; inherits: true; initial-value: #ffdbd0; }
+@property --secondary-container { syntax: "<color>"; inherits: true; initial-value: #5d4037; }
+@property --on-secondary-container { syntax: "<color>"; inherits: true; initial-value: #ffdbd0; }
+@property --tertiary-container { syntax: "<color>"; inherits: true; initial-value: #574500; }
+@property --on-tertiary-container { syntax: "<color>"; inherits: true; initial-value: #ffe08b; }
+@property --surface { syntax: "<color>"; inherits: true; initial-value: #1a120f; }
+@property --surface-container-lowest { syntax: "<color>"; inherits: true; initial-value: #140c0a; }
+@property --surface-container-low { syntax: "<color>"; inherits: true; initial-value: #231a17; }
+@property --surface-container { syntax: "<color>"; inherits: true; initial-value: #271e1b; }
+@property --surface-container-high { syntax: "<color>"; inherits: true; initial-value: #322825; }
+@property --surface-container-highest { syntax: "<color>"; inherits: true; initial-value: #3d332f; }
+@property --on-surface { syntax: "<color>"; inherits: true; initial-value: #f1dfd9; }
+@property --on-surface-variant { syntax: "<color>"; inherits: true; initial-value: #d8c2bb; }
+@property --outline-variant { syntax: "<color>"; inherits: true; initial-value: #53433e; }
+
+:root {
+  --spring: cubic-bezier(0.3, 1.3, 0.5, 1); /* M3 Expressive spatial spring, mild overshoot */
+  --emph: cubic-bezier(0.2, 0, 0, 1);
+  --titlebar: 48px;
+  --sidebar: 248px;
+  --font: "Roboto Flex Variable", "Roboto Flex", system-ui, sans-serif;
+  transition-property: --primary, --on-primary, --primary-container, --on-primary-container,
+    --secondary-container, --on-secondary-container, --tertiary-container, --on-tertiary-container,
+    --surface, --surface-container-lowest, --surface-container-low, --surface-container,
+    --surface-container-high, --surface-container-highest, --on-surface, --on-surface-variant,
+    --outline-variant;
+  transition-duration: 0.9s;
+  transition-timing-function: var(--emph);
+}
+@media (max-width: 1100px) { :root { --sidebar: 216px; } }
+
+/* Custom M3 window frame: the native frame is off and the window is transparent,
+   so the body draws the rounded surface and clips everything (fixed layers included). */
+html {
+  background: transparent; --frame-radius: 16px; --sheet-gap: 0px; --sheet-radius: 20px;
+  --frame-bg: var(--surface-container-lowest); /* darker frame around the rounded content sheet */
+}
+@media (prefers-color-scheme: light) { html { --frame-bg: var(--surface-container-high); } }
+html.maximized { --frame-radius: 0px; }
+body::after {
+  content: ""; position: fixed; inset: 0; z-index: 100; pointer-events: none;
+  border-radius: var(--frame-radius); box-shadow: inset 0 0 0 1px var(--outline-variant);
+}
+html.maximized body::after { display: none; }
+body {
+  height: 100vh;
+  border-radius: var(--frame-radius);
+  contain: paint;
+  margin: 0;
+  font-family: var(--font);
+  background: var(--frame-bg);
+  color: var(--on-surface);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+button { font: inherit; color: inherit; border: 0; background: none; cursor: pointer; padding: 0; }
+input, select { font: inherit; color: inherit; }
+:focus-visible { outline: 3px solid var(--primary); outline-offset: 2px; }

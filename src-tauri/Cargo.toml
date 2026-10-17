@@ -1,0 +1,53 @@
+[package]
+name = "pixelplay-desktop"
+version = "0.1.0"
+description = "A Tauri App"
+authors = ["you"]
+edition = "2024"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "pixelplay_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api"] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+walkdir = "2.5.0"
+lofty = "0.25.4"
+base64 = "0.23.1"
+tauri-plugin-dialog = "2.8.3"
+rodio = { version = "0.23.0", default-features = false, features = ["playback", "symphonia-all"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+souvlaki = { version = "0.8.3", default-features = false, features = ["use_zbus"] }
+rust-s3 = { version = "0.38.0", default-features = false, features = ["sync", "sync-rustls-tls"] }
+tauri-plugin-positioner = "2.4.0"
+attohttpc = { version = "0.30", default-features = false, features = ["tls-rustls", "json"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+
+# Linux: StatusNotifierItem tray over D-Bus (pure Rust, no libayatana needed when bundling)
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = { version = "0.3.6", features = ["blocking"] }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+# its tray-icon feature also enables tauri/tray-icon; not set on `tauri` directly because the
+# Tauri CLI reads every `tauri` entry and would then demand libappindicator when bundling on Linux
+tauri-plugin-positioner = { version = "2.4.0", features = ["tray-icon"] }
+
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

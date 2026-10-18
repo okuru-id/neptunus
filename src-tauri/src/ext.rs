@@ -681,7 +681,39 @@ struct Progress {
 /// `checkAvailability`. `key` tags the progress events (`ext-download`).
 #[tauri::command]
 pub async fn ext_download(app: AppHandle, id: String, track: Value, quality: Option<String>, key: String) -> R<crate::db::Track> {
+    crate::blocking(move || fetch(&app, &id, &track, quality, &key)).await
+}
+
+/// Downloads the library song at `path` again with extension `id`. With the extension it first came
+/// from, its own track id is reused; with any other one the song is looked up by title and artist.
+/// When the new file lands elsewhere, playlists follow it and the old file goes to the trash.
+#[tauri::command]
+pub async fn ext_redownload(app: AppHandle, path: String, id: String, quality: Option<String>) -> R<crate::db::Track> {
     crate::blocking(move || {
+        let db = app.state::<crate::db::Db>();
+        let track = match db.origin(&path).map_err(|e| e.to_string())? {
+            Some((_, t)) => serde_json::from_str(&t).map_err(|e| e.to_string())?,
+            None => {
+                let t = db.track(&path).map_err(|e| e.to_string())?.ok_or("song is not in the library")?;
+                json!({ "id": "", "name": t.title, "artists": t.artist, "album_name": t.album,
+                        "duration_ms": t.duration_secs * 1000, "provider_id": "library" })
+            }
+        };
+        let new = fetch(&app, &id, &track, quality, &path)?;
+        if new.path != path {
+            db.move_path(&path, &new.path).map_err(|e| e.to_string())?;
+            if Path::new(&path).is_file() {
+                let _ = trash::delete(&path);
+            }
+        }
+        Ok(new)
+    })
+    .await
+}
+
+fn fetch(app: &AppHandle, id: &str, track: &Value, quality: Option<String>, key: &str) -> R<crate::db::Track> {
+    {
+        let (id, key) = (id.to_owned(), key.to_owned());
         let exts = app.state::<Exts>();
         let manifest = exts.manifest(&id)?;
         let db = app.state::<crate::db::Db>();
@@ -691,12 +723,19 @@ pub async fn ext_download(app: AppHandle, id: String, track: Value, quality: Opt
         };
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let text = |k: &str| track[k].as_str().unwrap_or_default().to_owned();
-        let name = format!("{} - {}", text("artists"), text("name"));
-        let name: String = name.chars().map(|c| if r#"\/:*?"<>|"#.contains(c) || c.is_control() { '_' } else { c }).collect();
+        let clean = |s: &str| -> String {
+            let s: String = s.chars().map(|c| if r#"\/:*?"<>|"#.contains(c) || c.is_control() { '_' } else { c }).collect();
+            s.trim().trim_matches('.').to_owned()
+        };
+        // <library>/<main artist>/<artist - title>.flac
+        let artists = text("artists");
+        let main = clean(artists.split([',', '&', ';']).next().unwrap_or_default());
+        let folder = dir.join(if main.is_empty() { "Unknown Artist" } else { &main });
+        std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
         let quality = quality
             .or_else(|| manifest["qualityOptions"][0]["id"].as_str().map(str::to_owned))
             .unwrap_or_else(|| "LOSSLESS".into());
-        let out = dir.join(format!("{}.flac", name.trim()));
+        let out = folder.join(format!("{}.flac", clean(&format!("{artists} - {}", text("name")))));
         let emit = {
             let (app, key) = (app.clone(), key.clone());
             move |pct: f64| drop(app.emit("ext-download", Progress { key: key.clone(), pct }))
@@ -728,9 +767,10 @@ pub async fn ext_download(app: AppHandle, id: String, track: Value, quality: Opt
             t.album = text("album_name");
         }
         db.upsert(std::slice::from_ref(&t)).map_err(|e| e.to_string())?;
+        // the source track (with its provider_id) is what a later re-download starts from
+        let _ = db.set_origin(&t.path, &id, &track.to_string());
         Ok(t)
-    })
-    .await
+    }
 }
 
 /// Extensions leave files without cover art or tags: fill what is missing from the catalog's metadata.

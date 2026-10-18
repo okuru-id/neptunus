@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import Icon from "./Icon.vue";
+import SongMenu from "./SongMenu.vue";
 import { extName, has, unsupported, type ExtInfo } from "./ext";
 
 // Katalog from metadata-provider extensions: home feed, search, album/playlist/artist pages,
@@ -17,8 +18,9 @@ type Page = { kind: string; title: string; sub: string; cover?: string; tracks: 
 type Track = { path: string; title: string; artist: string; album: string; duration_secs: number };
 
 // `query` is the page's search box: typing searches the selected source (debounced)
-const props = defineProps<{ exts: ExtInfo[]; library: Track[]; query: string; nowPath?: string; playing?: boolean }>();
-const emit = defineEmits<{ downloaded: [Track]; toggle: [] }>();
+// `redl`: re-download progress per library path (kept by the app, which runs the re-download)
+const props = defineProps<{ exts: ExtInfo[]; library: Track[]; query: string; nowPath?: string; playing?: boolean; redl: Record<string, number> }>();
+const emit = defineEmits<{ downloaded: [Track]; toggle: []; redownload: [Track, string, string | null]; remove: [Track] }>();
 
 const SRC_KEY = "neptunus.extSource";
 // only sources that can show a catalog (home feed); search-only ones stay available as download providers
@@ -134,15 +136,24 @@ const inLibrary = (t: Item) => props.library.find((l) => {
   return !l.path.startsWith("s3://") && low(l.title) === low(t.name) && (!artist || low(l.artist).includes(artist))
     && (!t.duration_ms || Math.abs(l.duration_secs - t.duration_ms / 1000) <= 5);
 });
+// the library copy of a song: what this catalog downloaded (while still in the library), else a match
+const local = (t: Item) => {
+  const d = done.get(keyOf(t));
+  return (d && props.library.some((l) => l.path === d.path) ? d : undefined) ?? inLibrary(t);
+};
 // the play button of a finished song turns into pause while that song is playing
-const playIcon = (t: Item) => ((done.get(keyOf(t)) ?? inLibrary(t))?.path === props.nowPath && props.playing ? "pause" : "play");
-// progress / "done" / error text of a song; a song already in the library counts as done
-const state = (t: Item) => dl[keyOf(t)] ?? (kind(t) === "track" && inLibrary(t) ? "done" : undefined);
+const playIcon = (t: Item) => (local(t)?.path === props.nowPath && props.playing ? "pause" : "play");
+// progress / "done" / error text of a song; a song in the library counts as done, a deleted one does not
+const state = (t: Item) => {
+  const s = dl[keyOf(t)];
+  if (s === "done" || s === undefined) return kind(t) === "track" && local(t) ? "done" : undefined;
+  return s;
+};
 // the sheet: pick a download extension, then a quality
 const picking = ref<{ t: Item; ext?: ExtInfo } | null>(null);
 function download(t: Item) {
   const key = keyOf(t);
-  const have = done.get(key) ?? inLibrary(t);
+  const have = local(t);
   if (have) return have.path === props.nowPath ? emit("toggle") : emit("downloaded", have);
   if (typeof dl[key] === "number") return;
   const only = downloaders.value.length === 1 ? downloaders.value[0] : undefined;
@@ -264,6 +275,8 @@ const others = computed(() => results.value?.filter((i) => kind(i) !== "track") 
             <span v-if="typeof state(t) === 'number'" class="ring" :style="{ '--p': state(t) }"></span>
             <Icon v-else :name="state(t) === 'done' ? playIcon(t) : typeof state(t) === 'string' ? 'refresh' : 'download'" />
           </button>
+          <SongMenu v-if="local(t)" :title="t.name" :downloaders="downloaders" :busy="props.redl[local(t)!.path] ?? null"
+            @click.stop @redownload="(id, q) => emit('redownload', local(t)!, id, q)" @remove="emit('remove', local(t)!)" />
         </li>
       </ul>
       <div v-if="page.albums.length" class="row">
@@ -288,6 +301,8 @@ const others = computed(() => results.value?.filter((i) => kind(i) !== "track") 
             <span v-if="typeof state(t) === 'number'" class="ring" :style="{ '--p': state(t) }"></span>
             <Icon v-else :name="state(t) === 'done' ? playIcon(t) : typeof state(t) === 'string' ? 'refresh' : 'download'" />
           </button>
+          <SongMenu v-if="local(t)" :title="t.name" :downloaders="downloaders" :busy="props.redl[local(t)!.path] ?? null"
+            @click.stop @redownload="(id, q) => emit('redownload', local(t)!, id, q)" @remove="emit('remove', local(t)!)" />
         </li>
       </ul>
       <div v-if="others.length" class="row">

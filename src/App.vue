@@ -10,7 +10,8 @@ import ConfirmDialog, { confirm } from "./lib/ConfirmDialog.vue";
 import FileManager from "./lib/FileManager.vue";
 import Extensions from "./lib/Extensions.vue";
 import ExtCatalog from "./lib/ExtCatalog.vue";
-import { has, type ExtInfo } from "./lib/ext";
+import SongMenu from "./lib/SongMenu.vue";
+import { has, unsupported, type ExtInfo } from "./lib/ext";
 import TitleBar from "./lib/TitleBar.vue";
 import type { IconName } from "./lib/icons";
 import WavyProgress from "./lib/WavyProgress.vue";
@@ -101,14 +102,18 @@ const lyricIdx = computed(() =>
   lyrics.value[0]?.t == null ? -1 : lyrics.value.findLastIndex((l) => (l.t ?? Infinity) <= position.value + 0.2),
 );
 // karaoke fill of the current line: set once when the line starts (a running CSS animation can't follow
-// the 500 ms position polls without jumping), timed to the next line's stamp
+// the 500 ms position polls without jumping). LRC only stamps line starts, so the singing time is the gap to
+// the next line, capped by a reading-pace estimate (~11 chars/s) so a following instrumental break doesn't
+// stretch the fill. The delay is exact: positive when the line is picked a little early, negative when late.
 const wipe = ref({ key: 0, dur: 4, delay: 0 });
-watch(lyricIdx, (i) => {
-  const l = lyrics.value[i];
+function startWipe() {
+  const i = lyricIdx.value, l = lyrics.value[i];
   if (!l || l.t == null) return;
-  const next = lyrics.value[i + 1]?.t ?? l.t + 5;
-  wipe.value = { key: wipe.value.key + 1, dur: Math.min(Math.max(next - l.t, 0.5), 15), delay: Math.min(0, l.t - position.value) };
-});
+  const gap = (lyrics.value[i + 1]?.t ?? l.t + 8) - l.t;
+  const dur = Math.max(Math.min(gap - 0.15, 1 + l.text.length / 11), 0.5);
+  wipe.value = { key: wipe.value.key + 1, dur, delay: l.t - position.value };
+}
+watch(lyricIdx, startWipe);
 const q = computed(() => query.value.trim().toLowerCase());
 const match = (t: Track) =>
   !q.value || [t.title, t.artist, t.album].some((s) => s.toLowerCase().includes(q.value));
@@ -238,6 +243,40 @@ const setLibrary = (t: unknown[]) => (rawLibrary.value = t as Track[]);
 // extensions (Settings › Ekstensi); metadata providers add their catalog to the Katalog page
 const exts = ref<ExtInfo[]>([]);
 const extCatalog = computed(() => exts.value.some((e) => e.enabled && has(e, "metadata_provider")));
+// download extensions a song can be re-downloaded with
+const downloaders = computed(() => exts.value.filter((e) => e.enabled && has(e, "download_provider") && !unsupported(e).length));
+// re-download progress per library path (fed by `ext-download` events keyed by the path)
+const redl = ref<Record<string, number>>({});
+async function redownload(t: Track, id: string, quality: string | null = null) {
+  redl.value = { ...redl.value, [t.path]: 0 };
+  try {
+    await invoke("ext_redownload", { path: t.path, id, quality });
+    setLibrary(await invoke<Track[]>("load_library"));
+    if (plId.value !== null) await openPlaylist(plId.value);
+  } catch (e) {
+    await confirm({ title: "Gagal mengunduh ulang", message: String(e), confirm: "OK", icon: "download" });
+  } finally {
+    const { [t.path]: _, ...rest } = redl.value;
+    redl.value = rest;
+  }
+}
+async function removeSong(t: Track) {
+  const s3 = isS3(t.path);
+  const ok = await confirm({
+    title: `Hapus “${t.title}”?`,
+    message: s3 ? "File dihapus dari bucket S3 dan dikeluarkan dari library." : "File dipindahkan ke Tempat Sampah dan dikeluarkan dari library.",
+    confirm: "Hapus", icon: "trash", danger: true,
+  });
+  if (!ok) return;
+  try {
+    setLibrary(s3
+      ? await invoke<Track[]>("s3_delete", { keys: [t.path.replace(/^s3:\/\/[^/]+\//, "")] })
+      : await invoke<Track[]>("local_delete", { keys: [t.path] }));
+    if (plId.value !== null) await openPlaylist(plId.value);
+  } catch (e) {
+    await confirm({ title: "Gagal menghapus", message: String(e), confirm: "OK", icon: "trash", danger: true });
+  }
+}
 async function onDownloaded(t: Track) {
   setLibrary(await invoke<Track[]>("load_library"));
   playAt([t], 0);
@@ -329,6 +368,29 @@ async function playAt(list: Track[], i: number) {
   await invoke("play", { path: source(list[i]), volume: volume.value });
 }
 
+// the audio lives in the backend and survives a webview reload, so keep what the page needs to show it
+const SESSION = "neptunus.nowPlaying";
+function saveNow() {
+  try {
+    if (current.value < 0) sessionStorage.removeItem(SESSION);
+    else sessionStorage.setItem(SESSION, JSON.stringify({ queue: queue.value, current: current.value, preloaded }));
+  } catch {}
+}
+watch([queue, current], saveNow);
+async function restorePlayer() {
+  const st = await invoke<{ position_secs: number; paused: boolean; finished: boolean } | null>("status");
+  if (!st || st.finished) return;
+  try {
+    const s = JSON.parse(sessionStorage.getItem(SESSION) ?? "null");
+    if (!s?.queue?.[s.current]) return;
+    queue.value = s.queue;
+    current.value = s.current;
+    preloaded = s.preloaded ?? -1;
+    position.value = st.position_secs;
+    paused.value = st.paused;
+  } catch {}
+}
+
 function nextIndex(auto: boolean): number | null {
   if (!queue.value.length) return null;
   if (auto && repeat.value === "one") return current.value;
@@ -381,6 +443,7 @@ async function poll() {
     const i = nextIndex(true);
     if (i !== null) {
       preloaded = i;
+      saveNow();
       invoke("queue_next", { path: source(queue.value[i]) }).catch(() => (preloaded = -1));
     }
   }
@@ -391,7 +454,7 @@ function parseLyrics(raw: string | null) {
   const out: { t: number | null; text: string }[] = [];
   for (const line of raw.split(/\r?\n/)) {
     const stamps = [...line.matchAll(/\[(\d+):(\d+(?:\.\d+)?)\]/g)];
-    const text = line.replace(/\[[^\]]*\]/g, "").trim();
+    const text = line.replace(/\[[^\]]*\]|<\d+:\d+(?:\.\d+)?>/g, "").replace(/\s+/g, " ").trim();
     if (stamps.length) for (const m of stamps) out.push({ t: +m[1] * 60 + +m[2], text });
     else if (!/^\[\w+:/.test(line)) out.push({ t: null, text: line.trim() });
   }
@@ -490,6 +553,9 @@ onMounted(async () => {
   pollId = setInterval(poll, 500);
   invoke<ExtInfo[]>("ext_list").then((l) => (exts.value = l));
   subs.push(
+    listen<{ key: string; pct: number }>("ext-download", ({ payload: { key, pct } }) => {
+      if (key in redl.value) redl.value = { ...redl.value, [key]: pct };
+    }),
     listen<[string, number, number]>("s3-download", ({ payload: [path, done, total] }) => {
       if (path in progress.value) progress.value = { ...progress.value, [path]: total ? Math.round((done / total) * 100) : 0 };
     }),
@@ -509,6 +575,7 @@ onMounted(async () => {
     }),
   );
   applyTheme(DEFAULT_SEED);
+  await restorePlayer();
   rawLibrary.value = await invoke<Track[]>("load_library");
   await refreshPlaylists();
   s3.value = await invoke<S3Config>("s3_get_config");
@@ -530,6 +597,7 @@ async function seekTo(v: number) {
   await invoke("seek", { secs: v });
   position.value = v;
   seeking = false;
+  startWipe(); // a seek inside the same line must restart the fill from the new spot
 }
 
 const fmt = (s: number) => {
@@ -686,7 +754,8 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
         </div>
 
         <div v-if="view === 'catalog'" class="catalog">
-          <ExtCatalog :exts="exts" :library="rawLibrary" :query="query" :now-path="now?.path" :playing="playing" @downloaded="onDownloaded" @toggle="togglePause" />
+          <ExtCatalog :exts="exts" :library="rawLibrary" :query="query" :now-path="now?.path" :playing="playing" :redl="redl"
+            @downloaded="onDownloaded" @toggle="togglePause" @redownload="redownload" @remove="removeSong" />
           <section v-if="albums.length" class="shelf">
             <div class="shelf-head"><h2>Album</h2><button class="more" @click="setView('albums')">Lihat semua</button></div>
             <div class="shelf-row">
@@ -761,6 +830,8 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
                 <button v-for="p in playlists" :key="p.id" role="menuitem" @click="addTo(p.id, t.path)">{{ p.name }}</button>
               </div>
             </div>
+            <SongMenu class="row-act" :class="{ busy: t.path in redl }" :title="t.title" :downloaders="isS3(t.path) ? [] : downloaders"
+              :busy="redl[t.path] ?? null" @redownload="(id, q) => redownload(t, id, q)" @remove="removeSong(t)" />
             <span class="dur">{{ fmt(t.duration_secs) }}</span>
           </li>
           <p v-if="!shown.length" class="none">
@@ -1019,7 +1090,7 @@ li.active .meta span { color: inherit; opacity: 0.8; }
 .dur { font-size: 14px; color: var(--on-surface-variant); font-variant-numeric: tabular-nums; min-width: 3.5ch; text-align: right; }
 li.active .dur { color: inherit; }
 .row-act { position: relative; opacity: 0; transition: opacity 0.15s; }
-li:hover .row-act, .row-act:focus-visible, .row-menu.open .row-act { opacity: 1; }
+li:hover .row-act, .row-act:focus-visible, .row-menu.open .row-act, .row-act.open, .row-act.busy { opacity: 1; }
 .row-menu { position: relative; }
 .pl-menu {
   position: absolute; right: 0; top: calc(100% + 4px); z-index: 5; min-width: 200px; max-height: 280px; overflow-y: auto;

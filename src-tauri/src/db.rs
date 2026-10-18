@@ -39,7 +39,10 @@ impl Db {
              CREATE TABLE IF NOT EXISTS playlist_tracks (
                playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
                path TEXT NOT NULL REFERENCES tracks(path) ON DELETE CASCADE,
-               pos INTEGER NOT NULL, PRIMARY KEY (playlist_id, path));",
+               pos INTEGER NOT NULL, PRIMARY KEY (playlist_id, path));
+             CREATE TABLE IF NOT EXISTS downloads (
+               path TEXT PRIMARY KEY REFERENCES tracks(path) ON DELETE CASCADE,
+               ext TEXT NOT NULL, track TEXT NOT NULL);",
         )?;
         Ok(Self(Mutex::new(c)))
     }
@@ -131,6 +134,36 @@ impl Db {
         for p in paths {
             tx.execute("DELETE FROM tracks WHERE path=?1", [p])?;
         }
+        tx.commit()
+    }
+
+    /// Remembers which extension (and which of its tracks) a downloaded file came from.
+    pub fn set_origin(&self, path: &str, ext: &str, track: &str) -> rusqlite::Result<()> {
+        self.0.lock().unwrap()
+            .execute("INSERT OR REPLACE INTO downloads VALUES (?1,?2,?3)", params![path, ext, track])
+            .map(|_| ())
+    }
+
+    pub fn origin(&self, path: &str) -> rusqlite::Result<Option<(String, String)>> {
+        let c = self.0.lock().unwrap();
+        let mut s = c.prepare("SELECT ext, track FROM downloads WHERE path=?1")?;
+        let mut rows = s.query_map([path], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.next().transpose()
+    }
+
+    pub fn track(&self, path: &str) -> rusqlite::Result<Option<Track>> {
+        let c = self.0.lock().unwrap();
+        let mut s = c.prepare("SELECT path, title, artist, album, duration_secs FROM tracks WHERE path=?1")?;
+        let mut rows = s.query_map([path], row)?;
+        rows.next().transpose()
+    }
+
+    /// A re-download landed at another path: playlists follow it, the old row goes.
+    pub fn move_path(&self, old: &str, new: &str) -> rusqlite::Result<()> {
+        let mut c = self.0.lock().unwrap();
+        let tx = c.transaction()?;
+        tx.execute("UPDATE OR IGNORE playlist_tracks SET path=?2 WHERE path=?1", [old, new])?;
+        tx.execute("DELETE FROM tracks WHERE path=?1", [old])?;
         tx.commit()
     }
 }

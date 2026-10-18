@@ -8,6 +8,21 @@ import repeat from "@material-symbols/svg-400/rounded/repeat-fill.svg?raw";
 import repeatOne from "@material-symbols/svg-400/rounded/repeat_one-fill.svg?raw";
 import volume from "@material-symbols/svg-400/rounded/volume_up-fill.svg?raw";
 import search from "@material-symbols/svg-400/rounded/search-fill.svg?raw";
+import panelClose from "@material-symbols/svg-400/rounded/left_panel_close-fill.svg?raw";
+import panelOpen from "@material-symbols/svg-400/rounded/left_panel_open-fill.svg?raw";
+import settings from "@material-symbols/svg-400/rounded/settings-fill.svg?raw";
+import folder from "@material-symbols/svg-400/rounded/folder-fill.svg?raw";
+import file from "@material-symbols/svg-400/rounded/description-fill.svg?raw";
+import upload from "@material-symbols/svg-400/rounded/upload-fill.svg?raw";
+import trash from "@material-symbols/svg-400/rounded/delete-fill.svg?raw";
+import refresh from "@material-symbols/svg-400/rounded/refresh-fill.svg?raw";
+import newFolder from "@material-symbols/svg-400/rounded/create_new_folder-fill.svg?raw";
+import home from "@material-symbols/svg-400/rounded/home-fill.svg?raw";
+import chevron from "@material-symbols/svg-400/rounded/chevron_right-fill.svg?raw";
+import edit from "@material-symbols/svg-400/rounded/edit-fill.svg?raw";
+import sync from "@material-symbols/svg-400/rounded/sync-fill.svg?raw";
+import save from "@material-symbols/svg-400/rounded/save-fill.svg?raw";
+import catalog from "@material-symbols/svg-400/rounded/explore-fill.svg?raw";
 import back from "@material-symbols/svg-400/rounded/arrow_back-fill.svg?raw";
 import collapse from "@material-symbols/svg-400/rounded/keyboard_arrow_down-fill.svg?raw";
 import note from "@material-symbols/svg-400/rounded/music_note-fill.svg?raw";
@@ -41,6 +56,21 @@ export const icons = {
   volume,
   search,
   back,
+  catalog,
+  save,
+  folder,
+  file,
+  upload,
+  trash,
+  refresh,
+  newFolder,
+  home,
+  chevron,
+  edit,
+  sync,
+  settings,
+  panelClose,
+  panelOpen,
   collapse,
   note,
   album,

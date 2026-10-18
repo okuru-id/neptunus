@@ -33,6 +33,7 @@ impl Db {
              CREATE TABLE IF NOT EXISTS tracks (
                path TEXT PRIMARY KEY, title TEXT NOT NULL, artist TEXT NOT NULL,
                album TEXT NOT NULL, duration_secs INTEGER NOT NULL);
+             CREATE TABLE IF NOT EXISTS folders (path TEXT PRIMARY KEY);
              CREATE TABLE IF NOT EXISTS playlists (
                id INTEGER PRIMARY KEY, name TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS playlist_tracks (
@@ -98,5 +99,38 @@ impl Db {
         self.0.lock().unwrap()
             .execute("DELETE FROM playlist_tracks WHERE playlist_id=?1 AND path=?2", params![id, path])
             .map(|_| ())
+    }
+
+    pub fn folders(&self) -> rusqlite::Result<Vec<String>> {
+        let c = self.0.lock().unwrap();
+        let mut s = c.prepare("SELECT path FROM folders ORDER BY path")?;
+        s.query_map([], |r| r.get(0))?.collect()
+    }
+
+    pub fn add_folder(&self, path: &str) -> rusqlite::Result<()> {
+        self.0.lock().unwrap().execute("INSERT OR IGNORE INTO folders VALUES (?1)", [path]).map(|_| ())
+    }
+
+    /// Forgets a library folder and its songs.
+    pub fn remove_folder(&self, path: &str) -> rusqlite::Result<()> {
+        self.0.lock().unwrap().execute("DELETE FROM folders WHERE path=?1", [path])?;
+        self.remove_under(&format!("{}/", path.trim_end_matches('/')))
+    }
+
+    /// Drops tracks under the directory `dir` (ending in `/`).
+    pub fn remove_under(&self, dir: &str) -> rusqlite::Result<()> {
+        self.0.lock().unwrap()
+            .execute("DELETE FROM tracks WHERE substr(path, 1, length(?1)) = ?1", [dir])
+            .map(|_| ())
+    }
+
+    /// Drops tracks (and their playlist entries) whose path is in `paths`.
+    pub fn remove(&self, paths: &[String]) -> rusqlite::Result<()> {
+        let mut c = self.0.lock().unwrap();
+        let tx = c.transaction()?;
+        for p in paths {
+            tx.execute("DELETE FROM tracks WHERE path=?1", [p])?;
+        }
+        tx.commit()
     }
 }

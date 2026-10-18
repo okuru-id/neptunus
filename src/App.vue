@@ -6,6 +6,8 @@ import { computed, onMounted, onUnmounted, ref, watch, watchEffect } from "vue";
 import CoverArt from "./lib/CoverArt.vue";
 import { covers } from "./lib/covers";
 import Icon from "./lib/Icon.vue";
+import ConfirmDialog, { confirm } from "./lib/ConfirmDialog.vue";
+import FileManager from "./lib/FileManager.vue";
 import TitleBar from "./lib/TitleBar.vue";
 import type { IconName } from "./lib/icons";
 import WavyProgress from "./lib/WavyProgress.vue";
@@ -14,14 +16,14 @@ import { ART_SHAPES, CLIP_SHAPES } from "./lib/shapes";
 
 type Track = { path: string; title: string; artist: string; album: string; duration_secs: number };
 type Playlist = { id: number; name: string };
-type View = "songs" | "albums" | "artists" | "playlists" | "s3";
+type View = "catalog" | "songs" | "albums" | "artists" | "playlists" | "s3";
 
 const NAV: { id: View; label: string; icon: IconName }[] = [
+  { id: "catalog", label: "Katalog", icon: "catalog" },
   { id: "songs", label: "Lagu", icon: "note" },
   { id: "albums", label: "Album", icon: "album" },
   { id: "artists", label: "Artis", icon: "artist" },
   { id: "playlists", label: "Playlist", icon: "playlist" },
-  { id: "s3", label: "Cloud", icon: "cloud" },
 ];
 
 const rawLibrary = ref<Track[]>([]);
@@ -37,7 +39,7 @@ const library = computed(() => {
 const playlists = ref<Playlist[]>([]);
 const loading = ref(false);
 
-const view = ref<View>("songs");
+const view = ref<View>("catalog");
 const query = ref("");
 const group = ref<string | null>(null); // selected album/artist name
 const plId = ref<number | null>(null);
@@ -48,6 +50,13 @@ type S3Config = { endpoint: string; region: string; bucket: string; prefix: stri
 const s3 = ref<S3Config>({ endpoint: "", region: "us-east-1", bucket: "", prefix: "", access_key: "", secret_key: "" });
 const s3Status = ref("");
 const s3Busy = ref(false);
+const s3Saved = ref(false); // a bucket is configured and saved
+const s3Edit = ref(false);
+const s3Root = computed(() => (!s3.value.prefix || s3.value.prefix.endsWith("/") ? s3.value.prefix : `${s3.value.prefix}/`));
+const s3Where = computed(() => {
+  const host = s3.value.endpoint ? s3.value.endpoint.replace(/^https?:\/\//, "") : `Amazon S3 · ${s3.value.region}`;
+  return s3.value.prefix ? `${host} · /${s3.value.prefix}` : host;
+});
 
 const queue = ref<Track[]>([]);
 const current = ref(-1);
@@ -55,12 +64,26 @@ const paused = ref(false);
 const position = ref(0);
 const volume = ref(0.8);
 const shuffle = ref(false);
+const sidebarOpen = ref(localStorage.getItem("sidebar") !== "0");
+const toggleSidebar = () => {
+  sidebarOpen.value = !sidebarOpen.value;
+  localStorage.setItem("sidebar", sidebarOpen.value ? "1" : "0");
+};
 const repeat = ref<"off" | "all" | "one">("off");
 let seeking = false;
 let preloaded = -1; // queue index already appended to the player for a gapless handoff
 
 const showNow = ref(false);
 const lyrics = ref<{ t: number | null; text: string }[]>([]);
+const lyricsLoading = ref(false);
+// manual LRCLIB search: shown when nothing was found, or on request to swap the lyrics
+type LyricHit = { trackName: string; artistName: string; albumName: string | null; duration: number | null; syncedLyrics: string | null; plainLyrics: string | null };
+const lyricSearchOpen = ref(false);
+const lyricQuery = ref("");
+const lyricHits = ref<LyricHit[] | null>(null);
+const lyricBusy = ref(false);
+const lyricErr = ref("");
+const showLyricSearch = computed(() => lyricSearchOpen.value || (!lyrics.value.length && !lyricsLoading.value));
 
 const now = computed<Track | undefined>(() => queue.value[current.value]);
 const playing = computed(() => !!now.value && !paused.value);
@@ -99,11 +122,11 @@ const currentPlaylist = computed(() => playlists.value.find((p) => p.id === plId
 const title = computed(() => {
   if (group.value !== null) return group.value;
   if (view.value === "playlists") return currentPlaylist.value?.name ?? "Playlist";
-  if (view.value === "s3") return "Cloud";
+  if (view.value === "s3") return "Pengaturan";
   return NAV.find((n) => n.id === view.value)!.label;
 });
 const subtitle = computed(() => {
-  if (view.value === "s3") return "Sinkronkan musik dari bucket S3";
+  if (view.value === "catalog") return `${library.value.length} lagu · ${albums.value.length} album · ${artists.value.length} artis`;
   if (view.value === "albums" && group.value === null) return `${albums.value.length} album`;
   if (view.value === "artists" && group.value === null) return `${artists.value.length} artis`;
   const total = shown.value.reduce((s, t) => s + t.duration_secs, 0);
@@ -112,6 +135,18 @@ const subtitle = computed(() => {
 
 async function refreshPlaylists() {
   playlists.value = await invoke<Playlist[]>("list_playlists");
+}
+// Katalog: shelves that open the full album/artist/playlist pages (a Spotify catalog can join later)
+const MORPH = (["cookie12", "clover4", "sunny8", "cookie9"] as const).flatMap((k) => [CLIP_SHAPES[k], CLIP_SHAPES[k]]).concat(CLIP_SHAPES.cookie12).join(";");
+const SHELF = 20;
+const PL_SHAPES = ["cookie9", "clover4", "sunny8", "cookie12"];
+function openGroup(v: "albums" | "artists", name: string) {
+  setView(v);
+  group.value = name;
+}
+async function showPlaylist(id: number) {
+  setView("playlists");
+  await openPlaylist(id);
 }
 async function openPlaylist(id: number) {
   plId.value = id;
@@ -169,21 +204,65 @@ function setView(v: View) {
   group.value = null;
 }
 
-async function pickFolder() {
-  const dir = await open({ directory: true });
-  if (!dir) return;
+const SETTINGS_TABS: { id: "local" | "s3"; label: string; icon: IconName }[] = [
+  { id: "local", label: "Lokal", icon: "folder" },
+  { id: "s3", label: "Cloud", icon: "cloud" },
+];
+const settingsTab = ref<"local" | "s3">("local");
+function openSettings(tab: "local" | "s3") {
+  settingsTab.value = tab;
+  setView("s3");
+}
+const setLibrary = (t: unknown[]) => (rawLibrary.value = t as Track[]);
+
+const folders = ref<string[]>([]);
+const localFiles = ref<{ reload: () => void } | null>(null);
+const curFolder = ref<string | null>(null);
+const baseName = (p: string) => p.replace(/\/+$/, "").split("/").pop() || p;
+async function refreshFolders() {
+  folders.value = await invoke<string[]>("list_folders");
+  if (!curFolder.value || !folders.value.includes(curFolder.value)) curFolder.value = folders.value[0] ?? null;
+}
+async function scan(dir: string) {
   loading.value = true;
   try {
     rawLibrary.value = await invoke<Track[]>("scan_folder", { path: dir });
-    setView("songs");
+    await refreshFolders();
+    localFiles.value?.reload();
   } finally {
     loading.value = false;
   }
+}
+async function pickFolder() {
+  const dir = await open({ directory: true });
+  if (!dir) return;
+  curFolder.value = dir;
+  await scan(dir);
+  if (view.value !== "s3") setView("songs");
+}
+const rescan = (dir: string) => scan(dir);
+async function forgetFolder(dir: string) {
+  const ok = await confirm({
+    title: `Keluarkan "${baseName(dir)}"?`,
+    message: "Folder dan lagunya dikeluarkan dari library. File di komputer tidak dihapus.",
+    confirm: "Keluarkan",
+    icon: "folder",
+  });
+  if (!ok) return;
+  rawLibrary.value = await invoke<Track[]>("remove_folder", { path: dir });
+  await refreshFolders();
 }
 
 async function s3Save() {
   await invoke("s3_save_config", { config: s3.value });
   s3Status.value = "Tersimpan.";
+  s3Saved.value = !!s3.value.bucket;
+  s3Edit.value = false;
+}
+async function s3Cancel() {
+  s3.value = await invoke<S3Config>("s3_get_config");
+  s3Edit.value = false;
+  s3Status.value = "";
 }
 async function s3Sync() {
   s3Busy.value = true;
@@ -288,14 +367,57 @@ function parseLyrics(raw: string | null) {
     : out;
 }
 
+async function loadLyrics(refresh = false) {
+  const n = now.value;
+  if (!n) return;
+  lyricsLoading.value = true;
+  const r = await invoke<string | null>("get_lyrics", { path: n.path, title: n.title, artist: n.artist, album: n.album, duration: n.duration_secs, refresh });
+  if (now.value?.path !== n.path) return;
+  lyrics.value = parseLyrics(r);
+  lyricsLoading.value = false;
+  if (refresh && !lyrics.value.length) lyricErr.value = "Masih tidak ditemukan. Coba cari manual dengan kata kunci lain.";
+}
+async function searchLyrics() {
+  const q = lyricQuery.value.trim();
+  if (!q) return;
+  lyricBusy.value = true;
+  lyricErr.value = "";
+  try {
+    lyricHits.value = await invoke<LyricHit[]>("search_lyrics", { query: q });
+  } catch (e) {
+    lyricErr.value = `Gagal mencari: ${e}`;
+  } finally {
+    lyricBusy.value = false;
+  }
+}
+async function pickLyrics(h: LyricHit) {
+  const n = now.value;
+  const text = h.syncedLyrics ?? h.plainLyrics;
+  if (!n || !text) return;
+  await invoke("save_lyrics", { title: n.title, artist: n.artist, album: n.album, text });
+  lyrics.value = parseLyrics(text);
+  lyricSearchOpen.value = false;
+}
+
+// Forgets the lyrics for this song: stored as "not found", so the wrong ones are not fetched again.
+async function clearLyrics() {
+  const n = now.value;
+  if (!n) return;
+  await invoke("save_lyrics", { title: n.title, artist: n.artist, album: n.album, text: "" });
+  lyrics.value = [];
+  lyricSearchOpen.value = false;
+}
+
 // lyrics + dynamic colour follow the playing track
 watch(() => now.value?.path, (path) => {
   lyrics.value = [];
+  lyricSearchOpen.value = false;
+  lyricHits.value = null;
+  lyricErr.value = "";
   if (!path) return;
   const n = now.value!;
-  invoke<string | null>("get_lyrics", { path, title: n.title, artist: n.artist, album: n.album, duration: n.duration_secs }).then((r) => {
-    if (now.value?.path === path) lyrics.value = parseLyrics(r);
-  });
+  lyricQuery.value = [n.title, n.artist].filter(Boolean).join(" ");
+  loadLyrics();
   invoke<string | null>("get_cover", { path }).then(async (c) => {
     covers[path] = c;
     const seed = c ? await seedFromImage(c).catch(() => DEFAULT_SEED) : DEFAULT_SEED;
@@ -356,6 +478,8 @@ onMounted(async () => {
   rawLibrary.value = await invoke<Track[]>("load_library");
   await refreshPlaylists();
   s3.value = await invoke<S3Config>("s3_get_config");
+  s3Saved.value = !!s3.value.bucket;
+  await refreshFolders();
 });
 onUnmounted(() => {
   window.removeEventListener("keydown", onKey);
@@ -390,26 +514,30 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
       <clipPath id="shape-now" clipPathUnits="objectBoundingBox">
         <path :d="CLIP_SHAPES.cookie12">
           <animateTransform v-if="!reduceMotion" attributeName="transform" type="rotate" from="0 0.5 0.5" to="360 0.5 0.5" dur="40s" repeatCount="indefinite" />
+          <!-- every shape has the same points, so the outline can morph between them: hold, morph, hold, … -->
+          <animate v-if="!reduceMotion" attributeName="d" :values="MORPH" dur="24s" repeatCount="indefinite"
+            calcMode="spline" keyTimes="0;0.125;0.25;0.375;0.5;0.625;0.75;0.875;1" :keySplines="Array(8).fill('0.4 0 0.2 1').join(';')" />
         </path>
       </clipPath>
     </defs>
   </svg>
 
-  <TitleBar />
+  <ConfirmDialog />
+  <TitleBar @settings="openSettings('local')" />
 
-  <div class="app">
+  <div class="app" :class="{ collapsed: !sidebarOpen }">
     <nav class="drawer" :class="{ 'has-player': !!now }" aria-label="Navigasi">
-      <button class="fab" @click="pickFolder" :disabled="loading">
-        <template v-if="loading"><span class="spinner" :style="{ clipPath: 'url(#shape-cookie9)' }"></span>Memindai…</template>
-        <template v-else><Icon name="addFolder" />Tambah folder</template>
+      <button class="fab" :class="{ sel: view === 'catalog' }" title="Katalog" @click="setView('catalog')" :aria-current="view === 'catalog' ? 'page' : undefined">
+        <Icon name="catalog" /><span class="lbl">Katalog</span>
       </button>
       <div class="dest">
-        <button v-for="n in NAV" :key="n.id" class="dest-item" :class="{ sel: view === n.id }" @click="setView(n.id)" :aria-current="view === n.id ? 'page' : undefined">
+        <button v-for="n in NAV.slice(1)" :key="n.id" class="dest-item" :title="n.label" :class="{ sel: view === n.id }" @click="setView(n.id)" :aria-current="view === n.id ? 'page' : undefined">
           <Icon :name="n.icon" />
-          <span>{{ n.label }}</span>
+          <span class="lbl">{{ n.label }}</span>
           <span v-if="n.id === 'playlists' && playlists.length" class="badge">{{ playlists.length }}</span>
         </button>
       </div>
+      <button class="icon-btn tonal collapse-btn" @click="toggleSidebar" :title="sidebarOpen ? 'Tutup sidebar' : 'Buka sidebar'"><Icon :name="sidebarOpen ? 'panelClose' : 'panelOpen'" /></button>
     </nav>
 
     <main :class="{ 'has-player': !!now }">
@@ -418,7 +546,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
           <button v-if="group !== null" class="icon-btn tonal" @click="group = null" title="Kembali"><Icon name="back" /></button>
           <div>
             <h1>{{ title }}</h1>
-            <p v-if="library.length || view === 's3'" class="sub">{{ subtitle }}</p>
+            <p v-if="library.length && view !== 's3'" class="sub">{{ subtitle }}</p>
           </div>
         </div>
         <label v-if="library.length && view !== 's3'" class="search">
@@ -426,6 +554,14 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
           <input placeholder="Cari lagu, artis, album" v-model="query" />
           <button v-if="query" class="icon-btn" @click="query = ''" title="Hapus pencarian"><Icon name="close" :size="20" /></button>
         </label>
+        <div v-if="showingList && (view !== 'playlists' || plId !== null) && shown.length" class="btn-group actions">
+          <button class="btn filled big" @click="playAt(shown, 0)"><Icon name="play" :size="28" />Putar</button>
+          <button class="btn tonal big" @click="playShuffled"><Icon name="shuffle" />Acak</button>
+        </div>
+        <div v-if="view === 's3'" class="tabs" role="tablist">
+          <button v-for="t in SETTINGS_TABS" :key="t.id" class="tab" :class="{ sel: settingsTab === t.id }" role="tab"
+            :aria-selected="settingsTab === t.id" @click="settingsTab = t.id"><span class="tab-c"><Icon :name="t.icon" :size="24" />{{ t.label }}</span></button>
+        </div>
       </header>
 
       <p v-if="loading" class="scanning"><span class="spinner" :style="{ clipPath: 'url(#shape-cookie12)' }"></span>Memindai folder musik…</p>
@@ -436,25 +572,67 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
         <p>Pilih folder berisi lagu di komputer ini, atau sinkronkan dari bucket S3.</p>
         <div class="btn-group">
           <button class="btn filled" @click="pickFolder"><Icon name="addFolder" />Pilih folder musik</button>
-          <button class="btn tonal" @click="setView('s3')"><Icon name="cloud" />Hubungkan S3</button>
+          <button class="btn tonal" @click="openSettings('s3')"><Icon name="cloud" />Hubungkan S3</button>
         </div>
       </section>
-      <form v-else-if="view === 's3'" class="panel" @submit.prevent="s3Sync">
-        <p class="hint">Lagu tidak diunduh: hanya metadata yang dibaca, lalu lagu di-stream langsung dari bucket saat diputar.</p>
-        <div class="fields">
-          <label class="field wide">Endpoint<input v-model="s3.endpoint" placeholder="Kosongkan untuk AWS, mis. https://minio.contoh.com" /></label>
-          <label class="field">Region<input v-model="s3.region" /></label>
-          <label class="field">Bucket<input v-model="s3.bucket" required /></label>
-          <label class="field wide">Prefix<input v-model="s3.prefix" placeholder="Opsional, mis. music/" /></label>
-          <label class="field">Access key<input v-model="s3.access_key" required autocomplete="off" /></label>
-          <label class="field">Secret key<input type="password" v-model="s3.secret_key" required autocomplete="off" /></label>
-        </div>
-        <div class="btn-group">
-          <button class="btn filled" :disabled="s3Busy"><Icon name="cloud" />{{ s3Busy ? "Menyinkronkan…" : "Simpan & sinkronkan" }}</button>
-          <button type="button" class="btn tonal" @click="s3Save" :disabled="s3Busy">Simpan saja</button>
-        </div>
-        <p v-if="s3Status" class="status" :class="{ err: s3Status.startsWith('Gagal') }" role="status">{{ s3Status }}</p>
-      </form>
+      <div v-else-if="view === 's3'" class="cloud">
+        <template v-if="settingsTab === 'local'">
+          <section class="panel conn">
+            <div class="conn-head">
+              <span class="conn-mark" :style="{ clipPath: 'url(#shape-cookie9)' }"><Icon name="folder" :size="28" /></span>
+              <div class="conn-id">
+                <strong>Folder musik</strong>
+                <span>{{ folders.length ? `${folders.length} folder di library` : "Tambahkan folder berisi lagu di komputer ini." }}</span>
+              </div>
+              <button class="btn filled" @click="pickFolder" :disabled="loading"><Icon name="addFolder" />{{ loading ? "Memindai…" : "Tambah folder" }}</button>
+            </div>
+            <div v-if="folders.length" class="chips folder-chips" role="list">
+              <span v-for="f in folders" :key="f" class="chip" :class="{ sel: curFolder === f }" role="listitem">
+                <button @click="curFolder = f" :title="f"><Icon name="folder" :size="18" />{{ baseName(f) }}</button>
+                <template v-if="curFolder === f">
+                  <button class="chip-x" title="Pindai ulang" :disabled="loading" @click="rescan(f)"><Icon name="sync" :size="18" /></button>
+                  <button class="chip-x" title="Keluarkan dari library" @click="forgetFolder(f)"><Icon name="close" :size="18" /></button>
+                </template>
+              </span>
+            </div>
+          </section>
+          <FileManager v-if="curFolder" ref="localFiles" :key="curFolder" kind="local" :root="`${curFolder.replace(/\/+$/, '')}/`" :label="baseName(curFolder)"
+            @library="setLibrary" />
+        </template>
+        <template v-else>
+        <section class="panel conn">
+          <div class="conn-head">
+            <span class="conn-mark" :style="{ clipPath: 'url(#shape-cookie9)' }"><Icon name="cloud" :size="28" /></span>
+            <div class="conn-id">
+              <strong>{{ s3Saved ? s3.bucket : "Belum terhubung" }}</strong>
+              <span>{{ s3Saved ? s3Where : "Hubungkan bucket S3 (AWS, MinIO, R2, …) untuk men-stream dan mengelola musik di cloud." }}</span>
+            </div>
+            <div v-if="s3Saved && !s3Edit" class="btn-group">
+              <button class="btn tonal" @click="s3Sync" :disabled="s3Busy"><Icon name="sync" />{{ s3Busy ? "Menyinkronkan…" : "Sinkronkan" }}</button>
+              <button class="icon-btn tonal conn-edit" title="Ubah koneksi" aria-label="Ubah koneksi" @click="s3Edit = true"><Icon name="edit" /></button>
+            </div>
+          </div>
+          <form v-if="!s3Saved || s3Edit" class="conn-form" @submit.prevent="s3Sync">
+            <p class="hint">Lagu tidak diunduh: hanya metadata yang dibaca, lalu lagu di-stream langsung dari bucket saat diputar.</p>
+            <div class="fields">
+              <label class="field wide">Endpoint<input v-model="s3.endpoint" placeholder="Kosongkan untuk AWS, mis. https://minio.contoh.com" /></label>
+              <label class="field">Region<input v-model="s3.region" /></label>
+              <label class="field">Bucket<input v-model="s3.bucket" required /></label>
+              <label class="field wide">Prefix<input v-model="s3.prefix" placeholder="Opsional, mis. music/" /></label>
+              <label class="field">Access key<input v-model="s3.access_key" required autocomplete="off" /></label>
+              <label class="field">Secret key<input type="password" v-model="s3.secret_key" required autocomplete="off" /></label>
+            </div>
+            <div class="btn-group">
+              <button class="btn filled" :disabled="s3Busy"><Icon name="sync" />{{ s3Busy ? "Menyinkronkan…" : "Simpan & sinkronkan" }}</button>
+              <button type="button" class="btn tonal" @click="s3Save" :disabled="s3Busy"><Icon name="save" />Simpan saja</button>
+              <button v-if="s3Saved" type="button" class="btn outlined" @click="s3Cancel"><Icon name="close" />Batal</button>
+            </div>
+          </form>
+          <p v-if="s3Status" class="status" :class="{ err: s3Status.startsWith('Gagal') }" role="status">{{ s3Status }}</p>
+        </section>
+        <FileManager v-if="s3Saved && !s3Edit" kind="s3" :root="s3Root" :label="s3.bucket" @library="setLibrary" />
+        </template>
+      </div>
       <template v-else>
         <div v-if="view === 'playlists'" class="chips" role="list">
           <span v-for="p in playlists" :key="p.id" class="chip" :class="{ sel: plId === p.id }" role="listitem">
@@ -467,12 +645,40 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
           </form>
         </div>
 
-        <div v-if="showingList && (view !== 'playlists' || plId !== null) && shown.length" class="btn-group actions">
-          <button class="btn filled big" @click="playAt(shown, 0)"><Icon name="play" :size="28" />Putar</button>
-          <button class="btn tonal big" @click="playShuffled"><Icon name="shuffle" />Acak</button>
+        <div v-if="view === 'catalog'" class="catalog">
+          <section v-if="albums.length" class="shelf">
+            <div class="shelf-head"><h2>Album</h2><button class="more" @click="setView('albums')">Lihat semua</button></div>
+            <div class="shelf-row">
+              <button v-for="([name, list], i) in albums.slice(0, SHELF)" :key="name" class="tile" @click="openGroup('albums', name)">
+                <CoverArt :path="list[0].path" :shape="shapeOf(i)" />
+                <strong>{{ name }}</strong>
+                <span>{{ unknown(list[0].artist) }}</span>
+              </button>
+            </div>
+          </section>
+          <section v-if="artists.length" class="shelf">
+            <div class="shelf-head"><h2>Artis</h2><button class="more" @click="setView('artists')">Lihat semua</button></div>
+            <div class="shelf-row artists">
+              <button v-for="[name, list] in artists.slice(0, SHELF)" :key="name" class="tile" @click="openGroup('artists', name)">
+                <CoverArt :path="list[0].path" shape="circle" />
+                <strong>{{ name }}</strong>
+                <span>{{ list.length }} lagu</span>
+              </button>
+            </div>
+          </section>
+          <section v-if="playlists.length && !q" class="shelf">
+            <div class="shelf-head"><h2>Playlist</h2><button class="more" @click="setView('playlists')">Lihat semua</button></div>
+            <div class="shelf-row">
+              <button v-for="(p, i) in playlists.slice(0, SHELF)" :key="p.id" class="tile" @click="showPlaylist(p.id)">
+                <span class="pl-art" :style="{ clipPath: `url(#shape-${PL_SHAPES[i % PL_SHAPES.length]})` }"><Icon name="playlist" :size="56" /></span>
+                <strong>{{ p.name }}</strong>
+                <span>Playlist</span>
+              </button>
+            </div>
+          </section>
+          <p v-if="!albums.length && !artists.length" class="none">Tidak ada yang cocok dengan “{{ query }}”.</p>
         </div>
-
-        <div v-if="(view === 'albums' || view === 'artists') && group === null" class="grid" :class="{ artists: view === 'artists' }">
+        <div v-else-if="(view === 'albums' || view === 'artists') && group === null" class="grid" :class="{ artists: view === 'artists' }">
           <button v-for="([name, list], i) in view === 'albums' ? albums : artists" :key="name" class="tile" @click="group = name">
             <CoverArt :path="list[0].path" :shape="view === 'artists' ? 'circle' : shapeOf(i)" />
             <strong>{{ name }}</strong>
@@ -537,14 +743,44 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
       </div>
       <h2>{{ now.title }}</h2>
       <p>{{ unknown(now.artist) }} · {{ unknown(now.album) }}</p>
-    </div>
-    <div class="lyrics" :class="{ synced: lyricIdx >= 0 || lyrics[0]?.t != null }">
-      <p v-for="(l, i) in lyrics" :key="i" :class="{ cur: i === lyricIdx, past: lyricIdx >= 0 && i < lyricIdx }">{{ l.text || "♪" }}</p>
-      <div v-if="!lyrics.length" class="no-lyrics">
-        <Icon name="lyrics" :size="40" />
-        <p>Lirik tidak tersedia</p>
-        <span>Tidak ditemukan di LRCLIB. Letakkan file <code>.lrc</code> dengan nama yang sama di samping lagu.</span>
+      <div v-if="lyrics.length && !lyricSearchOpen" class="lyric-actions">
+        <button class="more" @click="lyricSearchOpen = true"><Icon name="search" :size="18" />Cari lirik lain</button>
+        <button class="more" @click="clearLyrics"><Icon name="close" :size="18" />Hapus lirik</button>
       </div>
+    </div>
+    <div v-if="showLyricSearch" class="lyric-search">
+      <div class="ls-head">
+        <Icon name="lyrics" :size="32" />
+        <div>
+          <strong>{{ lyrics.length ? "Cari lirik lain" : "Lirik tidak tersedia" }}</strong>
+          <span>Cari di LRCLIB, lalu pilih lirik yang cocok. Pilihan Anda disimpan untuk lagu ini.</span>
+        </div>
+        <button v-if="lyrics.length" class="icon-btn" title="Kembali ke lirik" @click="lyricSearchOpen = false"><Icon name="close" /></button>
+      </div>
+      <form class="ls-bar" @submit.prevent="searchLyrics">
+        <label class="search">
+          <Icon name="search" />
+          <input v-model="lyricQuery" placeholder="Judul dan artis" aria-label="Cari lirik" />
+        </label>
+        <button class="btn filled" :disabled="lyricBusy">{{ lyricBusy ? "Mencari…" : "Cari" }}</button>
+      </form>
+      <button v-if="!lyrics.length" class="more" @click="loadLyrics(true)"><Icon name="sync" :size="18" />Cari ulang otomatis</button>
+      <p v-if="lyricErr" class="ls-note">{{ lyricErr }}</p>
+      <ul v-if="lyricHits" class="ls-hits">
+        <li v-for="(h, i) in lyricHits" :key="i">
+          <button @click="pickLyrics(h)">
+            <span class="ls-title"><strong>{{ h.trackName }}</strong><span>{{ h.artistName }}{{ h.albumName ? ` · ${h.albumName}` : "" }}</span></span>
+            <span v-if="h.syncedLyrics" class="ls-badge">Tersinkron</span>
+            <span class="ls-dur">{{ h.duration ? fmt(h.duration) : "" }}</span>
+          </button>
+        </li>
+        <li v-if="!lyricHits.length" class="ls-note">Tidak ada hasil untuk “{{ lyricQuery }}”.</li>
+      </ul>
+      <p v-else-if="!lyricErr" class="ls-note">Lirik dicari otomatis dari tag lagu, tapi tidak ketemu. Coba ubah kata kuncinya, atau letakkan file <code>.lrc</code> bernama sama di samping lagu.</p>
+    </div>
+    <div v-else class="lyrics" :class="{ synced: lyricIdx >= 0 || lyrics[0]?.t != null }">
+      <p v-for="(l, i) in lyrics" :key="i" :class="{ cur: i === lyricIdx, past: lyricIdx >= 0 && i < lyricIdx }">{{ l.text || "♪" }}</p>
+      <div v-if="!lyrics.length" class="no-lyrics"><span>Memuat lirik…</span></div>
     </div>
   </section>
 
@@ -602,12 +838,18 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
   margin: var(--titlebar) var(--sheet-gap) 0; overflow: hidden;
   border-radius: var(--sheet-radius) var(--sheet-radius) 0 0; background: var(--surface);
 }
-main { overflow-y: auto; padding: 12px 40px 40px 16px; scrollbar-width: thin; scrollbar-color: var(--outline-variant) transparent; }
+.app.collapsed { grid-template-columns: 80px 1fr; }
+.collapse-btn { margin-top: auto; align-self: center; }
+.collapsed .lbl, .collapsed .badge { display: none; }
+.collapsed .fab, .collapsed .dest-item { justify-content: center; padding: 0; }
+.collapsed .fab { align-self: center; width: 56px; }
+.collapsed .dest-item { width: 56px; align-self: center; border-radius: 16px; }
+main { overflow-y: auto; padding: 0 40px 40px 16px; scrollbar-width: thin; scrollbar-color: var(--outline-variant) transparent; }
 main.has-player { padding-bottom: 136px; }
 
 /* ---------- navigation drawer ---------- */
-.drawer { display: flex; flex-direction: column; gap: 16px; padding: 12px 12px 20px; overflow-y: auto; }
-.drawer.has-player { padding-bottom: 136px; } /* keep the last item clear of the full-width player */
+.drawer { background: var(--surface-container-low); display: flex; flex-direction: column; gap: 16px; padding: 12px 12px 20px; overflow-y: auto; }
+.drawer.has-player { padding-bottom: 148px; } /* keep the last item clear of the full-width player */
 .fab {
   align-self: stretch; display: flex; align-items: center; gap: 12px;
   height: 56px; padding: 0 20px 0 16px; border-radius: 16px; font-size: 15px; font-weight: 600;
@@ -615,9 +857,8 @@ main.has-player { padding-bottom: 136px; }
   box-shadow: 0 2px 6px rgb(0 0 0 / 0.25);
   transition: border-radius 0.35s var(--spring), transform 0.35s var(--spring);
 }
-.fab:hover { border-radius: 28px; }
+.fab:hover, .fab.sel { border-radius: 28px; }
 .fab:active { transform: scale(0.95); }
-.fab:disabled { cursor: default; }
 .dest { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
 .dest-item {
   display: flex; align-items: center; gap: 12px; height: 56px; padding: 0 16px; border-radius: 28px;
@@ -629,13 +870,17 @@ main.has-player { padding-bottom: 136px; }
 .badge { margin-left: auto; font-size: 13px; font-variant-numeric: tabular-nums; opacity: 0.8; }
 
 /* ---------- header ---------- */
-.top { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 24px; }
+.top {
+  position: sticky; top: 0; z-index: 4; background: var(--surface);
+  display: flex; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: 16px 24px; padding: 12px 0 24px;
+}
 .heading { display: flex; align-items: center; gap: 16px; min-width: 0; }
 h1 {
   margin: 0; font-size: clamp(40px, 5vw, 64px); line-height: 1; letter-spacing: -0.03em;
   font-weight: 800; font-variation-settings: "wdth" 118, "opsz" 72;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.top .actions { flex-basis: 100%; margin: 0; }
 .sub { margin: 8px 0 0; color: var(--on-surface-variant); font-size: 15px; font-weight: 500; }
 .search {
   display: flex; align-items: center; gap: 12px; height: 56px; padding: 0 8px 0 18px; width: min(360px, 40%);
@@ -659,6 +904,8 @@ h1 {
 .btn:disabled { opacity: 0.5; cursor: default; }
 .filled { background: var(--primary); color: var(--on-primary); }
 .tonal { background: var(--secondary-container); color: var(--on-secondary-container); }
+.outlined { box-shadow: inset 0 0 0 1px var(--outline-variant); color: var(--on-surface-variant); }
+.outlined:hover { background: var(--surface-container-highest); }
 .icon-btn {
   width: 40px; height: 40px; border-radius: 20px; display: inline-grid; place-items: center; flex: none;
   color: var(--on-surface-variant); transition: background 0.2s, border-radius 0.3s var(--spring);
@@ -677,6 +924,24 @@ h1 {
 .tile > span { font-size: 14px; color: var(--on-surface-variant); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .grid.artists .tile { align-items: center; text-align: center; }
 .grid.artists .tile strong, .grid.artists .tile > span { max-width: 100%; }
+
+/* ---------- catalog ---------- */
+.catalog { display: flex; flex-direction: column; gap: 36px; }
+.shelf-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.shelf-head h2 { margin: 0; font-size: 24px; font-weight: 750; letter-spacing: -0.01em; font-variation-settings: "wdth" 112; }
+.more { height: 36px; padding: 0 14px; border-radius: 18px; font-size: 14px; font-weight: 600; color: var(--primary); transition: background 0.2s; }
+.more:hover { background: color-mix(in srgb, var(--primary) 8%, transparent); }
+.shelf-row {
+  display: grid; grid-auto-flow: column; grid-auto-columns: 168px; gap: 20px;
+  overflow-x: auto; padding: 4px 4px 12px; margin: -4px -4px 0; scrollbar-width: thin; scrollbar-color: var(--outline-variant) transparent;
+}
+.shelf-row.artists .tile { align-items: center; text-align: center; }
+.shelf-row.artists .tile strong, .shelf-row.artists .tile > span { max-width: 100%; }
+.pl-art {
+  width: 100%; aspect-ratio: 1; margin-bottom: 10px; display: grid; place-items: center;
+  background: var(--secondary-container); color: var(--on-secondary-container); transition: transform 0.45s var(--spring);
+}
+.tile:hover .pl-art { transform: scale(1.05) rotate(-2deg); }
 
 /* ---------- song list ---------- */
 .songs { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 2px; }
@@ -721,6 +986,23 @@ li:hover .row-act, .row-act:focus-visible, .row-menu.open .row-act { opacity: 1;
 .eq.still i { animation-play-state: paused; }
 @keyframes eq { from { transform: scaleY(0.25); } to { transform: scaleY(1); } }
 
+/* ---------- tabs (M3 primary, icon + label, scrollable) ---------- */
+.tabs { flex-basis: 100%; display: flex; overflow-x: auto; scrollbar-width: none; box-shadow: inset 0 -1px var(--outline-variant); }
+.tab {
+  position: relative; display: flex; justify-content: center; min-width: 90px; height: 64px; padding: 0 16px;
+  font-size: 14px; font-weight: 500; line-height: 20px; letter-spacing: 0.1px; color: var(--on-surface-variant);
+  --state: var(--on-surface);
+}
+.tab::before { content: ""; position: absolute; inset: 0; background: var(--state); opacity: 0; transition: opacity 0.15s; }
+.tab:hover::before { opacity: 0.08; }
+.tab:focus-visible::before, .tab:active::before { opacity: 0.1; }
+.tab-c { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; min-width: 24px; }
+.tab.sel { color: var(--primary); --state: var(--primary); }
+.tab.sel .tab-c::after {
+  content: ""; position: absolute; left: 2px; right: 2px; bottom: 0; height: 3px;
+  border-radius: 3px 3px 0 0; background: var(--primary);
+}
+
 /* ---------- chips ---------- */
 .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
 .chip {
@@ -749,11 +1031,21 @@ li:hover .row-act, .row-act:focus-visible, .row-menu.open .row-act { opacity: 1;
 
 .scanning { display: flex; align-items: center; gap: 12px; color: var(--on-surface-variant); margin: 0 0 20px 12px; }
 .spinner { width: 24px; height: 24px; background: var(--primary); animation: spin 1.2s linear infinite, pulse 1.2s var(--emph) infinite alternate; }
-.fab .spinner { background: var(--on-primary-container); }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes pulse { from { scale: 0.8; } to { scale: 1.05; } }
 
 /* ---------- S3 panel ---------- */
+.cloud { display: flex; flex-direction: column; gap: 16px; }
+.panel.conn { max-width: none; }
+.conn-head { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.conn-mark { width: 56px; height: 56px; display: grid; place-items: center; flex: none; background: var(--primary-container); color: var(--on-primary-container); }
+.conn-id { flex: 1; min-width: 200px; display: flex; flex-direction: column; gap: 2px; }
+.conn-id strong { font-size: 20px; font-weight: 700; }
+.conn-id span { color: var(--on-surface-variant); font-size: 14px; overflow-wrap: anywhere; }
+.conn-edit { width: 48px; height: 48px; border-radius: 24px; }
+.folder-chips { margin: 0; }
+.folder-chips .chip > button:first-child { display: inline-flex; align-items: center; gap: 8px; }
+.conn-form { display: flex; flex-direction: column; gap: 20px; max-width: 640px; }
 .panel { max-width: 640px; padding: 28px; border-radius: 28px; background: var(--surface-container-low); display: flex; flex-direction: column; gap: 20px; }
 .hint { margin: 0; color: var(--on-surface-variant); line-height: 1.5; }
 .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
@@ -773,10 +1065,10 @@ li:hover .row-act, .row-act:focus-visible, .row-menu.open .row-act { opacity: 1;
 .player {
   position: fixed; left: 16px; right: 16px; bottom: 16px; z-index: 20;
   display: grid; grid-template-columns: minmax(180px, 1fr) minmax(320px, 1.6fr) minmax(180px, 1fr);
-  align-items: center; gap: 24px; padding: 12px 20px 12px 12px;
+  align-items: center; gap: 24px; padding: 6px 16px 6px 6px;
   border-radius: 28px; background: var(--surface-container-high);
   /* the surface-coloured spread masks list rows scrolling past the floating bar */
-  box-shadow: 0 6px 24px rgb(0 0 0 / 0.28), 0 0 0 calc(16px - var(--sheet-gap)) var(--surface);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.28), 0 0 0 calc(10px - var(--sheet-gap)) var(--surface);
 }
 .np { display: flex; align-items: center; gap: 14px; min-width: 0; text-align: left; border-radius: 16px; padding-right: 8px; }
 .np .art { width: 64px; height: 64px; border-radius: 16px; transition: border-radius 0.4s var(--spring); }
@@ -838,6 +1130,29 @@ li:hover .row-act, .row-act:focus-visible, .row-menu.open .row-act { opacity: 1;
 .lyrics p.cur { opacity: 1; color: var(--primary); transform: scale(1.04); }
 .no-lyrics { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--on-surface-variant); text-align: center; }
 .lyrics .no-lyrics p { opacity: 1; font-size: 22px; color: var(--on-surface); margin: 8px 0 0; }
+.lyric-actions { margin-top: 16px; display: flex; flex-wrap: wrap; justify-content: center; gap: 4px; }
+.stage .more { display: inline-flex; align-items: center; gap: 6px; }
+.lyric-search { display: flex; flex-direction: column; gap: 16px; min-height: 0; padding-top: 24px; }
+.ls-head { display: flex; align-items: flex-start; gap: 16px; color: var(--on-surface-variant); }
+.ls-head > div { flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.ls-head strong { font-size: 24px; font-weight: 750; color: var(--on-surface); }
+.ls-bar { display: flex; gap: 8px; }
+.ls-bar .search { flex: 1; width: auto; }
+.lyric-search > .more { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; }
+.ls-note { margin: 0; color: var(--on-surface-variant); line-height: 1.5; }
+.ls-note code { background: var(--surface-container-high); padding: 2px 6px; border-radius: 6px; }
+.ls-hits { list-style: none; margin: 0; padding: 0; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 2px; scrollbar-width: thin; }
+.ls-hits button {
+  width: 100%; display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: 16px; text-align: left;
+  transition: background 0.2s;
+}
+.ls-hits button:hover { background: var(--surface-container-high); }
+.ls-title { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.ls-title strong, .ls-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ls-title strong { font-size: 16px; font-weight: 600; }
+.ls-title span { font-size: 14px; color: var(--on-surface-variant); }
+.ls-badge { flex: none; padding: 4px 10px; border-radius: 8px; font-size: 12px; font-weight: 600; background: var(--tertiary-container); color: var(--on-tertiary-container); }
+.ls-dur { flex: none; width: 44px; text-align: right; font-size: 14px; color: var(--on-surface-variant); font-variant-numeric: tabular-nums; }
 .no-lyrics code { background: var(--surface-container-high); padding: 2px 6px; border-radius: 6px; }
 
 @media (max-width: 1100px) {

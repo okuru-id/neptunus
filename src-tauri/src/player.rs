@@ -45,7 +45,7 @@ impl AudioState {
 /// A local file, or an `s3://` object streamed with range requests.
 fn decode(path: &str) -> Result<Box<dyn rodio::Source + Send>, String> {
     if let Some(r) = crate::s3::reader(path) {
-        let r = r?;
+        let r = r?.with_readahead();
         let len = r.len();
         let d = Decoder::builder().with_data(r).with_byte_len(len).build().map_err(|e| e.to_string())?;
         return Ok(Box::new(d));

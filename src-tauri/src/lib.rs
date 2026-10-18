@@ -1,4 +1,5 @@
 mod db;
+mod local;
 mod lyrics;
 mod media;
 mod player;
@@ -37,10 +38,16 @@ pub(crate) fn read_track(path: &str) -> Option<Track> {
 }
 
 type R<T> = Result<T, String>;
+
+/// Runs blocking work (disk, S3) off the async runtime.
+pub(crate) async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| e.to_string())?
+}
 fn e(err: rusqlite::Error) -> String { err.to_string() }
 
 #[tauri::command]
 async fn scan_folder(db: State<'_, Db>, path: String) -> R<Vec<Track>> {
+    db.add_folder(&path).map_err(e)?;
     let found: Vec<Track> = WalkDir::new(path)
         .into_iter()
         .filter_map(Result::ok)
@@ -51,6 +58,15 @@ async fn scan_folder(db: State<'_, Db>, path: String) -> R<Vec<Track>> {
         .filter_map(|e| read_track(&e.path().to_string_lossy()))
         .collect();
     db.upsert(&found).map_err(e)?;
+    db.all().map_err(e)
+}
+
+#[tauri::command]
+fn list_folders(db: State<Db>) -> R<Vec<String>> { db.folders().map_err(e) }
+
+#[tauri::command]
+fn remove_folder(db: State<Db>, path: String) -> R<Vec<Track>> {
+    db.remove_folder(&path).map_err(e)?;
     db.all().map_err(e)
 }
 
@@ -75,22 +91,70 @@ fn add_to_playlist(db: State<Db>, id: i64, path: String) -> R<()> { db.add_to_pl
 #[tauri::command]
 fn remove_from_playlist(db: State<Db>, id: i64, path: String) -> R<()> { db.remove_from_playlist(id, &path).map_err(e) }
 
-/// Returns the embedded cover as a data URL, shrunk to at most 512px and re-encoded as JPEG: full-size
-/// covers can be megabytes each, and the webview keeps every one it has shown.
+/// Covers up to this size are stored as they are; bigger ones are shrunk first.
+const SMALL_COVER: usize = 150_000;
+/// Uncached covers are read and decoded at most 3 at a time: decoding a big cover takes tens of MB, and an
+/// S3 cover needs several range requests, so a fast scroll would otherwise start dozens at once.
+static COVER_SLOTS: [std::sync::Mutex<()>; 3] = [const { std::sync::Mutex::new(()) }; 3];
+static COVER_NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn data_url(mime: &str, data: &[u8]) -> String {
+    format!("data:{mime};base64,{}", STANDARD.encode(data))
+}
+
+/// Reads the cover from the file's tags: (mime, bytes), shrunk to a JPEG of at most `max` px when large.
+/// Thumbnails (`max` <= 256) are always re-encoded: the webview keeps the decoded bitmap of every image in
+/// the list, so a 512px cover costs 1 MB there even when it is drawn at 48px.
+fn load_cover(path: &str, max: u32) -> Option<(String, Vec<u8>)> {
+    let _slot = COVER_SLOTS[COVER_NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 3]
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let (mime, data) = cover_bytes(path)?;
+    if max > 256 && data.len() <= SMALL_COVER {
+        return Some((mime, data));
+    }
+    let shrunk = image::load_from_memory(&data).ok().and_then(|img| {
+        let img = if img.width().max(img.height()) > max { img.resize(max, max, image::imageops::FilterType::Triangle) } else { img };
+        let mut out = Vec::new();
+        img.to_rgb8().write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Jpeg).ok()?;
+        Some(out)
+    });
+    Some(match shrunk {
+        Some(jpeg) => ("image/jpeg".to_owned(), jpeg),
+        None => (mime, data),
+    })
+}
+
+/// Returns the embedded cover as a data URL. Covers are cached on disk (app cache dir, `covers/`), so a
+/// song's file (or S3 object) is only read once; an empty cache file means "no cover".
 #[tauri::command]
-async fn get_cover(path: String) -> Option<String> {
+async fn get_cover(app: tauri::AppHandle, path: String, thumb: Option<bool>) -> Option<String> {
+    let (max, tag) = if thumb == Some(true) { (192, "t") } else { (512, "") };
     tauri::async_runtime::spawn_blocking(move || {
-        let (mime, data) = cover_bytes(&path)?;
-        let small = image::load_from_memory(&data).ok().and_then(|img| {
-            let img = if img.width().max(img.height()) > 512 { img.resize(512, 512, image::imageops::FilterType::Triangle) } else { img };
-            let mut out = Vec::new();
-            img.to_rgb8().write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Jpeg).ok()?;
-            Some(out)
-        });
-        Some(match small {
-            Some(jpeg) => format!("data:image/jpeg;base64,{}", STANDARD.encode(jpeg)),
-            None => format!("data:{mime};base64,{}", STANDARD.encode(data)),
-        })
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(&path, &mut h);
+        let name = format!("{:016x}{tag}", std::hash::Hasher::finish(&h));
+        let dir = app.path().app_cache_dir().ok().map(|d| d.join("covers"));
+        let (img, none) = match &dir {
+            Some(d) => (Some(d.join(format!("{name}.img"))), Some(d.join(format!("{name}.none")))),
+            None => (None, None),
+        };
+        if none.as_ref().is_some_and(|f| f.exists()) {
+            return None;
+        }
+        if let Some(bytes) = img.as_ref().and_then(|f| std::fs::read(f).ok()) {
+            let mime = if bytes.starts_with(&[0x89, b'P']) { "image/png" } else { "image/jpeg" };
+            return Some(data_url(mime, &bytes));
+        }
+        let cover = load_cover(&path, max);
+        if let Some(d) = &dir {
+            let _ = std::fs::create_dir_all(d);
+            match &cover {
+                Some((_, bytes)) => drop(std::fs::write(img.as_ref().unwrap(), bytes)),
+                None => drop(std::fs::write(none.as_ref().unwrap(), b"")),
+            }
+        }
+        cover.map(|(m, bytes)| data_url(&m, &bytes))
     })
     .await
     .ok()
@@ -138,6 +202,13 @@ pub fn run() {
             app.manage(Db::open(&dir.join("library.db"))?);
             app.manage(media::init(app.handle()));
             tray::init(app.handle())?;
+            // WebKitGTK turns trackpad pinch into page zoom; drop pinch events before GTK dispatches them.
+            #[cfg(target_os = "linux")]
+            gtk::gdk::Event::set_handler(Some(|e: &mut gtk::gdk::Event| {
+                if e.event_type() != gtk::gdk::EventType::TouchpadPinch {
+                    gtk::main_do_event(e);
+                }
+            }));
             Ok(())
         })
         .manage(player::AudioState::new().expect("no audio output device"))
@@ -147,6 +218,16 @@ pub fn run() {
             s3::s3_save_config,
             s3::s3_sync,
             s3::s3_download,
+            s3::s3_list,
+            list_folders,
+            remove_folder,
+            local::local_list,
+            local::local_mkdir,
+            local::local_upload,
+            local::local_delete,
+            s3::s3_mkdir,
+            s3::s3_upload,
+            s3::s3_delete,
             load_library,
             list_playlists,
             create_playlist,
@@ -156,6 +237,8 @@ pub fn run() {
             remove_from_playlist,
             get_cover,
             lyrics::get_lyrics,
+            lyrics::search_lyrics,
+            lyrics::save_lyrics,
             player::play,
             player::set_paused,
             player::queue_next,

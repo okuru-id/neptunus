@@ -51,21 +51,32 @@ fn lrclib(title: &str, artist: &str, album: &str, duration: f64) -> Result<Optio
     Ok((i < found.len()).then(|| found.swap_remove(i)).and_then(Lrclib::text))
 }
 
+fn cache_file(app: &AppHandle, title: &str, artist: &str, album: &str) -> Option<std::path::PathBuf> {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (title, artist, album).hash(&mut h);
+    app.path().app_cache_dir().ok().map(|d| d.join("lyrics").join(format!("{:016x}.lrc", h.finish())))
+}
+
 /// Local lyrics, else LRCLIB (cached in the app data dir; an empty cache file means "not found").
+/// `refresh` forgets the cached answer and asks LRCLIB again.
 #[tauri::command]
-pub async fn get_lyrics(app: AppHandle, path: String, title: String, artist: String, album: String, duration: f64) -> Option<String> {
+pub async fn get_lyrics(app: AppHandle, path: String, title: String, artist: String, album: String, duration: f64, refresh: Option<bool>) -> Option<String> {
     tauri::async_runtime::spawn_blocking(move || {
         if let Some(txt) = local(&path) {
             return Some(txt);
         }
-        if title.is_empty() || artist.is_empty() {
-            return None;
+        let cache = cache_file(&app, &title, &artist, &album);
+        if refresh == Some(true) {
+            if let Some(c) = &cache {
+                let _ = std::fs::remove_file(c);
+            }
         }
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        (&title, &artist, &album).hash(&mut h);
-        let cache = app.path().app_cache_dir().ok().map(|d| d.join("lyrics").join(format!("{:016x}.lrc", h.finish())));
         if let Some(txt) = cache.as_ref().and_then(|c| std::fs::read_to_string(c).ok()) {
             return (!txt.is_empty()).then_some(txt);
+        }
+        // hand-picked lyrics (above) work for any song; the automatic lookup needs both
+        if title.is_empty() || artist.is_empty() {
+            return None;
         }
         let txt = lrclib(&title, &artist, &album, duration).ok()?;
         if let Some(c) = &cache {
@@ -79,3 +90,39 @@ pub async fn get_lyrics(app: AppHandle, path: String, title: String, artist: Str
     .flatten()
 }
 
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Hit {
+    track_name: String,
+    artist_name: String,
+    album_name: Option<String>,
+    duration: Option<f64>,
+    synced_lyrics: Option<String>,
+    plain_lyrics: Option<String>,
+}
+
+/// Free-text LRCLIB search for picking lyrics by hand; results that have no lyrics are dropped.
+#[tauri::command]
+pub async fn search_lyrics(query: String) -> Result<Vec<Hit>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let hits: Vec<Hit> = attohttpc::get("https://lrclib.net/api/search")
+            .header("User-Agent", UA)
+            .timeout(Duration::from_secs(10))
+            .param("q", &query)
+            .send()
+            .and_then(|r| r.json())
+            .map_err(|e| e.to_string())?;
+        Ok(hits.into_iter().filter(|h| h.synced_lyrics.is_some() || h.plain_lyrics.is_some()).collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Stores hand-picked lyrics as the cached answer for this song.
+#[tauri::command]
+pub fn save_lyrics(app: AppHandle, title: String, artist: String, album: String, text: String) -> Result<(), String> {
+    let c = cache_file(&app, &title, &artist, &album).ok_or("no cache dir")?;
+    std::fs::create_dir_all(c.parent().unwrap()).map_err(|e| e.to_string())?;
+    std::fs::write(c, text).map_err(|e| e.to_string())
+}

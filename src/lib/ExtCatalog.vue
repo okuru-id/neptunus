@@ -17,11 +17,12 @@ type Page = { kind: string; title: string; sub: string; cover?: string; tracks: 
 type Track = { path: string; title: string; artist: string; album: string; duration_secs: number };
 
 // `query` is the page's search box: typing searches the selected source (debounced)
-const props = defineProps<{ exts: ExtInfo[]; query: string }>();
-const emit = defineEmits<{ downloaded: [Track] }>();
+const props = defineProps<{ exts: ExtInfo[]; library: Track[]; query: string; nowPath?: string; playing?: boolean }>();
+const emit = defineEmits<{ downloaded: [Track]; toggle: [] }>();
 
 const SRC_KEY = "neptunus.extSource";
-const sources = computed(() => props.exts.filter((e) => e.enabled && has(e, "metadata_provider")));
+// only sources that can show a catalog (home feed); search-only ones stay available as download providers
+const sources = computed(() => props.exts.filter((e) => e.enabled && has(e, "metadata_provider") && e.capabilities?.homeFeed));
 const src = ref(localStorage.getItem(SRC_KEY) ?? "");
 const cur = computed(() => sources.value.find((e) => e.id === src.value) ?? sources.value[0]);
 // installed download extensions that need SpotiFLAC's signed-session server
@@ -119,23 +120,82 @@ async function openItem(i: Item) {
 
 // ---- downloads
 const dl = reactive<Record<string, number | "done" | string>>({});
-const done = new Map<string, Track>();
+// finished downloads survive leaving the catalog, so clicking them plays instead of asking again
+const DONE_KEY = "neptunus.extDone";
+const done = new Map<string, Track>((() => { try { return JSON.parse(localStorage.getItem(DONE_KEY) ?? "[]"); } catch { return []; } })());
+done.forEach((_, k) => { dl[k] = "done"; });
 const keyOf = (t: Item) => `${t.provider_id || cur.value?.id}:${t.id}`;
-async function download(t: Item) {
+// every enabled download extension, with its quality options
+const downloaders = computed(() => props.exts.filter((e) => e.enabled && has(e, "download_provider") && !unsupported(e).length));
+// a song already in the library (same title, artist and about the same length) plays instead of downloading
+const low = (s?: string) => (s ?? "").trim().toLowerCase();
+const inLibrary = (t: Item) => props.library.find((l) => {
+  const artist = low(t.artists).split(/\s*[,&;]\s*/)[0];
+  return !l.path.startsWith("s3://") && low(l.title) === low(t.name) && (!artist || low(l.artist).includes(artist))
+    && (!t.duration_ms || Math.abs(l.duration_secs - t.duration_ms / 1000) <= 5);
+});
+// the play button of a finished song turns into pause while that song is playing
+const playIcon = (t: Item) => ((done.get(keyOf(t)) ?? inLibrary(t))?.path === props.nowPath && props.playing ? "pause" : "play");
+// progress / "done" / error text of a song; a song already in the library counts as done
+const state = (t: Item) => dl[keyOf(t)] ?? (kind(t) === "track" && inLibrary(t) ? "done" : undefined);
+// the sheet: pick a download extension, then a quality
+const picking = ref<{ t: Item; ext?: ExtInfo } | null>(null);
+function download(t: Item) {
   const key = keyOf(t);
-  if (done.has(key)) return emit("downloaded", done.get(key)!);
-  if (!downloader.value || typeof dl[key] === "number") return;
+  const have = done.get(key) ?? inLibrary(t);
+  if (have) return have.path === props.nowPath ? emit("toggle") : emit("downloaded", have);
+  if (typeof dl[key] === "number") return;
+  const only = downloaders.value.length === 1 ? downloaders.value[0] : undefined;
+  picking.value = { t, ext: only?.qualityOptions?.length ? only : undefined };
+  if (only && !only.qualityOptions?.length) start(t, only.id, null);
+}
+function pick(ext: ExtInfo) {
+  const t = picking.value!.t;
+  if (ext.qualityOptions?.length) picking.value = { t, ext };
+  else start(t, ext.id, null);
+}
+async function start(t: Item, id: string, quality: string | null) {
+  picking.value = null;
+  const key = keyOf(t);
   dl[key] = 0;
+  const run = () => invoke<Track>("ext_download", { id, key, quality, track: { ...t, provider_id: t.provider_id || cur.value?.id } });
   try {
-    const track = await invoke<Track>("ext_download", {
-      id: downloader.value.id, key, quality: null,
-      track: { ...t, provider_id: t.provider_id || cur.value?.id },
-    });
+    let track: Track;
+    try {
+      track = await run();
+    } catch (e) {
+      // the gateway wants a one-time browser check: open it, wait for the grant, try again
+      if (!/verif/i.test(String(e)) || !(await verified(id))) throw e;
+      dl[key] = 0;
+      track = await run();
+    }
     dl[key] = "done";
     done.set(key, track);
+    localStorage.setItem(DONE_KEY, JSON.stringify([...done]));
     emit("downloaded", track);
   } catch (e) {
     dl[key] = String(e);
+  }
+}
+// the callback link pasted by hand when the browser cannot hand it back to the app
+const waiting = ref(false);
+const pasted = ref("");
+async function verified(id: string) {
+  if (!(await invoke<boolean>("ext_session_verify", { id }))) return false;
+  error.value = "";
+  waiting.value = true;
+  try {
+    for (let i = 0; i < 300; i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const text = pasted.value.trim() || null;
+      pasted.value = "";
+      if (await invoke<string | null>("ext_session_poll", { text })) return true;
+      if (text) error.value = "Tautan itu tidak cocok dengan verifikasi yang sedang berjalan.";
+    }
+    error.value = "Verifikasi tidak selesai.";
+    return false;
+  } finally {
+    waiting.value = false;
   }
 }
 let unlisten: UnlistenFn | undefined;
@@ -174,8 +234,13 @@ const others = computed(() => results.value?.filter((i) => kind(i) !== "track") 
     </div>
 
     <p v-if="error" class="note err">{{ error }}</p>
+    <div v-if="waiting" class="note verify">
+      Selesaikan verifikasi di jendela yang terbuka; unduhan lanjut otomatis. Kalau jendela tidak menutup sendiri, tempel tautan
+      <code>spotiflac://session-grant?…</code> di sini:
+      <input v-model="pasted" placeholder="spotiflac://session-grant?grant=…&state=…" spellcheck="false" />
+    </div>
     <p v-if="!downloader && cur" class="note">
-      <template v-if="blocked.length">{{ blocked.join(", ") }} hanya bisa mengunduh lewat server SpotiFLAC, jadi tidak bisa dipakai di sini.</template>
+      <template v-if="blocked.length">{{ blocked.join(", ") }} butuh fitur yang belum didukung app ini.</template>
       Pasang ekstensi unduhan seperti YouTube Music atau JioSaavn untuk menyimpan lagu dari katalog ke library.
     </p>
 
@@ -187,14 +252,17 @@ const others = computed(() => results.value?.filter((i) => kind(i) !== "track") 
         <div><h2>{{ page.title }}</h2><span>{{ page.sub }}</span></div>
       </div>
       <ul v-if="page.tracks.length" class="tracks">
-        <li v-for="(t, i) in page.tracks" :key="t.id + i">
-          <img v-if="cover(t)" :src="cover(t)" alt="" loading="lazy" />
+        <li v-for="(t, i) in page.tracks" :key="t.id + i" @click="download(t)">
+          <span class="thumb">
+            <img v-if="cover(t)" :src="cover(t)" alt="" loading="lazy" />
+            <Icon v-if="state(t) === 'done'" name="done" :size="18" class="mark" />
+          </span>
           <span class="t-meta"><strong>{{ t.name }}</strong><span>{{ t.artists }}</span></span>
           <span class="t-dur">{{ dur(t.duration_ms) }}</span>
-          <button v-if="downloader" class="icon-btn dl" :class="{ ok: dl[keyOf(t)] === 'done' }" @click="download(t)"
-            :title="dl[keyOf(t)] === 'done' ? 'Putar' : typeof dl[keyOf(t)] === 'string' ? `Gagal: ${dl[keyOf(t)]}` : 'Unduh ke library'">
-            <span v-if="typeof dl[keyOf(t)] === 'number'" class="ring" :style="{ '--p': dl[keyOf(t)] }"></span>
-            <Icon v-else :name="dl[keyOf(t)] === 'done' ? 'play' : typeof dl[keyOf(t)] === 'string' ? 'refresh' : 'download'" />
+          <button v-if="downloader" class="icon-btn dl" :class="{ ok: state(t) === 'done' }"
+            :title="state(t) === 'done' ? 'Putar' : typeof state(t) === 'string' ? `Gagal: ${state(t)}` : 'Unduh ke library'">
+            <span v-if="typeof state(t) === 'number'" class="ring" :style="{ '--p': state(t) }"></span>
+            <Icon v-else :name="state(t) === 'done' ? playIcon(t) : typeof state(t) === 'string' ? 'refresh' : 'download'" />
           </button>
         </li>
       </ul>
@@ -208,14 +276,17 @@ const others = computed(() => results.value?.filter((i) => kind(i) !== "track") 
     <!-- search results -->
     <template v-else-if="results">
       <ul v-if="tracks.length" class="tracks">
-        <li v-for="(t, i) in tracks.slice(0, 20)" :key="t.id + i">
-          <img v-if="cover(t)" :src="cover(t)" alt="" loading="lazy" />
+        <li v-for="(t, i) in tracks.slice(0, 20)" :key="t.id + i" @click="download(t)">
+          <span class="thumb">
+            <img v-if="cover(t)" :src="cover(t)" alt="" loading="lazy" />
+            <Icon v-if="state(t) === 'done'" name="done" :size="18" class="mark" />
+          </span>
           <span class="t-meta"><strong>{{ t.name }}</strong><span>{{ [t.artists, t.album_name].filter(Boolean).join(" · ") }}</span></span>
           <span class="t-dur">{{ dur(t.duration_ms) }}</span>
-          <button v-if="downloader" class="icon-btn dl" :class="{ ok: dl[keyOf(t)] === 'done' }" @click="download(t)"
-            :title="dl[keyOf(t)] === 'done' ? 'Putar' : typeof dl[keyOf(t)] === 'string' ? `Gagal: ${dl[keyOf(t)]}` : 'Unduh ke library'">
-            <span v-if="typeof dl[keyOf(t)] === 'number'" class="ring" :style="{ '--p': dl[keyOf(t)] }"></span>
-            <Icon v-else :name="dl[keyOf(t)] === 'done' ? 'play' : typeof dl[keyOf(t)] === 'string' ? 'refresh' : 'download'" />
+          <button v-if="downloader" class="icon-btn dl" :class="{ ok: state(t) === 'done' }"
+            :title="state(t) === 'done' ? 'Putar' : typeof state(t) === 'string' ? `Gagal: ${state(t)}` : 'Unduh ke library'">
+            <span v-if="typeof state(t) === 'number'" class="ring" :style="{ '--p': state(t) }"></span>
+            <Icon v-else :name="state(t) === 'done' ? playIcon(t) : typeof state(t) === 'string' ? 'refresh' : 'download'" />
           </button>
         </li>
       </ul>
@@ -236,9 +307,9 @@ const others = computed(() => results.value?.filter((i) => kind(i) !== "track") 
             :title="kind(a) === 'track' && downloader ? 'Unduh ke library' : undefined">
             <span class="art">
               <img :src="cover(a)" alt="" loading="lazy" />
-              <span v-if="kind(a) === 'track' && dl[keyOf(a)] !== undefined" class="badge">
-                <span v-if="typeof dl[keyOf(a)] === 'number'" class="ring" :style="{ '--p': dl[keyOf(a)] }"></span>
-                <Icon v-else :name="dl[keyOf(a)] === 'done' ? 'play' : 'refresh'" :size="20" />
+              <span v-if="kind(a) === 'track' && state(a) !== undefined" class="badge">
+                <span v-if="typeof state(a) === 'number'" class="ring" :style="{ '--p': state(a) }"></span>
+                <Icon v-else :name="state(a) === 'done' ? playIcon(a) : 'refresh'" :size="20" />
               </span>
             </span>
             <strong>{{ a.name }}</strong><span>{{ sub(a) }}</span>
@@ -246,6 +317,32 @@ const others = computed(() => results.value?.filter((i) => kind(i) !== "track") 
         </div>
       </section>
     </template>
+    <Teleport to="body">
+      <div v-if="picking" class="xc-scrim" @click.self="picking = null">
+        <div class="xc-sheet" role="dialog" aria-modal="true">
+          <header>
+            <button v-if="picking.ext && downloaders.length > 1" class="icon-btn" title="Kembali" @click="picking.ext = undefined"><Icon name="back" /></button>
+            <span><strong>{{ picking.t.name }}</strong><small>{{ picking.t.artists }}</small></span>
+            <button class="icon-btn" title="Tutup" @click="picking = null"><Icon name="close" /></button>
+          </header>
+          <template v-if="!picking.ext">
+            <h3>Unduh dengan</h3>
+            <button v-for="e in downloaders" :key="e.id" class="opt" @click="pick(e)">
+              <img v-if="e.iconData" :src="e.iconData" alt="" /><Icon v-else name="extension" :size="24" />
+              <span><strong>{{ extName(e) }}</strong><small>{{ e.qualityOptions?.length ? `${e.qualityOptions.length} pilihan kualitas` : "Kualitas otomatis" }}</small></span>
+            </button>
+            <p v-if="!downloaders.length" class="note">Belum ada ekstensi unduhan yang bisa dipakai.</p>
+          </template>
+          <template v-else>
+            <h3>Kualitas · {{ extName(picking.ext) }}</h3>
+            <button v-for="q in picking.ext.qualityOptions" :key="q.id" class="opt" @click="start(picking.t, picking.ext.id, q.id)">
+              <Icon name="download" :size="24" />
+              <span><strong>{{ q.label }}</strong><small v-if="q.description">{{ q.description }}</small></span>
+            </button>
+          </template>
+        </div>
+      </div>
+    </Teleport>
     <p v-if="loading" class="loading"><span class="spin"></span>Memuat dari {{ cur ? extName(cur) : "" }}…</p>
   </section>
 </template>
@@ -291,6 +388,8 @@ const others = computed(() => results.value?.filter((i) => kind(i) !== "track") 
 .tracks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .tracks li { display: flex; align-items: center; gap: 16px; padding: 8px 12px; border-radius: 16px; transition: background 0.2s; }
 .tracks li:hover { background: var(--surface-container); }
+.thumb { position: relative; flex: none; display: block; width: 48px; height: 48px; }
+.thumb .mark, .badge .mark { position: absolute; right: -4px; bottom: -4px; border-radius: 50%; color: var(--primary); background: var(--surface); }
 .tracks img { width: 48px; height: 48px; border-radius: 12px; object-fit: cover; flex: none; }
 .t-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .t-meta strong { font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -309,4 +408,21 @@ const others = computed(() => results.value?.filter((i) => kind(i) !== "track") 
 .page-art { width: 120px; height: 120px; border-radius: 24px; object-fit: cover; flex: none; }
 .page-art.round { border-radius: 50%; }
 @media (max-width: 600px) { .page-art { width: 72px; height: 72px; } }
+.xc-scrim { position: fixed; inset: 0; z-index: 50; display: flex; align-items: flex-end; justify-content: center; background: rgb(0 0 0 / 0.5); }
+.xc-sheet {
+  width: min(560px, 100%); max-height: 80vh; overflow-y: auto; padding: 16px 16px 24px; display: flex; flex-direction: column; gap: 8px;
+  background: var(--surface-container-high); color: var(--on-surface); border-radius: 28px 28px 0 0; animation: sheet-up 0.3s var(--spring);
+}
+@keyframes sheet-up { from { transform: translateY(40px); opacity: 0; } }
+.xc-sheet header { display: flex; align-items: center; gap: 8px; }
+.xc-sheet header > span { flex: 1; min-width: 0; display: flex; flex-direction: column; padding-left: 8px; }
+.xc-sheet strong { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.xc-sheet small { font-size: 13px; color: var(--on-surface-variant); }
+.xc-sheet h3 { margin: 8px 8px 0; font-size: 13px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--on-surface-variant); }
+.opt { display: flex; align-items: center; gap: 16px; padding: 12px 16px; border-radius: 16px; text-align: left; background: var(--surface-container); transition: background 0.2s; }
+.opt:hover { background: var(--surface-container-highest); }
+.opt img { width: 32px; height: 32px; border-radius: 8px; object-fit: cover; }
+.opt span { display: flex; flex-direction: column; min-width: 0; }
+.note.verify { display: flex; flex-direction: column; gap: 8px; }
+.note.verify input { height: 40px; padding: 0 12px; border-radius: 10px; background: var(--surface); color: var(--on-surface); box-shadow: inset 0 0 0 1px var(--outline-variant); font: inherit; }
 </style>

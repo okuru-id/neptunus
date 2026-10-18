@@ -199,6 +199,19 @@
     getSize(p) { return Number(host.file("size", str(p), "")) || 0; },
   };
 
+  // ---- signed sessions (manifest `signedSession`; see src/ext/session.rs)
+  const sess = (method, args) => JSON.parse(host.session(method, JSON.stringify(args)));
+  g.session = {
+    status: () => sess("status", []),
+    clear: () => sess("clear", []),
+    completeGrant: (grant) => sess("completeGrant", grant === undefined ? [] : [str(grant)]),
+    signedFetch(method, path, body, headers) {
+      if (arguments.length < 2) return sess("signedFetch", []);
+      try { return sess("signedFetch", [str(method), str(path), typeof body === "string" ? body : body == null ? "" : JSON.stringify(body), headerMap(headers)]); }
+      catch (e) { return { ok: false, error: String(e) }; }
+    },
+  };
+
   // ---- utils
   const hex = (bytes) => bytes.map((b) => (b < 16 ? "0" : "") + b.toString(16)).join("");
   g.utils = {

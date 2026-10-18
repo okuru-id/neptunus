@@ -145,7 +145,7 @@ onMounted(() => {
               <strong>{{ extName(e) }} <small>{{ e.version }}</small></strong>
               <span class="tags">
                 <span v-for="t in e.type" :key="t" class="tag">{{ TYPE_LABEL[t] ?? t }}</span>
-                <span v-if="unsupported(e).length" class="tag warn" :title="unsupported(e).join(', ')">Unduhan butuh server SpotiFLAC</span>
+                <span v-if="unsupported(e).length" class="tag warn" :title="unsupported(e).join(', ')">Butuh fitur yang belum didukung</span>
               </span>
             </div>
             <button v-if="e.settings?.length" class="icon-btn" :class="{ on: openId === e.id }" title="Pengaturan" @click="edit(e)"><Icon name="settings" /></button>

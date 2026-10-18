@@ -20,9 +20,9 @@ export type RepoExt = {
 
 export const extName = (e: ExtInfo) => e.displayName || e.name;
 export const has = (e: ExtInfo, t: string) => e.type?.includes(t);
-/** Needs host features this app does not provide (signed sessions are SpotiFLAC-server specific). */
+/** Needs host features this app does not provide. */
 export const unsupported = (e: { requiredRuntimeFeatures?: string[] }) =>
-  (e.requiredRuntimeFeatures ?? []).filter((f) => /^(signedSession|sessionGrant|patternedFileTransform)@/.test(f));
+  (e.requiredRuntimeFeatures ?? []).filter((f) => /^patternedFileTransform@/.test(f));
 
 /** "1.10.2" vs "1.9.0" */
 export function newer(a: string, b: string) {

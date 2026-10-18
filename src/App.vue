@@ -686,7 +686,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
         </div>
 
         <div v-if="view === 'catalog'" class="catalog">
-          <ExtCatalog :exts="exts" :query="query" @downloaded="onDownloaded" />
+          <ExtCatalog :exts="exts" :library="rawLibrary" :query="query" :now-path="now?.path" :playing="playing" @downloaded="onDownloaded" @toggle="togglePause" />
           <section v-if="albums.length" class="shelf">
             <div class="shelf-head"><h2>Album</h2><button class="more" @click="setView('albums')">Lihat semua</button></div>
             <div class="shelf-row">

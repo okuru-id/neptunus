@@ -18,6 +18,8 @@ use std::{
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 
+pub mod session;
+
 const PRELUDE: &str = include_str!("ext_prelude.js");
 const UA: &str = concat!("Neptunus/", env!("CARGO_PKG_VERSION"));
 const BROWSER_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
@@ -219,6 +221,8 @@ struct Host {
     deadline: RefCell<Instant>,
     root: RefCell<Option<PathBuf>>,
     progress: RefCell<Option<Box<dyn Fn(f64) + Send>>>,
+    /// the manifest's `signedSession` block
+    sess_cfg: Value,
 }
 
 impl Host {
@@ -241,6 +245,7 @@ impl Host {
             deadline: RefCell::new(Instant::now() + CALL_TIMEOUT),
             root: RefCell::default(),
             progress: RefCell::default(),
+            sess_cfg: manifest["signedSession"].clone(),
         }
     }
 
@@ -281,6 +286,10 @@ impl Host {
     }
 
     fn send(&self, url: &str, method: &str, body: &str, headers: &Map<String, Value>) -> R<attohttpc::Response> {
+        self.send_within(self.timeout, url, method, body, headers)
+    }
+
+    fn send_within(&self, timeout: Duration, url: &str, method: &str, body: &str, headers: &Map<String, Value>) -> R<attohttpc::Response> {
         let host = self.allowed(url)?;
         let left = self.deadline.borrow().saturating_duration_since(Instant::now());
         if left.is_zero() {
@@ -288,8 +297,8 @@ impl Host {
         }
         let method = attohttpc::Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?;
         let mut req = attohttpc::RequestBuilder::new(method, url)
-            .timeout(self.timeout.min(left))
-            .read_timeout(self.timeout)
+            .timeout(timeout.min(left))
+            .read_timeout(timeout)
             .header("User-Agent", UA)
             .follow_redirects(true);
         let cookies = self.cookie_header(&host);
@@ -524,6 +533,8 @@ impl Vm {
             let host = vm.host.clone();
             set("file", Function::new(ctx.clone(), move |op: String, path: String, data: String| host.file(&op, &path, &data).unwrap_or_default()))?;
             let host = vm.host.clone();
+            set("session", Function::new(ctx.clone(), move |method: String, args: String| host.session(&method, &args)))?;
+            let host = vm.host.clone();
             set("log", Function::new(ctx.clone(), move |level: String, msg: String| eprintln!("[ext {}] {level}: {msg}", host.id)))?;
             set("sleep", Function::new(ctx.clone(), |ms: f64| std::thread::sleep(Duration::from_millis(ms.max(0.0) as u64))))?;
             set("userAgent", Function::new(ctx.clone(), |browser: bool| if browser { BROWSER_UA } else { UA }.to_owned()))?;
@@ -704,6 +715,11 @@ pub async fn ext_download(app: AppHandle, id: String, track: Value, quality: Opt
             return Err(msg.to_owned());
         }
         let path = ["file_path", "filePath", "path"].iter().find_map(|k| res[k].as_str()).map(PathBuf::from).unwrap_or(out);
+        tag_file(&path, &track);
+        // a cover lookup that came up empty before the tags were written is cached as "none"
+        if let Ok(dir) = app.path().app_cache_dir().map(|d| d.join("covers")) {
+            std::fs::read_dir(dir).into_iter().flatten().flatten().filter(|e| e.path().extension().is_some_and(|x| x == "none")).for_each(|e| drop(std::fs::remove_file(e.path())));
+        }
         let mut t = crate::read_track(&path.to_string_lossy()).ok_or("downloaded file is not playable audio")?;
         // provider metadata beats a bare file name when the file has no tags
         if t.artist.is_empty() {
@@ -715,6 +731,35 @@ pub async fn ext_download(app: AppHandle, id: String, track: Value, quality: Opt
         Ok(t)
     })
     .await
+}
+
+/// Extensions leave files without cover art or tags: fill what is missing from the catalog's metadata.
+fn tag_file(path: &Path, track: &Value) {
+    use lofty::{config::WriteOptions, file::TaggedFileExt, picture::{Picture, PictureType}, probe::Probe, tag::{Accessor, Tag, TagExt}};
+    let Ok(mut file) = Probe::open(path).and_then(|p| p.read()) else { return };
+    if file.primary_tag().is_none() {
+        file.insert_tag(Tag::new(file.primary_tag_type()));
+    }
+    let Some(tag) = file.primary_tag_mut() else { return };
+    let text = |k: &str| track[k].as_str().filter(|s| !s.is_empty());
+    if tag.title().is_none() {
+        text("name").inspect(|v| tag.set_title((*v).to_owned()));
+    }
+    if tag.artist().is_none() {
+        text("artists").inspect(|v| tag.set_artist((*v).to_owned()));
+    }
+    if tag.album().is_none() {
+        text("album_name").inspect(|v| tag.set_album((*v).to_owned()));
+    }
+    if tag.pictures().is_empty() {
+        let url = ["cover_url", "images", "image_url"].iter().find_map(|k| text(k)).filter(|u| u.starts_with("https://"));
+        let bytes = url.and_then(|u| attohttpc::get(u).header("User-Agent", UA).timeout(Duration::from_secs(20)).send().ok()?.bytes().ok());
+        if let Some(mut pic) = bytes.and_then(|b| Picture::from_reader(&mut std::io::Cursor::new(b)).ok()) {
+            pic.set_pic_type(PictureType::CoverFront);
+            tag.push_picture(pic);
+        }
+    }
+    let _ = tag.save_to_path(path, WriteOptions::default());
 }
 
 /// Lyrics from enabled `lyrics_provider` extensions, as LRC text (or plain text).
@@ -787,5 +832,24 @@ mod tests {
             let r = exts.call(&l, "fetchLyrics", json!(["Bohemian Rhapsody", "Queen", "", 354]));
             println!("lyrics: {}", r.map(|v| v.to_string()).unwrap_or_else(|e| e).chars().take(300).collect::<String>());
         }
+    }
+
+    /// Real install, real network: `EXT_LIVE=qobuz-web cargo test ext_live -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn ext_live() {
+        let id = std::env::var("EXT_LIVE").unwrap();
+        let base = PathBuf::from(std::env::var("HOME").unwrap()).join(".local/share/id.neptunus.desktop");
+        let exts = Exts { code: base.join("extensions"), data: base.join("extensions-data"), workers: Mutex::default() };
+        let q = std::env::var("EXT_QUERY").unwrap_or_else(|_| "amnesia al ghazali".into());
+        let r = exts.call(&id, "customSearch", json!([q, {}])).or_else(|_| exts.call(&id, "searchTracks", json!([q, 5])));
+        let r = r.unwrap_or_else(|e| panic!("search: {e}"));
+        let t = r["tracks"].as_array().and_then(|a| a.first()).or_else(|| r.as_array().and_then(|a| a.first())).cloned().expect("no track");
+        println!("track: {t}");
+        let out = std::env::temp_dir().join("neptunus-live");
+        std::fs::create_dir_all(&out).unwrap();
+        let opts = json!({ "spotify_id": t["id"], "track": t, "isrc": t["isrc"] });
+        let r = exts.call_with(&id, "download", json!([t["id"], "LOSSLESS", out.join("t.flac").to_string_lossy(), opts]), Some(Box::new(|p| print!("{p:.0}% "))), Some(out.clone()));
+        println!("\ndownload: {r:?}");
     }
 }

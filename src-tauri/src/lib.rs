@@ -250,6 +250,8 @@ pub fn run() {
             ext::ext_save_settings,
             ext::ext_call,
             ext::ext_download,
+            ext::session::ext_session_verify,
+            ext::session::ext_session_poll,
             player::play,
             player::set_paused,
             player::queue_next,

@@ -65,6 +65,10 @@ const position = ref(0);
 const volume = ref(0.8);
 const shuffle = ref(false);
 const sidebarOpen = ref(localStorage.getItem("sidebar") !== "0");
+// narrow windows always get the mini rail
+const narrowMq = matchMedia("(max-width: 900px)");
+const narrow = ref(narrowMq.matches);
+narrowMq.addEventListener("change", (e) => (narrow.value = e.matches));
 const toggleSidebar = () => {
   sidebarOpen.value = !sidebarOpen.value;
   localStorage.setItem("sidebar", sidebarOpen.value ? "1" : "0");
@@ -93,6 +97,15 @@ watchEffect(() => (playing.value ? defs.value?.unpauseAnimations() : defs.value?
 const lyricIdx = computed(() =>
   lyrics.value[0]?.t == null ? -1 : lyrics.value.findLastIndex((l) => (l.t ?? Infinity) <= position.value + 0.2),
 );
+// karaoke fill of the current line: set once when the line starts (a running CSS animation can't follow
+// the 500 ms position polls without jumping), timed to the next line's stamp
+const wipe = ref({ key: 0, dur: 4, delay: 0 });
+watch(lyricIdx, (i) => {
+  const l = lyrics.value[i];
+  if (!l || l.t == null) return;
+  const next = lyrics.value[i + 1]?.t ?? l.t + 5;
+  wipe.value = { key: wipe.value.key + 1, dur: Math.min(Math.max(next - l.t, 0.5), 15), delay: Math.min(0, l.t - position.value) };
+});
 const q = computed(() => query.value.trim().toLowerCase());
 const match = (t: Track) =>
   !q.value || [t.title, t.artist, t.album].some((s) => s.toLowerCase().includes(q.value));
@@ -190,8 +203,10 @@ async function addTo(id: number, path: string) {
   await invoke("add_to_playlist", { id, path });
   if (plId.value === id) await openPlaylist(plId.value);
 }
+const lyricMenu = ref(false);
 function closeMenu(e: PointerEvent) {
   if (!(e.target as HTMLElement).closest(".row-menu")) addMenu.value = null;
+  if (!(e.target as HTMLElement).closest(".lyric-actions")) lyricMenu.value = false;
 }
 async function removeFrom(path: string) {
   if (plId.value === null) return;
@@ -255,9 +270,14 @@ async function forgetFolder(dir: string) {
 
 async function s3Save() {
   await invoke("s3_save_config", { config: s3.value });
-  s3Status.value = "Tersimpan.";
+  flash("Tersimpan.");
   s3Saved.value = !!s3.value.bucket;
   s3Edit.value = false;
+}
+// success messages go away by themselves; errors stay until closed or replaced
+function flash(msg: string) {
+  s3Status.value = msg;
+  setTimeout(() => s3Status.value === msg && (s3Status.value = ""), 4000);
 }
 async function s3Cancel() {
   s3.value = await invoke<S3Config>("s3_get_config");
@@ -270,7 +290,7 @@ async function s3Sync() {
   try {
     await s3Save();
     rawLibrary.value = await invoke<Track[]>("s3_sync");
-    s3Status.value = "Selesai. Lagu sudah masuk ke library.";
+    flash("Selesai. Lagu sudah masuk ke library.");
   } catch (e) {
     s3Status.value = `Gagal: ${e}`;
   } finally {
@@ -525,7 +545,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
   <ConfirmDialog />
   <TitleBar @settings="openSettings('local')" />
 
-  <div class="app" :class="{ collapsed: !sidebarOpen }">
+  <div class="app" :class="{ collapsed: !sidebarOpen || narrow }">
     <nav class="drawer" :class="{ 'has-player': !!now }" aria-label="Navigasi">
       <button class="fab" :class="{ sel: view === 'catalog' }" title="Katalog" @click="setView('catalog')" :aria-current="view === 'catalog' ? 'page' : undefined">
         <Icon name="catalog" /><span class="lbl">Katalog</span>
@@ -537,7 +557,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
           <span v-if="n.id === 'playlists' && playlists.length" class="badge">{{ playlists.length }}</span>
         </button>
       </div>
-      <button class="icon-btn tonal collapse-btn" @click="toggleSidebar" :title="sidebarOpen ? 'Tutup sidebar' : 'Buka sidebar'"><Icon :name="sidebarOpen ? 'panelClose' : 'panelOpen'" /></button>
+      <button v-if="!narrow" class="icon-btn tonal collapse-btn" @click="toggleSidebar" :title="sidebarOpen ? 'Tutup sidebar' : 'Buka sidebar'"><Icon :name="sidebarOpen ? 'panelClose' : 'panelOpen'" /></button>
     </nav>
 
     <main :class="{ 'has-player': !!now }">
@@ -628,7 +648,12 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
               <button v-if="s3Saved" type="button" class="btn outlined" @click="s3Cancel"><Icon name="close" />Batal</button>
             </div>
           </form>
-          <p v-if="s3Status" class="status" :class="{ err: s3Status.startsWith('Gagal') }" role="status">{{ s3Status }}</p>
+          <Transition name="fade">
+            <p v-if="s3Status" class="status" :class="{ err: s3Status.startsWith('Gagal') }" role="status">
+              <span>{{ s3Status }}</span>
+              <button v-if="!s3Busy" class="icon-btn small" title="Tutup" @click="s3Status = ''"><Icon name="close" :size="18" /></button>
+            </p>
+          </Transition>
         </section>
         <FileManager v-if="s3Saved && !s3Edit" kind="s3" :root="s3Root" :label="s3.bucket" @library="setLibrary" />
         </template>
@@ -734,8 +759,18 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
     </main>
   </div>
 
+  <Transition name="now">
   <section v-if="now && showNow" class="now" aria-label="Sedang diputar">
     <button class="icon-btn tonal close" @click="showNow = false" title="Tutup (Esc)"><Icon name="collapse" :size="28" /></button>
+    <div v-if="lyrics.length && !lyricSearchOpen" class="lyric-actions" @keydown.esc.stop="lyricMenu = false">
+      <button class="icon-btn tonal" title="Opsi lirik" aria-haspopup="menu" :aria-expanded="lyricMenu" @click="lyricMenu = !lyricMenu"><Icon name="moreVert" /></button>
+      <Transition name="menu">
+        <div v-if="lyricMenu" class="pl-menu" role="menu">
+          <button role="menuitem" @click="lyricMenu = false; lyricSearchOpen = true"><Icon name="search" :size="20" />Cari lirik lain</button>
+          <button role="menuitem" @click="lyricMenu = false; clearLyrics()"><Icon name="trash" :size="20" />Hapus lirik</button>
+        </div>
+      </Transition>
+    </div>
     <div class="stage">
       <div class="spin" :style="{ clipPath: 'url(#shape-now)' }">
         <img v-if="covers[now.path]" :src="covers[now.path]!" :alt="`Sampul ${now.album}`" />
@@ -743,10 +778,6 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
       </div>
       <h2>{{ now.title }}</h2>
       <p>{{ unknown(now.artist) }} · {{ unknown(now.album) }}</p>
-      <div v-if="lyrics.length && !lyricSearchOpen" class="lyric-actions">
-        <button class="more" @click="lyricSearchOpen = true"><Icon name="search" :size="18" />Cari lirik lain</button>
-        <button class="more" @click="clearLyrics"><Icon name="close" :size="18" />Hapus lirik</button>
-      </div>
     </div>
     <div v-if="showLyricSearch" class="lyric-search">
       <div class="ls-head">
@@ -778,11 +809,16 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
       </ul>
       <p v-else-if="!lyricErr" class="ls-note">Lirik dicari otomatis dari tag lagu, tapi tidak ketemu. Coba ubah kata kuncinya, atau letakkan file <code>.lrc</code> bernama sama di samping lagu.</p>
     </div>
-    <div v-else class="lyrics" :class="{ synced: lyricIdx >= 0 || lyrics[0]?.t != null }">
-      <p v-for="(l, i) in lyrics" :key="i" :class="{ cur: i === lyricIdx, past: lyricIdx >= 0 && i < lyricIdx }">{{ l.text || "♪" }}</p>
+    <div v-else class="lyrics" :class="{ synced: lyricIdx >= 0 || lyrics[0]?.t != null, paused: !playing }">
+      <p v-for="(l, i) in lyrics" :key="i" :class="{ cur: i === lyricIdx, past: lyricIdx >= 0 && i < lyricIdx }"
+        :style="lyricIdx >= 0 ? { '--d': Math.min(Math.abs(i - lyricIdx), 4) } : undefined">
+        <span v-if="i === lyricIdx" :key="wipe.key" class="ln" :style="{ '--dur': `${wipe.dur}s`, '--delay': `${wipe.delay}s` }">{{ l.text || "♪" }}</span>
+        <template v-else>{{ l.text || "♪" }}</template>
+      </p>
       <div v-if="!lyrics.length" class="no-lyrics"><span>Memuat lirik…</span></div>
     </div>
   </section>
+  </Transition>
 
   <div v-if="downloads.length" class="downloads" :class="{ above: now }" role="status">
     <div v-for="d in downloads" :key="d.path" class="dl-item">
@@ -1059,13 +1095,19 @@ li:hover .row-act, .row-act:focus-visible, .row-menu.open .row-act { opacity: 1;
 .field input:focus { box-shadow: inset 0 -3px 0 var(--primary); }
 .field input::placeholder { color: var(--on-surface-variant); opacity: 0.7; }
 .status { margin: 0; padding: 12px 16px; border-radius: 12px; background: var(--secondary-container); color: var(--on-secondary-container); }
+.status { display: flex; align-items: center; gap: 8px; }
+.status > span { flex: 1; }
+.status .icon-btn { width: 32px; height: 32px; color: inherit; margin: -6px -8px -6px 0; }
+.fade-enter-active, .fade-leave-active { transition: opacity 0.25s var(--emph); }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
 .status.err { background: #8c1d18; color: #ffdad6; }
 
 /* ---------- player bar ---------- */
 .player {
   position: fixed; left: 16px; right: 16px; bottom: 16px; z-index: 20;
-  display: grid; grid-template-columns: minmax(180px, 1fr) minmax(320px, 1.6fr) minmax(180px, 1fr);
-  align-items: center; gap: 24px; padding: 6px 16px 6px 6px;
+  /* equal outer columns keep the controls centred on the window at every width */
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 1.6fr) minmax(0, 1fr);
+  align-items: center; gap: 20px; padding: 6px 16px 6px 6px;
   border-radius: 28px; background: var(--surface-container-high);
   /* the surface-coloured spread masks list rows scrolling past the floating bar */
   box-shadow: 0 6px 24px rgb(0 0 0 / 0.28), 0 0 0 calc(10px - var(--sheet-gap)) var(--surface);
@@ -1073,8 +1115,13 @@ li:hover .row-act, .row-act:focus-visible, .row-menu.open .row-act { opacity: 1;
 .np { display: flex; align-items: center; gap: 14px; min-width: 0; text-align: left; border-radius: 16px; padding-right: 8px; }
 .np .art { width: 64px; height: 64px; border-radius: 16px; transition: border-radius 0.4s var(--spring); }
 .np:hover .art { border-radius: 32px; }
-.ctrl { display: flex; flex-direction: column; align-items: stretch; gap: 4px; }
+.ctrl { display: flex; flex-direction: column; align-items: stretch; gap: 4px; width: 100%; max-width: 560px; justify-self: center; }
 .transport { display: flex; align-items: center; justify-content: center; gap: 8px; }
+@media (max-width: 1100px) {
+  .player { gap: 12px; }
+  .transport { gap: 4px; }
+  .seek { gap: 8px; }
+}
 .transport .icon-btn.tonal { width: 48px; height: 48px; border-radius: 24px; background: var(--secondary-container); }
 .transport .icon-btn.tonal:active { border-radius: 12px; }
 .play {
@@ -1085,9 +1132,9 @@ li:hover .row-act, .row-act:focus-visible, .row-menu.open .row-act { opacity: 1;
 .play.playing { border-radius: 18px; }
 .play:active { transform: scale(0.94); }
 .seek { display: flex; align-items: center; gap: 12px; font-size: 12px; font-weight: 600; color: var(--on-surface-variant); font-variant-numeric: tabular-nums; }
-.side { display: flex; align-items: center; justify-content: flex-end; gap: 10px; color: var(--on-surface-variant); }
+.side { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; color: var(--on-surface-variant); }
 .slider {
-  appearance: none; -webkit-appearance: none; width: 120px; height: 16px; border-radius: 8px; margin: 0; cursor: pointer;
+  appearance: none; -webkit-appearance: none; width: clamp(56px, 8vw, 128px); height: 16px; border-radius: 8px; margin: 0; cursor: pointer;
   background: linear-gradient(to right, var(--primary) var(--p), var(--secondary-container) var(--p));
 }
 .slider::-webkit-slider-thumb {
@@ -1101,9 +1148,13 @@ li:hover .row-act, .row-act:focus-visible, .row-menu.open .row-act { opacity: 1;
   position: fixed; inset: var(--titlebar) var(--sheet-gap) var(--sheet-gap); z-index: 10;
   display: grid; grid-template-columns: 1fr 1.1fr; gap: 48px;
   padding: 40px 64px 132px; background: var(--surface); border-radius: var(--sheet-radius) var(--sheet-radius) 0 0;
-  animation: rise 0.5s var(--emph);
 }
-@keyframes rise { from { opacity: 0; transform: translateY(32px); } }
+/* opens rising from the player, closes sinking back into it */
+.now-enter-active { transition: opacity 0.35s var(--emph), transform 0.5s var(--emph); }
+.now-leave-active { transition: opacity 0.25s var(--emph), transform 0.3s cubic-bezier(0.3, 0, 0.8, 0.15); }
+.now-enter-from { opacity: 0; transform: translateY(32px); }
+.now-leave-to { opacity: 0; transform: translateY(48px) scale(0.98); }
+.now-leave-active .spin { transition: transform 0.3s var(--emph); transform: scale(0.9); }
 .close { position: absolute; top: 12px; left: 12px; width: 48px; height: 48px; border-radius: 24px; background: var(--secondary-container); }
 .stage { display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; min-width: 0; }
 .spin {
@@ -1126,12 +1177,39 @@ li:hover .row-act, .row-act:focus-visible, .row-menu.open .row-act { opacity: 1;
   transform-origin: left center; transition: opacity 0.35s, transform 0.5s var(--spring), color 0.35s;
 }
 .lyrics:not(.synced) p { opacity: 0.85; font-size: 20px; font-weight: 500; }
-.lyrics p.past { opacity: 0.2; }
-.lyrics p.cur { opacity: 1; color: var(--primary); transform: scale(1.04); }
+/* lines fade and soften with distance from the current one */
+.lyrics.synced p {
+  opacity: max(0.16, calc(0.62 - var(--d, 2) * 0.12)); filter: blur(calc(max(0, var(--d, 0) - 1) * 0.6px));
+  transition: opacity 0.5s var(--emph), transform 0.6s var(--spring), color 0.4s, filter 0.5s var(--emph), font-size 0.5s var(--emph);
+}
+.lyrics.synced p.past { opacity: max(0.12, calc(0.45 - var(--d, 2) * 0.1)); }
+.lyrics p.cur {
+  opacity: 1; filter: none;
+  font-size: clamp(28px, 3vw, 44px); transform: translateX(4px); animation: lift 0.6s var(--spring);
+}
+@keyframes lift { from { transform: scale(0.98) translateY(10px); } }
+/* the current line fills with colour as it is sung */
+.ln {
+  background: linear-gradient(90deg, var(--primary) 50%, color-mix(in srgb, var(--primary) 32%, var(--on-surface) 20%) 50%) 100% 0 / 200% 100%;
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: wipe var(--dur) linear var(--delay) forwards;
+}
+.lyrics.paused .ln { animation-play-state: paused; }
+@keyframes wipe { to { background-position: 0 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .lyrics p.cur { animation: none; }
+  .ln { animation: none; background: none; color: var(--primary); }
+}
 .no-lyrics { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--on-surface-variant); text-align: center; }
 .lyrics .no-lyrics p { opacity: 1; font-size: 22px; color: var(--on-surface); margin: 8px 0 0; }
-.lyric-actions { margin-top: 16px; display: flex; flex-wrap: wrap; justify-content: center; gap: 4px; }
-.stage .more { display: inline-flex; align-items: center; gap: 6px; }
+.lyric-actions { position: absolute; top: 12px; right: 12px; z-index: 2; }
+.lyric-actions > .icon-btn { width: 48px; height: 48px; border-radius: 24px; background: var(--secondary-container); }
+.lyric-actions .pl-menu button { display: flex; align-items: center; gap: 12px; padding: 12px 16px; color: var(--on-surface); }
+.lyric-actions .pl-menu .icon { color: var(--on-surface-variant); }
+.menu-enter-active { transition: opacity 0.15s, transform 0.25s var(--spring); transform-origin: top right; }
+.menu-leave-active { transition: opacity 0.1s; }
+.menu-enter-from { opacity: 0; transform: scale(0.9); }
+.menu-leave-to { opacity: 0; }
 .lyric-search { display: flex; flex-direction: column; gap: 16px; min-height: 0; padding-top: 24px; }
 .ls-head { display: flex; align-items: flex-start; gap: 16px; color: var(--on-surface-variant); }
 .ls-head > div { flex: 1; display: flex; flex-direction: column; gap: 4px; }
@@ -1155,11 +1233,41 @@ li:hover .row-act, .row-act:focus-visible, .row-menu.open .row-act { opacity: 1;
 .ls-dur { flex: none; width: 44px; text-align: right; font-size: 14px; color: var(--on-surface-variant); font-variant-numeric: tabular-nums; }
 .no-lyrics code { background: var(--surface-container-high); padding: 2px 6px; border-radius: 6px; }
 
+/* player: below the desktop minimum (960px) the seek bar stacks under the controls */
 @media (max-width: 1100px) {
-  .player { grid-template-columns: minmax(0, 1fr) auto; }
-  .side { display: none; }
-  .now { grid-template-columns: 1fr; padding: 56px 32px 132px; }
-  .lyrics { display: none; }
+  /* small windows: lyrics take the screen; the artwork goes, title and lyric actions stay on top */
+  .now { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); gap: 8px; padding: 64px 32px 132px; }
+  .spin { display: none; }
+  .stage h2 { margin: 0 0 4px; font-size: clamp(24px, 3vw, 32px); }
+  .lyrics { padding: 12vh 8px; text-align: center; }
+  .lyrics p { transform-origin: center; }
+  .lyric-search { padding-top: 8px; }
+}
+@media (max-width: 860px) {
+  .player {
+    grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "np transport side" "seek seek seek";
+    gap: 0 8px; padding: 6px 12px 4px 6px; border-radius: 24px;
+  }
+  .ctrl { display: contents; }
+  .np { grid-area: np; }
+  .transport { grid-area: transport; }
+  .side { grid-area: side; }
+  .seek { grid-area: seek; padding: 0 4px 0 8px; min-width: 0; }
+  .np .art { width: 52px; height: 52px; border-radius: 14px; }
+}
+@media (max-width: 600px) {
+  .top .search { width: 100%; }
+  main { padding: 0 16px 40px 8px; }
+  .player { left: 8px; right: 8px; bottom: 8px; padding-right: 8px; }
+  .transport { gap: 4px; }
+  .transport > .icon-btn:not(.tonal), .side { display: none; }
+  .transport .icon-btn.tonal { width: 40px; height: 40px; }
+  .play { width: 52px; height: 44px; }
+  .np .art { width: 44px; height: 44px; }
+  .np { gap: 10px; }
+  .meta strong { font-size: 14px; }
+  .meta span { font-size: 12px; }
+  .seek > span { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   .empty-mark, .empty-mark .icon, .eq i { animation: none; }

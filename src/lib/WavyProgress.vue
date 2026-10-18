@@ -69,7 +69,7 @@ const num = (e: Event) => +(e.target as HTMLInputElement).value;
 </template>
 
 <style scoped>
-.wavy { position: relative; width: 100%; }
+.wavy { position: relative; flex: 1 1 0; min-width: 0; }
 svg { display: block; overflow: visible; }
 .active { fill: none; stroke: var(--primary); stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
 .track { stroke: var(--secondary-container); stroke-width: 4; stroke-linecap: round; }

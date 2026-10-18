@@ -23,6 +23,7 @@ import edit from "@material-symbols/svg-400/rounded/edit-fill.svg?raw";
 import sync from "@material-symbols/svg-400/rounded/sync-fill.svg?raw";
 import save from "@material-symbols/svg-400/rounded/save-fill.svg?raw";
 import catalog from "@material-symbols/svg-400/rounded/explore-fill.svg?raw";
+import moreVert from "@material-symbols/svg-400/rounded/more_vert-fill.svg?raw";
 import back from "@material-symbols/svg-400/rounded/arrow_back-fill.svg?raw";
 import collapse from "@material-symbols/svg-400/rounded/keyboard_arrow_down-fill.svg?raw";
 import note from "@material-symbols/svg-400/rounded/music_note-fill.svg?raw";
@@ -56,6 +57,7 @@ export const icons = {
   volume,
   search,
   back,
+  moreVert,
   catalog,
   save,
   folder,

@@ -1,4 +1,5 @@
 mod db;
+mod ext;
 mod local;
 mod lyrics;
 mod media;
@@ -201,6 +202,7 @@ pub fn run() {
             let _ = DATA_DIR.set(dir.clone());
             app.manage(Db::open(&dir.join("library.db"))?);
             app.manage(media::init(app.handle()));
+            app.manage(ext::init(app.handle())?);
             tray::init(app.handle())?;
             // WebKitGTK turns trackpad pinch into page zoom; drop pinch events before GTK dispatches them.
             #[cfg(target_os = "linux")]
@@ -239,6 +241,15 @@ pub fn run() {
             lyrics::get_lyrics,
             lyrics::search_lyrics,
             lyrics::save_lyrics,
+            ext::ext_list,
+            ext::ext_install_file,
+            ext::ext_install_url,
+            ext::ext_repo,
+            ext::ext_remove,
+            ext::ext_set_enabled,
+            ext::ext_save_settings,
+            ext::ext_call,
+            ext::ext_download,
             player::play,
             player::set_paused,
             player::queue_next,

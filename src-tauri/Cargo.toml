@@ -33,6 +33,12 @@ rust-s3 = { version = "0.38.0", default-features = false, features = ["sync", "s
 attohttpc = { version = "0.30", default-features = false, features = ["tls-rustls", "json"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 trash = "5"
+sha2 = "0.11.1"
+md-5 = "0.11.0"
+hmac = "0.13.0"
+sha1 = "0.11.0"
+rquickjs = "0.14.0"
+zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 
 # Linux: StatusNotifierItem tray over D-Bus (pure Rust, no libayatana needed when bundling)
 [target.'cfg(target_os = "linux")'.dependencies]

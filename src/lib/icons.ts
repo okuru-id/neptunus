@@ -43,6 +43,9 @@ import minimize from "@material-symbols/svg-400/rounded/minimize-fill.svg?raw";
 import maximize from "@material-symbols/svg-400/rounded/crop_square.svg?raw";
 import restore from "@material-symbols/svg-400/rounded/filter_none.svg?raw";
 
+import extension from "@material-symbols/svg-400/rounded/extension-fill.svg?raw";
+import store from "@material-symbols/svg-400/rounded/storefront-fill.svg?raw";
+import done from "@material-symbols/svg-400/rounded/check_circle-fill.svg?raw";
 export const icons = {
   minimize,
   maximize,
@@ -86,6 +89,9 @@ export const icons = {
   close,
   lyrics,
   playlistAdd,
+  extension,
+  store,
+  done,
 };
 
 export type IconName = keyof typeof icons;

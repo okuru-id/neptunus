@@ -78,7 +78,11 @@ pub async fn get_lyrics(app: AppHandle, path: String, title: String, artist: Str
         if title.is_empty() || artist.is_empty() {
             return None;
         }
-        let txt = lrclib(&title, &artist, &album, duration).ok()?;
+        // extension lyrics providers come first (as in SpotiFLAC), then LRCLIB
+        let txt = match crate::ext::lyrics(&app, &title, &artist, &album, duration) {
+            Some(t) => Some(t),
+            None => lrclib(&title, &artist, &album, duration).ok()?,
+        };
         if let Some(c) = &cache {
             let _ = std::fs::create_dir_all(c.parent()?);
             let _ = std::fs::write(c, txt.as_deref().unwrap_or(""));

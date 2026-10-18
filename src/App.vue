@@ -8,6 +8,9 @@ import { covers } from "./lib/covers";
 import Icon from "./lib/Icon.vue";
 import ConfirmDialog, { confirm } from "./lib/ConfirmDialog.vue";
 import FileManager from "./lib/FileManager.vue";
+import Extensions from "./lib/Extensions.vue";
+import ExtCatalog from "./lib/ExtCatalog.vue";
+import { has, type ExtInfo } from "./lib/ext";
 import TitleBar from "./lib/TitleBar.vue";
 import type { IconName } from "./lib/icons";
 import WavyProgress from "./lib/WavyProgress.vue";
@@ -219,16 +222,26 @@ function setView(v: View) {
   group.value = null;
 }
 
-const SETTINGS_TABS: { id: "local" | "s3"; label: string; icon: IconName }[] = [
+type SettingsTab = "local" | "s3" | "ext";
+const SETTINGS_TABS: { id: SettingsTab; label: string; icon: IconName }[] = [
   { id: "local", label: "Lokal", icon: "folder" },
   { id: "s3", label: "Cloud", icon: "cloud" },
+  { id: "ext", label: "Ekstensi", icon: "extension" },
 ];
-const settingsTab = ref<"local" | "s3">("local");
-function openSettings(tab: "local" | "s3") {
+const settingsTab = ref<SettingsTab>("local");
+function openSettings(tab: SettingsTab) {
   settingsTab.value = tab;
   setView("s3");
 }
 const setLibrary = (t: unknown[]) => (rawLibrary.value = t as Track[]);
+
+// extensions (Settings › Ekstensi); metadata providers add their catalog to the Katalog page
+const exts = ref<ExtInfo[]>([]);
+const extCatalog = computed(() => exts.value.some((e) => e.enabled && has(e, "metadata_provider")));
+async function onDownloaded(t: Track) {
+  setLibrary(await invoke<Track[]>("load_library"));
+  playAt([t], 0);
+}
 
 const folders = ref<string[]>([]);
 const localFiles = ref<{ reload: () => void } | null>(null);
@@ -475,6 +488,7 @@ onMounted(async () => {
   window.addEventListener("keydown", onKey);
   window.addEventListener("pointerdown", closeMenu);
   pollId = setInterval(poll, 500);
+  invoke<ExtInfo[]>("ext_list").then((l) => (exts.value = l));
   subs.push(
     listen<[string, number, number]>("s3-download", ({ payload: [path, done, total] }) => {
       if (path in progress.value) progress.value = { ...progress.value, [path]: total ? Math.round((done / total) * 100) : 0 };
@@ -569,7 +583,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
             <p v-if="library.length && view !== 's3'" class="sub">{{ subtitle }}</p>
           </div>
         </div>
-        <label v-if="library.length && view !== 's3'" class="search">
+        <label v-if="(library.length || (view === 'catalog' && extCatalog)) && view !== 's3'" class="search">
           <Icon name="search" />
           <input placeholder="Cari lagu, artis, album" v-model="query" />
           <button v-if="query" class="icon-btn" @click="query = ''" title="Hapus pencarian"><Icon name="close" :size="20" /></button>
@@ -586,7 +600,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
 
       <p v-if="loading" class="scanning"><span class="spinner" :style="{ clipPath: 'url(#shape-cookie12)' }"></span>Memindai folder musik…</p>
 
-      <section v-if="!library.length && view !== 's3'" class="empty">
+      <section v-if="!library.length && view !== 's3' && !(view === 'catalog' && extCatalog)" class="empty">
         <div class="empty-mark" :style="{ clipPath: 'url(#shape-cookie12)' }"><Icon name="note" :size="72" /></div>
         <h2>Belum ada musik</h2>
         <p>Pilih folder berisi lagu di komputer ini, atau sinkronkan dari bucket S3.</p>
@@ -619,6 +633,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
           <FileManager v-if="curFolder" ref="localFiles" :key="curFolder" kind="local" :root="`${curFolder.replace(/\/+$/, '')}/`" :label="baseName(curFolder)"
             @library="setLibrary" />
         </template>
+        <Extensions v-else-if="settingsTab === 'ext'" @changed="exts = $event" />
         <template v-else>
         <section class="panel conn">
           <div class="conn-head">
@@ -671,6 +686,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
         </div>
 
         <div v-if="view === 'catalog'" class="catalog">
+          <ExtCatalog :exts="exts" :query="query" @downloaded="onDownloaded" />
           <section v-if="albums.length" class="shelf">
             <div class="shelf-head"><h2>Album</h2><button class="more" @click="setView('albums')">Lihat semua</button></div>
             <div class="shelf-row">
@@ -701,7 +717,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
               </button>
             </div>
           </section>
-          <p v-if="!albums.length && !artists.length" class="none">Tidak ada yang cocok dengan “{{ query }}”.</p>
+          <p v-if="library.length && !albums.length && !artists.length" class="none">Tidak ada yang cocok dengan “{{ query }}”.</p>
         </div>
         <div v-else-if="(view === 'albums' || view === 'artists') && group === null" class="grid" :class="{ artists: view === 'artists' }">
           <button v-for="([name, list], i) in view === 'albums' ? albums : artists" :key="name" class="tile" @click="group = name">

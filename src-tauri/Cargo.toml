@@ -1,6 +1,6 @@
 [package]
 name = "neptunus"
-version = "0.2.5"
+version = "0.2.6"
 description = "Neptunus, a lightweight desktop music player"
 authors = ["you"]
 edition = "2024"
@@ -43,9 +43,9 @@ zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 souvlaki = { version = "0.8.3", default-features = false, features = ["use_zbus"] }
 trash = "5"
 
-# Windows/macOS tray; Linux uses ksni instead (the tray-icon feature would demand libappindicator when bundling)
+# Windows/macOS tray; Linux uses ksni instead (tauri-cli still sees this feature in cargo metadata, so CI installs libayatana-appindicator3-dev)
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
 
 # Linux: StatusNotifierItem tray over D-Bus (pure Rust, no libayatana needed when bundling)
 [target.'cfg(target_os = "linux")'.dependencies]

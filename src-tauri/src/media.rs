@@ -1,7 +1,10 @@
+#[cfg(desktop)]
 use souvlaki::{
     MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, MediaPosition, PlatformConfig,
 };
-use std::{ffi::c_void, sync::mpsc, time::Duration};
+use std::sync::mpsc;
+#[cfg(desktop)]
+use std::{ffi::c_void, time::Duration};
 #[cfg(windows)]
 use tauri::Manager;
 use tauri::{AppHandle, Emitter};
@@ -23,6 +26,12 @@ pub fn init(app: &AppHandle) -> Media {
     let hwnd: Option<usize> = None;
     let handle = app.clone();
 
+    #[cfg(mobile)]
+    {
+        let _ = (app, &rx);
+        std::thread::spawn(move || for _ in rx {});
+    }
+    #[cfg(desktop)]
     std::thread::spawn(move || {
         // Unique per process (MPRIS "instance" convention): a taken name makes souvlaki panic,
         // which aborts the whole app in release builds (panic = "abort").

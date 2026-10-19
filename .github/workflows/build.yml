@@ -1,6 +1,6 @@
 name: Build
 
-# Pushing a tag like v0.2.0 builds the installers for Linux, Windows and macOS and attaches them to
+# Pushing a tag like v0.2.0 builds the installers for Linux, Windows, macOS and iOS (iPhone + iPad) and attaches them to
 # a draft GitHub release for that tag.
 on:
   push:
@@ -61,3 +61,56 @@ jobs:
           releaseName: Neptunus ${{ github.ref_name }}
           releaseBody: See the assets below to download and install Neptunus.
           releaseDraft: true
+
+  # One universal IPA covers iPhone and iPad. Needs these repo secrets (Apple Developer account):
+  # APPLE_DEVELOPMENT_TEAM, IOS_CERTIFICATE (base64 .p12), IOS_CERTIFICATE_PASSWORD, IOS_MOBILE_PROVISION (base64 .mobileprovision)
+  ios:
+    permissions:
+      contents: write
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: ios
+
+      - run: npm ci
+
+      - name: Import signing certificate and profile
+        env:
+          IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_MOBILE_PROVISION: ${{ secrets.IOS_MOBILE_PROVISION }}
+        run: |
+          echo -n "$IOS_CERTIFICATE" | base64 --decode > cert.p12
+          security create-keychain -p ci build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p ci build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security import cert.p12 -k build.keychain -P "$IOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k ci build.keychain
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          echo -n "$IOS_MOBILE_PROVISION" | base64 --decode > "$HOME/Library/MobileDevice/Provisioning Profiles/build.mobileprovision"
+
+      - run: npm run tauri ios init
+      - run: npm run tauri ios build -- --export-method app-store-connect
+        env:
+          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+
+      - name: Attach IPA to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for i in 1 2 3 4 5 6; do gh release view "${{ github.ref_name }}" && break; sleep 20; done
+          gh release upload "${{ github.ref_name }}" src-tauri/gen/apple/build/arm64/*.ipa --clobber

@@ -703,7 +703,7 @@ pub async fn ext_redownload(app: AppHandle, path: String, id: String, quality: O
         if new.path != path {
             db.move_path(&path, &new.path).map_err(|e| e.to_string())?;
             if Path::new(&path).is_file() {
-                let _ = trash::delete(&path);
+                let _ = crate::trash(&path);
             }
         }
         Ok(new)

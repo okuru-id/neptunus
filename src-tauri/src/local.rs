@@ -108,7 +108,7 @@ pub async fn local_delete(app: AppHandle, keys: Vec<String>) -> R<Vec<Track>> {
     crate::blocking(move || {
         let db = app.state::<Db>();
         for k in &keys {
-            trash::delete(k.trim_end_matches('/')).map_err(|e| format!("{k}: {e}"))?;
+            crate::trash(k.trim_end_matches('/')).map_err(|e| format!("{k}: {e}"))?;
             if k.ends_with('/') {
                 db.remove_under(k).map_err(err)?;
             }

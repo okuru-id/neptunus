@@ -217,6 +217,15 @@ mod backend {
     }
 }
 
+/// iOS/Android: no tray.
+#[cfg(mobile)]
+mod backend {
+    use super::*;
+    pub fn init(_: &AppHandle) -> tauri::Result<()> { Ok(()) }
+    pub fn refresh(_: &AppHandle, _: &NowMenu) {}
+}
+
+#[cfg(desktop)]
 #[cfg(not(target_os = "linux"))]
 mod backend {
     use super::*;

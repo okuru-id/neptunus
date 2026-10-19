@@ -1,6 +1,6 @@
 [package]
 name = "neptunus"
-version = "0.2.3"
+version = "0.2.4"
 description = "Neptunus, a lightweight desktop music player"
 authors = ["you"]
 edition = "2024"
@@ -28,17 +28,21 @@ base64 = "0.23.1"
 tauri-plugin-dialog = "2.8.3"
 rodio = { version = "0.23.0", default-features = false, features = ["playback", "symphonia-all"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
-souvlaki = { version = "0.8.3", default-features = false, features = ["use_zbus"] }
 rust-s3 = { version = "0.38.0", default-features = false, features = ["sync", "sync-rustls-tls"] }
 attohttpc = { version = "0.30", default-features = false, features = ["tls-rustls", "json"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
-trash = "5"
 sha2 = "0.11.1"
 md-5 = "0.11.0"
 hmac = "0.13.0"
 sha1 = "0.11.0"
 rquickjs = "0.14.0"
 zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
+
+# Desktop only: tray, OS media controls, system trash (iOS/Android have none of these)
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+souvlaki = { version = "0.8.3", default-features = false, features = ["use_zbus"] }
+trash = "5"
 
 # Linux: StatusNotifierItem tray over D-Bus (pure Rust, no libayatana needed when bundling)
 [target.'cfg(target_os = "linux")'.dependencies]

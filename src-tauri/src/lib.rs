@@ -15,6 +15,17 @@ use walkdir::WalkDir;
 /// App data dir, for code that has no `AppHandle` (the audio thread reading S3 objects).
 pub(crate) static DATA_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 
+/// Moves a path to the system trash (permanent delete on mobile, which has none).
+pub(crate) fn trash(path: impl AsRef<std::path::Path>) -> Result<(), String> {
+    #[cfg(desktop)]
+    return trash::delete(path).map_err(|e| e.to_string());
+    #[cfg(mobile)]
+    {
+        let p = path.as_ref();
+        return if p.is_dir() { std::fs::remove_dir_all(p) } else { std::fs::remove_file(p) }.map_err(|e| e.to_string());
+    }
+}
+
 pub(crate) const EXTS: &[&str] = &["mp3", "flac", "m4a", "aac", "ogg", "opus", "wav"];
 
 /// Opens the tags of a local file or an `s3://bucket/key` object (read with range requests).

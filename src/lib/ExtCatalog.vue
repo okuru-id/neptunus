@@ -5,6 +5,8 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import Icon from "./Icon.vue";
 import SongMenu from "./SongMenu.vue";
 import { extName, has, unsupported, type ExtInfo } from "./ext";
+import { pasted, verifyError, waiting, withVerify } from "./verify";
+import { activity } from "./activity";
 
 // Katalog from metadata-provider extensions: home feed, search, album/playlist/artist pages,
 // and downloading tracks into the library with a download-provider extension.
@@ -20,7 +22,8 @@ type Track = { path: string; title: string; artist: string; album: string; durat
 // `query` is the page's search box: typing searches the selected source (debounced)
 // `redl`: re-download progress per library path (kept by the app, which runs the re-download)
 const props = defineProps<{ exts: ExtInfo[]; library: Track[]; query: string; nowPath?: string; playing?: boolean; redl: Record<string, number> }>();
-const emit = defineEmits<{ downloaded: [Track]; toggle: []; redownload: [Track, string, string | null]; remove: [Track] }>();
+// `play`: a song in the library was clicked; `downloaded`: a download finished (it is not played)
+const emit = defineEmits<{ play: [Track]; downloaded: [Track]; failed: [string, string, unknown]; toggle: []; redownload: [Track, string, string | null]; remove: [Track] }>();
 
 const SRC_KEY = "neptunus.extSource";
 // only sources that can show a catalog (home feed); search-only ones stay available as download providers
@@ -122,6 +125,10 @@ async function openItem(i: Item) {
 
 // ---- downloads
 const dl = reactive<Record<string, number | "done" | string>>({});
+// extension downloading each key, for its live activity line under the song
+const dlExt: Record<string, string> = {};
+// while a song downloads: what its extension is doing right now
+const busyText = (t: Item) => (typeof state(t) === "number" ? activity[dlExt[keyOf(t)]] || "Memulai…" : "");
 // finished downloads survive leaving the catalog, so clicking them plays instead of asking again
 const DONE_KEY = "neptunus.extDone";
 const done = new Map<string, Track>((() => { try { return JSON.parse(localStorage.getItem(DONE_KEY) ?? "[]"); } catch { return []; } })());
@@ -154,7 +161,7 @@ const picking = ref<{ t: Item; ext?: ExtInfo } | null>(null);
 function download(t: Item) {
   const key = keyOf(t);
   const have = local(t);
-  if (have) return have.path === props.nowPath ? emit("toggle") : emit("downloaded", have);
+  if (have) return have.path === props.nowPath ? emit("toggle") : emit("play", have);
   if (typeof dl[key] === "number") return;
   const only = downloaders.value.length === 1 ? downloaders.value[0] : undefined;
   picking.value = { t, ext: only?.qualityOptions?.length ? only : undefined };
@@ -169,44 +176,18 @@ async function start(t: Item, id: string, quality: string | null) {
   picking.value = null;
   const key = keyOf(t);
   dl[key] = 0;
+  dlExt[key] = id;
+  activity[id] = "";
   const run = () => invoke<Track>("ext_download", { id, key, quality, track: { ...t, provider_id: t.provider_id || cur.value?.id } });
   try {
-    let track: Track;
-    try {
-      track = await run();
-    } catch (e) {
-      // the gateway wants a one-time browser check: open it, wait for the grant, try again
-      if (!/verif/i.test(String(e)) || !(await verified(id))) throw e;
-      dl[key] = 0;
-      track = await run();
-    }
+    const track = await withVerify(id, run, () => (dl[key] = 0));
     dl[key] = "done";
     done.set(key, track);
     localStorage.setItem(DONE_KEY, JSON.stringify([...done]));
     emit("downloaded", track);
   } catch (e) {
     dl[key] = String(e);
-  }
-}
-// the callback link pasted by hand when the browser cannot hand it back to the app
-const waiting = ref(false);
-const pasted = ref("");
-async function verified(id: string) {
-  if (!(await invoke<boolean>("ext_session_verify", { id }))) return false;
-  error.value = "";
-  waiting.value = true;
-  try {
-    for (let i = 0; i < 300; i++) {
-      await new Promise((r) => setTimeout(r, 1000));
-      const text = pasted.value.trim() || null;
-      pasted.value = "";
-      if (await invoke<string | null>("ext_session_poll", { text })) return true;
-      if (text) error.value = "Tautan itu tidak cocok dengan verifikasi yang sedang berjalan.";
-    }
-    error.value = "Verifikasi tidak selesai.";
-    return false;
-  } finally {
-    waiting.value = false;
+    emit("failed", t.name, id, e);
   }
 }
 let unlisten: UnlistenFn | undefined;
@@ -244,7 +225,7 @@ const others = computed(() => results.value?.filter((i) => kind(i) !== "track") 
       </div>
     </div>
 
-    <p v-if="error" class="note err">{{ error }}</p>
+    <p v-if="error || verifyError" class="note err">{{ error || verifyError }}</p>
     <div v-if="waiting" class="note verify">
       Selesaikan verifikasi di jendela yang terbuka; unduhan lanjut otomatis. Kalau jendela tidak menutup sendiri, tempel tautan
       <code>spotiflac://session-grant?…</code> di sini:
@@ -268,7 +249,7 @@ const others = computed(() => results.value?.filter((i) => kind(i) !== "track") 
             <img v-if="cover(t)" :src="cover(t)" alt="" loading="lazy" />
             <Icon v-if="state(t) === 'done'" name="done" :size="18" class="mark" />
           </span>
-          <span class="t-meta"><strong>{{ t.name }}</strong><span>{{ t.artists }}</span></span>
+          <span class="t-meta"><strong>{{ t.name }}</strong><span :class="{ live: busyText(t) }">{{ busyText(t) || t.artists }}</span></span>
           <span class="t-dur">{{ dur(t.duration_ms) }}</span>
           <button v-if="downloader" class="icon-btn dl" :class="{ ok: state(t) === 'done' }"
             :title="state(t) === 'done' ? 'Putar' : typeof state(t) === 'string' ? `Gagal: ${state(t)}` : 'Unduh ke library'">
@@ -294,7 +275,7 @@ const others = computed(() => results.value?.filter((i) => kind(i) !== "track") 
             <img v-if="cover(t)" :src="cover(t)" alt="" loading="lazy" />
             <Icon v-if="state(t) === 'done'" name="done" :size="18" class="mark" />
           </span>
-          <span class="t-meta"><strong>{{ t.name }}</strong><span>{{ [t.artists, t.album_name].filter(Boolean).join(" · ") }}</span></span>
+          <span class="t-meta"><strong>{{ t.name }}</strong><span :class="{ live: busyText(t) }">{{ busyText(t) || [t.artists, t.album_name].filter(Boolean).join(" · ") }}</span></span>
           <span class="t-dur">{{ dur(t.duration_ms) }}</span>
           <button v-if="downloader" class="icon-btn dl" :class="{ ok: state(t) === 'done' }"
             :title="state(t) === 'done' ? 'Putar' : typeof state(t) === 'string' ? `Gagal: ${state(t)}` : 'Unduh ke library'">
@@ -409,6 +390,7 @@ const others = computed(() => results.value?.filter((i) => kind(i) !== "track") 
 .t-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .t-meta strong { font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .t-meta span { font-size: 13px; color: var(--on-surface-variant); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.t-meta span.live { color: var(--primary); font-family: ui-monospace, monospace; font-size: 12px; }
 .t-dur { font-size: 13px; color: var(--on-surface-variant); font-variant-numeric: tabular-nums; }
 .dl.ok { color: var(--primary); }
 /* download progress ring (--p: 0-100) */

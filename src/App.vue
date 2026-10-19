@@ -11,7 +11,11 @@ import FileManager from "./lib/FileManager.vue";
 import Extensions from "./lib/Extensions.vue";
 import ExtCatalog from "./lib/ExtCatalog.vue";
 import SongMenu from "./lib/SongMenu.vue";
-import { has, unsupported, type ExtInfo } from "./lib/ext";
+import { downloadError, extName, has, unsupported, type ExtInfo } from "./lib/ext";
+import { pasted, verifyError, waiting, withVerify } from "./lib/verify";
+import { activity } from "./lib/activity";
+import QualityTag from "./lib/QualityTag.vue";
+import { loadQuality, longQuality, qualities, shortQuality } from "./lib/quality";
 import TitleBar from "./lib/TitleBar.vue";
 import type { IconName } from "./lib/icons";
 import WavyProgress from "./lib/WavyProgress.vue";
@@ -169,21 +173,40 @@ async function showPlaylist(id: number) {
   setView("playlists");
   await openPlaylist(id);
 }
+type Pending = { id: number; title: string; artist: string; album: string; duration_secs: number; uri: string };
+// songs of an imported playlist that are not in the library yet; downloaded one by one on click
+const plPending = ref<Pending[]>([]);
 async function openPlaylist(id: number) {
   plId.value = id;
-  plTracks.value = await invoke<Track[]>("playlist_tracks", { id });
+  [plTracks.value, plPending.value] = await Promise.all([
+    invoke<Track[]>("playlist_tracks", { id }),
+    invoke<Pending[]>("playlist_pending", { id }),
+  ]);
+}
+const plNote = ref("");
+async function importSpotify(url: string) {
+  plNote.value = "Membaca playlist Spotify…";
+  try {
+    const r = await invoke<{ id: number; name: string; added: number; pending: number }>("spotify_import", { url });
+    plNote.value = `“${r.name}”: ${r.added} lagu dari library, ${r.pending} belum diunduh (klik tombol unduh di baris lagunya).`;
+    await refreshPlaylists();
+    await openPlaylist(r.id);
+  } catch (e) {
+    plNote.value = `Gagal mengimpor: ${e}`;
+  }
 }
 async function createPlaylist() {
   const name = newPlaylist.value.trim();
   if (!name) return;
   newPlaylist.value = "";
+  if (/spotify\.com\/|^spotify:(playlist|album|artist|track):/.test(name)) return importSpotify(name);
   const id = await invoke<number>("create_playlist", { name });
   await refreshPlaylists();
   await openPlaylist(id);
 }
 async function deletePlaylist(id: number) {
   await invoke("delete_playlist", { id });
-  if (plId.value === id) { plId.value = null; plTracks.value = []; }
+  if (plId.value === id) { plId.value = null; plTracks.value = []; plPending.value = []; }
   await refreshPlaylists();
 }
 // In-page menu rather than a native <select>: WebKitGTK shows that as a GTK popup whose pointer grab can
@@ -225,6 +248,8 @@ async function removeFrom(path: string) {
 function setView(v: View) {
   view.value = v;
   group.value = null;
+  // songs downloaded elsewhere (catalog) since take their place in the open playlist
+  if (v === "playlists" && plId.value !== null) openPlaylist(plId.value);
 }
 
 type SettingsTab = "local" | "s3" | "ext";
@@ -254,11 +279,58 @@ async function redownload(t: Track, id: string, quality: string | null = null) {
     setLibrary(await invoke<Track[]>("load_library"));
     if (plId.value !== null) await openPlaylist(plId.value);
   } catch (e) {
-    await confirm({ title: "Gagal mengunduh ulang", message: String(e), confirm: "OK", icon: "download" });
+    onDownloadFailed(t.title, id, e);
   } finally {
     const { [t.path]: _, ...rest } = redl.value;
     redl.value = rest;
   }
+}
+// pending playlist song -> progress percent while it downloads, and the extension doing it
+const pdl = ref<Record<number, number>>({});
+const pdlExt: Record<number, string> = {};
+// short-lived notice at the bottom of the window (a failed download, ...)
+const toast = ref("");
+let toastTimer: ReturnType<typeof setTimeout> | undefined;
+function notify(text: string) {
+  toast.value = text;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (toast.value = ""), 7000);
+}
+function onDownloadFailed(song: string, ext: string, err: unknown) {
+  const e = exts.value.find((x) => x.id === ext);
+  notify(downloadError(err, song, e ? extName(e) : ext));
+}
+// pending playlist song -> why its last download failed
+const pfail = ref<Record<number, string>>({});
+async function downloadPending(p: Pending, ext: string, quality: string | null) {
+  const { [p.id]: _, ...ok } = pfail.value;
+  pfail.value = ok;
+  pdl.value = { ...pdl.value, [p.id]: 0 };
+  pdlExt[p.id] = ext;
+  activity[ext] = "";
+  try {
+    // the song as the catalog knows it (full metadata, cover, album), so it downloads the same way
+    const meta = exts.value.find((e) => e.enabled && e.id === "spotify-web");
+    const sid = p.uri.split(":")[2];
+    const track = meta && sid
+      ? await invoke<Record<string, unknown> | null>("ext_call", { id: meta.id, method: "getTrack", args: [sid] })
+          .then((t) => (t ? { ...t, provider_id: meta.id } : null)).catch(() => null)
+      : null;
+    await withVerify(ext, () => invoke("pending_download", { id: p.id, ext, quality, track }), () => (pdl.value = { ...pdl.value, [p.id]: 0 }));
+    setLibrary(await invoke<Track[]>("load_library"));
+    if (plId.value !== null) await openPlaylist(plId.value);
+  } catch (e) {
+    // like the catalog: no dialog, the row's button turns into "try again" with the reason as its tooltip
+    pfail.value = { ...pfail.value, [p.id]: String(e) };
+    onDownloadFailed(p.title, ext, e);
+  } finally {
+    const { [p.id]: _, ...rest } = pdl.value;
+    pdl.value = rest;
+  }
+}
+async function removePending(p: Pending) {
+  await invoke("pending_remove", { id: p.id });
+  if (plId.value !== null) await openPlaylist(plId.value);
 }
 async function removeSong(t: Track) {
   const s3 = isS3(t.path);
@@ -277,9 +349,8 @@ async function removeSong(t: Track) {
     await confirm({ title: "Gagal menghapus", message: String(e), confirm: "OK", icon: "trash", danger: true });
   }
 }
-async function onDownloaded(t: Track) {
+async function onDownloaded() {
   setLibrary(await invoke<Track[]>("load_library"));
-  playAt([t], 0);
 }
 
 const folders = ref<string[]>([]);
@@ -505,16 +576,30 @@ async function clearLyrics() {
 }
 
 // lyrics + dynamic colour follow the playing track
+const coverTried = new Set<string>();
 watch(() => now.value?.path, (path) => {
+  if (path) loadQuality(path);
   lyrics.value = [];
   lyricSearchOpen.value = false;
   lyricHits.value = null;
   lyricErr.value = "";
   if (!path) return;
   const n = now.value!;
+  // missing artist/album ("Tidak diketahui"): look it up online once per song per session
+  if ((!n.artist || !n.album) && !coverTried.has("meta:" + path)) {
+    coverTried.add("meta:" + path);
+    invoke<Track | null>("find_meta", { path }).then((t) => {
+      if (t) for (const x of [...rawLibrary.value, ...plTracks.value, ...queue.value]) if (x.path === path) Object.assign(x, t);
+    }).catch(() => {});
+  }
   lyricQuery.value = [n.title, n.artist].filter(Boolean).join(" ");
   loadLyrics();
   invoke<string | null>("get_cover", { path }).then(async (c) => {
+    // no embedded cover: look it up online once per song per session
+    if (!c && !coverTried.has(path)) {
+      coverTried.add(path);
+      c = await invoke<string | null>("find_cover", { path }).catch(() => null);
+    }
     covers[path] = c;
     const seed = c ? await seedFromImage(c).catch(() => DEFAULT_SEED) : DEFAULT_SEED;
     if (now.value?.path === path) applyTheme(seed);
@@ -555,6 +640,8 @@ onMounted(async () => {
   subs.push(
     listen<{ key: string; pct: number }>("ext-download", ({ payload: { key, pct } }) => {
       if (key in redl.value) redl.value = { ...redl.value, [key]: pct };
+      const pid = key.startsWith("pending:") ? Number(key.slice(8)) : NaN;
+      if (pid in pdl.value) pdl.value = { ...pdl.value, [pid]: Math.round(pct) };
     }),
     listen<[string, number, number]>("s3-download", ({ payload: [path, done, total] }) => {
       if (path in progress.value) progress.value = { ...progress.value, [path]: total ? Math.round((done / total) * 100) : 0 };
@@ -749,13 +836,23 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
           </span>
           <form class="chip new" @submit.prevent="createPlaylist">
             <Icon name="add" :size="18" />
-            <input placeholder="Playlist baru" v-model="newPlaylist" aria-label="Nama playlist baru" />
+            <input placeholder="Playlist baru / link Spotify" v-model="newPlaylist" aria-label="Nama playlist baru" />
           </form>
         </div>
+        <div v-if="view === 'playlists' && waiting" class="pl-note verify">
+          Selesaikan verifikasi di jendela yang terbuka; unduhan lanjut otomatis. Kalau jendela tidak menutup sendiri, tempel tautan
+          <code>spotiflac://session-grant?…</code> di sini:
+          <input v-model="pasted" placeholder="spotiflac://session-grant?grant=…&state=…" spellcheck="false" />
+        </div>
+        <p v-else-if="view === 'playlists' && verifyError" class="pl-note">{{ verifyError }}</p>
+        <p v-if="view === 'playlists' && plNote" class="pl-note" role="status">
+          {{ plNote }}
+          <button class="icon-btn small" title="Tutup" @click="plNote = ''"><Icon name="close" :size="18" /></button>
+        </p>
 
         <div v-if="view === 'catalog'" class="catalog">
           <ExtCatalog :exts="exts" :library="rawLibrary" :query="query" :now-path="now?.path" :playing="playing" :redl="redl"
-            @downloaded="onDownloaded" @toggle="togglePause" @redownload="redownload" @remove="removeSong" />
+            @downloaded="onDownloaded" @failed="onDownloadFailed" @play="(t) => playAt([t], 0)" @toggle="togglePause" @redownload="redownload" @remove="removeSong" />
           <section v-if="albums.length" class="shelf">
             <div class="shelf-head"><h2>Album</h2><button class="more" @click="setView('albums')">Lihat semua</button></div>
             <div class="shelf-row">
@@ -832,9 +929,27 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
             </div>
             <SongMenu class="row-act" :class="{ busy: t.path in redl }" :title="t.title" :downloaders="isS3(t.path) ? [] : downloaders"
               :busy="redl[t.path] ?? null" @redownload="(id, q) => redownload(t, id, q)" @remove="removeSong(t)" />
+            <QualityTag :path="t.path" />
             <span class="dur">{{ fmt(t.duration_secs) }}</span>
           </li>
-          <p v-if="!shown.length" class="none">
+          <template v-if="view === 'playlists'">
+            <li v-for="p in plPending" :key="`p${p.id}`" class="pending">
+              <div class="row">
+                <span class="art-wrap"><span class="pend-art"><Icon name="note" :size="24" /></span></span>
+                <span class="meta">
+                  <strong>{{ p.title }}</strong>
+                  <span v-if="p.id in pdl" class="live">{{ activity[pdlExt[p.id]] || "Memulai…" }}</span>
+                  <span v-else>{{ unknown(p.artist) }}<template v-if="p.album"> · {{ p.album }}</template> · belum diunduh</span>
+                </span>
+              </div>
+              <SongMenu class="row-act" :class="{ busy: p.id in pdl || p.id in pfail }" download :title="p.title" :downloaders="downloaders"
+                :busy="pdl[p.id] ?? null" :failed="pfail[p.id]"
+                @redownload="(id, q) => downloadPending(p, id, q)" />
+              <button class="icon-btn row-act" title="Hapus dari playlist" :disabled="p.id in pdl" @click="removePending(p)"><Icon name="close" :size="20" /></button>
+              <span class="dur">{{ fmt(p.duration_secs) }}</span>
+            </li>
+          </template>
+          <p v-if="!shown.length && !(view === 'playlists' && plPending.length)" class="none">
             <template v-if="view === 'playlists' && plId === null">
               {{ playlists.length ? "Pilih playlist di atas." : "Buat playlist pertama dengan mengetik namanya di atas." }}
             </template>
@@ -865,6 +980,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
       </div>
       <h2>{{ now.title }}</h2>
       <p>{{ unknown(now.artist) }} · {{ unknown(now.album) }}</p>
+      <p v-if="qualities[now.path]" class="now-q">{{ longQuality(qualities[now.path]!) }}</p>
     </div>
     <div v-if="showLyricSearch" class="lyric-search">
       <div class="ls-head">
@@ -907,6 +1023,13 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
   </section>
   </Transition>
 
+  <Transition name="toast">
+    <div v-if="toast" class="toast" :class="{ above: now }" role="alert">
+      <Icon name="error" :size="20" />
+      <span>{{ toast }}</span>
+      <button class="icon-btn small" title="Tutup" @click="toast = ''"><Icon name="close" :size="18" /></button>
+    </div>
+  </Transition>
   <div v-if="downloads.length" class="downloads" :class="{ above: now }" role="status">
     <div v-for="d in downloads" :key="d.path" class="dl-item">
       <span class="dl-title">Mengunduh {{ d.title }}</span>
@@ -920,7 +1043,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
       <CoverArt :path="now.path" />
       <span class="meta">
         <strong>{{ now.title }}</strong>
-        <span>{{ unknown(now.artist) }}</span>
+        <span>{{ unknown(now.artist) }}<template v-if="qualities[now.path]"> · {{ shortQuality(qualities[now.path]!) }}</template></span>
       </span>
     </button>
     <div class="ctrl">
@@ -1078,6 +1201,15 @@ h1 {
 .meta strong { font-size: 16px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .downloads { position: fixed; right: 24px; bottom: 24px; z-index: 25; display: flex; flex-direction: column; gap: 8px; width: min(360px, calc(100vw - 48px)); }
 .downloads.above { bottom: 128px; }
+.toast {
+  position: fixed; left: 50%; bottom: 24px; z-index: 26; transform: translateX(-50%); width: max-content; max-width: min(560px, calc(100vw - 32px));
+  display: flex; align-items: center; gap: 12px; padding: 10px 8px 10px 16px; border-radius: 16px; font-size: 14px;
+  background: var(--on-surface); color: var(--surface); box-shadow: 0 6px 20px rgb(0 0 0 / 0.3);
+}
+.toast.above { bottom: 128px; }
+.toast .icon-btn { color: inherit; }
+.toast-enter-active, .toast-leave-active { transition: opacity 0.2s, transform 0.3s var(--emph); }
+.toast-enter-from, .toast-leave-to { opacity: 0; transform: translate(-50%, 12px); }
 .dl-item { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; padding: 12px 16px; border-radius: 16px; background: var(--secondary-container); color: var(--on-secondary-container); box-shadow: 0 4px 16px rgb(0 0 0 / 0.25); font-size: 14px; }
 .dl-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dl-bar { grid-column: 1 / -1; grid-row: 2; height: 4px; border-radius: 2px; background: color-mix(in srgb, currentColor 20%, transparent); overflow: hidden; }
@@ -1139,7 +1271,14 @@ li:hover .row-act, .row-act:focus-visible, .row-menu.open .row-act, .row-act.ope
 .chip.sel > button:first-child { padding-right: 4px; }
 .chip-x { width: 32px; height: 32px; margin-right: 4px; border-radius: 16px; display: grid; place-items: center; }
 .chip.new { gap: 6px; padding: 0 6px 0 12px; border-style: dashed; }
-.chip.new input { width: 130px; border: 0; background: none; outline: none; font-size: 14px; }
+.pl-note.verify { display: block; line-height: 1.6; }
+.pl-note.verify input { display: block; width: 100%; margin-top: 6px; padding: 8px 12px; border-radius: 12px; border: 1px solid var(--outline-variant); background: var(--surface-container); }
+.pl-note { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; font-size: 14px; color: var(--on-surface-variant); }
+.songs li.pending .row, .songs li.pending .dur { opacity: 0.75; }
+.songs li.pending .row { cursor: default; }
+.meta span.live { color: var(--primary); font-family: ui-monospace, monospace; font-size: 12px; }
+.pend-art { width: 100%; height: 100%; display: grid; place-items: center; border-radius: 12px; background: var(--surface-container-high); color: var(--on-surface-variant); }
+.chip.new input { width: 190px; border: 0; background: none; outline: none; font-size: 14px; }
 
 /* ---------- empty state ---------- */
 .empty { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 8vh 0; }
@@ -1254,6 +1393,10 @@ li:hover .row-act, .row-act:focus-visible, .row-menu.open .row-act, .row-act.ope
   font-weight: 800; font-variation-settings: "wdth" 120, "opsz" 60; text-wrap: balance;
 }
 .stage p { margin: 0; color: var(--primary); font-size: 18px; font-weight: 600; }
+.stage p.now-q {
+  margin-top: 10px; display: inline-block; padding: 4px 12px; border-radius: 12px; font-size: 13px; font-weight: 700;
+  font-variant-numeric: tabular-nums; background: var(--tertiary-container); color: var(--on-tertiary-container);
+}
 .lyrics {
   overflow-y: auto; padding: 30vh 8px; scrollbar-width: none;
   mask-image: linear-gradient(transparent, #000 22%, #000 78%, transparent);

@@ -197,6 +197,10 @@
     write(p, data) { return host.file("write", str(p), typeof data === "string" ? data : JSON.stringify(data)) === "true"; },
     delete(p) { return host.file("delete", str(p), "") === "true"; },
     getSize(p) { return Number(host.file("size", str(p), "")) || 0; },
+    // patternedFileTransform@1: decrypt every n-th fixed-size segment (Deezer's Blowfish-CBC streams)
+    transformPatternedBlocks(src, dst, opts, onProgress) {
+      return JSON.parse(host.transform(str(src), str(dst), JSON.stringify(opts || {}), typeof onProgress === "function" ? onProgress : undefined));
+    },
   };
 
   // ---- signed sessions (manifest `signedSession`; see src/ext/session.rs)

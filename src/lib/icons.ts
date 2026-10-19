@@ -36,6 +36,7 @@ import downloadDone from "@material-symbols/svg-400/rounded/download_done-fill.s
 import addFolder from "@material-symbols/svg-400/rounded/create_new_folder-fill.svg?raw";
 import add from "@material-symbols/svg-400/rounded/add-fill.svg?raw";
 import close from "@material-symbols/svg-400/rounded/close-fill.svg?raw";
+import error from "@material-symbols/svg-400/rounded/error-fill.svg?raw";
 import lyrics from "@material-symbols/svg-400/rounded/lyrics-fill.svg?raw";
 import playlistAdd from "@material-symbols/svg-400/rounded/playlist_add-fill.svg?raw";
 
@@ -87,6 +88,7 @@ export const icons = {
   addFolder,
   add,
   close,
+  error,
   lyrics,
   playlistAdd,
   extension,

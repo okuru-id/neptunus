@@ -249,8 +249,12 @@ impl Host {
             headers.insert("content-type".into(), "application/json".into());
         }
         headers.extend(extras.iter().map(|(k, v)| (k.to_lowercase(), v.clone())));
-        // the gateway resolves the stream on its side, which can take longer than a plain page fetch
-        let res = self.send_within(GATEWAY_TIMEOUT, &url, method, body, &headers)?;
+        // the gateway resolves the stream on its side, which can take longer than a plain page fetch. Only
+        // downloads (a deadline beyond a plain call's) get that: a metadata lookup that hung for 60s would eat
+        // the whole call (e.g. `checkAvailability`), leaving the extension's own fallbacks no time.
+        let downloading = self.deadline.borrow().saturating_duration_since(Instant::now()) > AVAILABILITY_TIMEOUT;
+        let timeout = if downloading { GATEWAY_TIMEOUT } else { self.timeout };
+        let res = self.send_within(timeout, &url, method, body, &headers)?;
         Ok((url, res))
     }
 

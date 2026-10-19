@@ -1,6 +1,6 @@
 [package]
 name = "neptunus"
-version = "0.2.6"
+version = "0.2.7"
 description = "Neptunus, a lightweight desktop music player"
 authors = ["you"]
 edition = "2024"
@@ -37,6 +37,10 @@ hmac = "0.13.0"
 sha1 = "0.11.0"
 rquickjs = "0.14.0"
 zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
+blowfish = "0.9"
+cbc = "0.1"
+aes = "0.8"
+ctr = "0.9"
 
 # Desktop only: tray, OS media controls, system trash (iOS/Android have none of these)
 [target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]

@@ -11,6 +11,19 @@ pub struct Track {
     pub duration_secs: u64,
 }
 
+/// A playlist entry whose song is not in the library yet (imported from Spotify); downloading it
+/// turns it into a normal playlist track.
+#[derive(Serialize)]
+pub struct Pending {
+    pub id: i64,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub duration_secs: u64,
+    /// `spotify:track:<id>`: finds the song's full metadata and cover art when downloading
+    pub uri: String,
+}
+
 #[derive(Serialize)]
 pub struct Playlist {
     id: i64,
@@ -40,10 +53,16 @@ impl Db {
                playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
                path TEXT NOT NULL REFERENCES tracks(path) ON DELETE CASCADE,
                pos INTEGER NOT NULL, PRIMARY KEY (playlist_id, path));
+             CREATE TABLE IF NOT EXISTS playlist_pending (
+               id INTEGER PRIMARY KEY, playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+               title TEXT NOT NULL, artist TEXT NOT NULL, album TEXT NOT NULL,
+               duration_secs INTEGER NOT NULL, pos INTEGER NOT NULL, uri TEXT NOT NULL DEFAULT '');
              CREATE TABLE IF NOT EXISTS downloads (
                path TEXT PRIMARY KEY REFERENCES tracks(path) ON DELETE CASCADE,
                ext TEXT NOT NULL, track TEXT NOT NULL);",
         )?;
+        // tables made before the Spotify uri column (fails harmlessly once it exists)
+        let _ = c.execute("ALTER TABLE playlist_pending ADD COLUMN uri TEXT NOT NULL DEFAULT ''", []);
         Ok(Self(Mutex::new(c)))
     }
 
@@ -96,6 +115,53 @@ impl Db {
              SELECT ?1, ?2, COALESCE(MAX(pos), 0) + 1 FROM playlist_tracks WHERE playlist_id = ?1",
             params![id, path],
         ).map(|_| ())
+    }
+
+    pub fn add_to_playlist_at(&self, id: i64, path: &str, pos: i64) -> rusqlite::Result<()> {
+        self.0.lock().unwrap()
+            .execute("INSERT OR IGNORE INTO playlist_tracks VALUES (?1, ?2, ?3)", params![id, path, pos])
+            .map(|_| ())
+    }
+
+    pub fn add_pending(&self, id: i64, t: &Pending, pos: i64) -> rusqlite::Result<()> {
+        self.0.lock().unwrap().execute(
+            "INSERT INTO playlist_pending (playlist_id, title, artist, album, duration_secs, pos, uri) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            params![id, t.title, t.artist, t.album, t.duration_secs as i64, pos, t.uri],
+        ).map(|_| ())
+    }
+
+    pub fn pending(&self, id: i64) -> rusqlite::Result<Vec<Pending>> {
+        let c = self.0.lock().unwrap();
+        let mut s = c.prepare(
+            "SELECT id, title, artist, album, duration_secs, uri FROM playlist_pending WHERE playlist_id = ?1 ORDER BY pos")?;
+        s.query_map([id], |r| Ok(Pending {
+            id: r.get(0)?, title: r.get(1)?, artist: r.get(2)?, album: r.get(3)?, duration_secs: r.get::<_, i64>(4)? as u64, uri: r.get(5)?,
+        }))?.collect()
+    }
+
+    pub fn pending_one(&self, id: i64) -> rusqlite::Result<Option<Pending>> {
+        let c = self.0.lock().unwrap();
+        let mut s = c.prepare("SELECT id, title, artist, album, duration_secs, uri FROM playlist_pending WHERE id = ?1")?;
+        let mut rows = s.query_map([id], |r| Ok(Pending {
+            id: r.get(0)?, title: r.get(1)?, artist: r.get(2)?, album: r.get(3)?, duration_secs: r.get::<_, i64>(4)? as u64, uri: r.get(5)?,
+        }))?;
+        rows.next().transpose()
+    }
+
+    /// The pending entry's song now exists at `path`: it takes the entry's place in the playlist.
+    pub fn resolve_pending(&self, id: i64, path: &str) -> rusqlite::Result<()> {
+        let mut c = self.0.lock().unwrap();
+        let tx = c.transaction()?;
+        tx.execute(
+            "INSERT OR IGNORE INTO playlist_tracks SELECT playlist_id, ?2, pos FROM playlist_pending WHERE id = ?1",
+            params![id, path],
+        )?;
+        tx.execute("DELETE FROM playlist_pending WHERE id = ?1", [id])?;
+        tx.commit()
+    }
+
+    pub fn remove_pending(&self, id: i64) -> rusqlite::Result<()> {
+        self.0.lock().unwrap().execute("DELETE FROM playlist_pending WHERE id = ?1", [id]).map(|_| ())
     }
 
     pub fn remove_from_playlist(&self, id: i64, path: &str) -> rusqlite::Result<()> {

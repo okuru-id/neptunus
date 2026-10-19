@@ -19,6 +19,7 @@ use std::{
 use tauri::{AppHandle, Emitter, Manager, State};
 
 pub mod session;
+mod mp4;
 
 const PRELUDE: &str = include_str!("ext_prelude.js");
 const UA: &str = concat!("Neptunus/", env!("CARGO_PKG_VERSION"));
@@ -26,6 +27,9 @@ const BROWSER_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KH
 /// One call (and its HTTP requests) may run this long; downloads get longer.
 const CALL_TIMEOUT: Duration = Duration::from_secs(60);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// Finding a song on a download source (`checkAvailability`) can take many sequential lookups (Qobuz walks
+/// candidate albums one by one), and it is part of a download the user started.
+const AVAILABILITY_TIMEOUT: Duration = Duration::from_secs(120);
 
 type R<T> = Result<T, String>;
 
@@ -45,7 +49,25 @@ pub struct Exts {
     workers: Mutex<HashMap<String, mpsc::Sender<Job>>>,
 }
 
+/// For `ext-activity` events, sent from extension threads that have no `AppHandle` of their own.
+static APP: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
+
+#[derive(Clone, serde::Serialize)]
+struct Activity {
+    ext: String,
+    text: String,
+}
+
+/// Tells the UI what extension `ext` is doing right now (a step, a log line, a request), so a
+/// download that sits at 0% still shows it is working.
+pub(crate) fn activity(ext: &str, text: impl Into<String>) {
+    if let Some(app) = APP.get() {
+        let _ = app.emit("ext-activity", Activity { ext: ext.to_owned(), text: text.into() });
+    }
+}
+
 pub fn init(app: &AppHandle) -> R<Exts> {
+    let _ = APP.set(app.clone());
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     Ok(Exts { code: dir.join("extensions"), data: dir.join("extensions-data"), workers: Mutex::default() })
 }
@@ -295,8 +317,8 @@ impl Host {
         if left.is_zero() {
             return Err("timeout: extension took too long to respond".into());
         }
-        let method = attohttpc::Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?;
-        let mut req = attohttpc::RequestBuilder::new(method, url)
+        let verb = attohttpc::Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?;
+        let mut req = attohttpc::RequestBuilder::new(verb, url)
             .timeout(timeout.min(left))
             .read_timeout(timeout)
             .header("User-Agent", UA)
@@ -309,7 +331,15 @@ impl Host {
             let name = attohttpc::header::HeaderName::from_bytes(k.as_bytes()).map_err(|e| e.to_string())?;
             req = req.try_header(name, v.as_str().unwrap_or_default()).map_err(|e| e.to_string())?;
         }
-        let res = if body.is_empty() { req.send() } else { req.text(body).send() }.map_err(|e| e.to_string())?;
+        let started = Instant::now();
+        let res = if body.is_empty() { req.send() } else { req.text(body).send() };
+        // NEPTUNUS_HTTP_LOG=1: one line per extension request, to see where a slow call spends its time
+        if std::env::var_os("NEPTUNUS_HTTP_LOG").is_some() {
+            let status = res.as_ref().map_or_else(|e| e.to_string(), |r| r.status().as_u16().to_string());
+            eprintln!("[ext {}] {method} {} -> {status} in {:.1}s", self.id, url.split('?').next().unwrap_or(url), started.elapsed().as_secs_f32());
+        }
+        activity(&self.id, format!("{method} {}", url.split_once("://").map_or(url, |(_, r)| r).split('?').next().unwrap_or(url)));
+        let res = res.map_err(|e| e.to_string())?;
         self.keep_cookies(&host, res.headers());
         Ok(res)
     }
@@ -439,6 +469,75 @@ impl Host {
         })
     }
 
+    /// `file.transformPatternedBlocks`: rewrites `src` into `dst` segment by segment, decrypting every
+    /// `transformEvery`-th segment (from `transformOffset`) and copying the rest. Deezer streams come this
+    /// way: Blowfish-CBC on every third 2048-byte block, each with a fresh IV.
+    fn transform<'js>(&self, src: &str, dst: &str, opts: &str, cb: Option<Function<'js>>) -> String {
+        use blowfish::cipher::{BlockDecryptMut, KeyIvInit, block_padding::NoPadding};
+        let run = || -> R<String> {
+            let o: Value = serde_json::from_str(opts).map_err(|e| e.to_string())?;
+            let s = |k: &str| o[k].as_str().unwrap_or("").to_lowercase();
+            if (s("operation"), s("algorithm"), s("mode")) != ("decrypt".into(), "blowfish".into(), "cbc".into())
+                || !matches!(s("padding").as_str(), "" | "none")
+            {
+                return Err(format!("unsupported transform: {} {} {}", s("operation"), s("algorithm"), s("mode")));
+            }
+            let bytes = |k: &str| -> R<Vec<u8>> {
+                let v = o[k].as_str().unwrap_or("");
+                match s(&format!("{k}Encoding")).as_str() {
+                    "hex" => (0..v.len()).step_by(2).map(|i| u8::from_str_radix(v.get(i..i + 2).unwrap_or("x"), 16).map_err(|e| e.to_string())).collect(),
+                    "base64" => STANDARD.decode(v).map_err(|e| e.to_string()),
+                    _ => Ok(v.as_bytes().to_vec()),
+                }
+            };
+            let (key, iv) = (bytes("key")?, bytes("iv")?);
+            let size = o["segmentSize"].as_u64().filter(|n| *n > 0 && n % 8 == 0).ok_or("segmentSize must be a multiple of 8")? as usize;
+            let every = o["transformEvery"].as_u64().unwrap_or(1).max(1);
+            let offset = o["transformOffset"].as_u64().unwrap_or(0);
+            let partial = o["transformPartial"].as_bool().unwrap_or(false);
+            let (src, dst) = (self.path(src)?, self.path(dst)?);
+            let total = src.metadata().map_err(|e| e.to_string())?.len();
+            let mut input = std::io::BufReader::new(std::fs::File::open(&src).map_err(|e| e.to_string())?);
+            let mut output = std::io::BufWriter::new(std::fs::File::create(&dst).map_err(|e| e.to_string())?);
+            let (mut buf, mut index, mut done, mut last) = (vec![0u8; size], 0u64, 0u64, Instant::now());
+            loop {
+                // fill a whole segment (read may return less)
+                let mut n = 0;
+                while n < size {
+                    match input.read(&mut buf[n..]).map_err(|e| e.to_string())? {
+                        0 => break,
+                        k => n += k,
+                    }
+                }
+                if n == 0 {
+                    break;
+                }
+                if index >= offset && (index - offset) % every == 0 && (n == size || partial) {
+                    let whole = n - n % 8;
+                    cbc::Decryptor::<blowfish::Blowfish>::new_from_slices(&key, &iv)
+                        .map_err(|e| e.to_string())?
+                        .decrypt_padded_mut::<NoPadding>(&mut buf[..whole])
+                        .map_err(|e| e.to_string())?;
+                }
+                std::io::Write::write_all(&mut output, &buf[..n]).map_err(|e| e.to_string())?;
+                index += 1;
+                done += n as u64;
+                if last.elapsed() > Duration::from_millis(250) {
+                    last = Instant::now();
+                    if let Some(cb) = &cb {
+                        let _: rquickjs::Result<()> = cb.call((done as f64, total as f64));
+                    }
+                }
+            }
+            std::io::Write::flush(&mut output).map_err(|e| e.to_string())?;
+            Ok(dst.to_string_lossy().into_owned())
+        };
+        match run() {
+            Ok(p) => json!({ "success": true, "path": p }).to_string(),
+            Err(e) => json!({ "success": false, "error": e }).to_string(),
+        }
+    }
+
     fn storage(&self, op: &str, secret: bool, key: &str, value: &str) -> String {
         let (map, file) = if secret { (&self.secrets, "credentials.json") } else { (&self.storage, "storage.json") };
         let mut m = map.borrow_mut();
@@ -533,9 +632,18 @@ impl Vm {
             let host = vm.host.clone();
             set("file", Function::new(ctx.clone(), move |op: String, path: String, data: String| host.file(&op, &path, &data).unwrap_or_default()))?;
             let host = vm.host.clone();
+            set("transform", Function::new(ctx.clone(), move |src: String, dst: String, opts: String, cb: rquickjs::function::Opt<rquickjs::Value<'_>>| {
+                host.transform(&src, &dst, &opts, cb.0.and_then(|v| v.into_function()))
+            }))?;
+            let host = vm.host.clone();
             set("session", Function::new(ctx.clone(), move |method: String, args: String| host.session(&method, &args)))?;
             let host = vm.host.clone();
-            set("log", Function::new(ctx.clone(), move |level: String, msg: String| eprintln!("[ext {}] {level}: {msg}", host.id)))?;
+            set("log", Function::new(ctx.clone(), move |level: String, msg: String| {
+                eprintln!("[ext {}] {level}: {msg}", host.id);
+                if level != "debug" {
+                    activity(&host.id, msg);
+                }
+            }))?;
             set("sleep", Function::new(ctx.clone(), |ms: f64| std::thread::sleep(Duration::from_millis(ms.max(0.0) as u64))))?;
             set("userAgent", Function::new(ctx.clone(), |browser: bool| if browser { BROWSER_UA } else { UA }.to_owned()))?;
             set("appVersion", Function::new(ctx.clone(), || env!("CARGO_PKG_VERSION").to_owned()))?;
@@ -563,8 +671,12 @@ impl Vm {
     }
 
     fn run(&self, job: &mut Job) -> R<String> {
-        let long = job.method == "download";
-        *self.host.deadline.borrow_mut() = Instant::now() + if long { DOWNLOAD_TIMEOUT } else { CALL_TIMEOUT };
+        let limit = match job.method.as_str() {
+            "download" => DOWNLOAD_TIMEOUT,
+            "checkAvailability" => AVAILABILITY_TIMEOUT,
+            _ => CALL_TIMEOUT,
+        };
+        *self.host.deadline.borrow_mut() = Instant::now() + limit;
         *self.host.root.borrow_mut() = job.root.take();
         *self.host.progress.borrow_mut() = job.progress.take();
         let out = self.call(&job.method, &job.args);
@@ -711,7 +823,33 @@ pub async fn ext_redownload(app: AppHandle, path: String, id: String, quality: O
     .await
 }
 
-fn fetch(app: &AppHandle, id: &str, track: &Value, quality: Option<String>, key: &str) -> R<crate::db::Track> {
+/// A download the extension left for the host to decrypt (`decryption_key`, Amazon). FLAC-in-MP4 is
+/// decrypted natively into a plain .flac; other codecs (Opus, Dolby) need ffmpeg on the PATH.
+fn finish_stream(path: &Path, res: &Value) -> R<PathBuf> {
+    let key = ["decryption_key"].iter().find_map(|k| res[k].as_str()).or_else(|| res["decryption"]["key"].as_str()).filter(|k| !k.is_empty());
+    if let Some(flac) = mp4::to_flac(path, key)? {
+        if flac != path {
+            let _ = std::fs::remove_file(path);
+        }
+        return Ok(flac);
+    }
+    let Some(key) = key else { return Ok(path.to_owned()) };
+    let ext = res["output_extension"].as_str().filter(|e| !e.is_empty()).unwrap_or(".m4a");
+    let out = path.with_extension(format!("dec{ext}"));
+    let ok = std::process::Command::new("ffmpeg")
+        .args(["-v", "error", "-y", "-decryption_key", key, "-i"]).arg(path).args(["-c", "copy"]).arg(&out)
+        .status()
+        .map_err(|_| "Kualitas ini butuh ffmpeg untuk dibuka. Pasang ffmpeg, atau pilih kualitas FLAC.".to_owned())?;
+    if !ok.success() {
+        return Err("ffmpeg gagal mendekripsi file unduhan".into());
+    }
+    let _ = std::fs::remove_file(path);
+    let dst = path.with_extension(ext.trim_start_matches('.'));
+    std::fs::rename(&out, &dst).map_err(|e| e.to_string())?;
+    Ok(dst)
+}
+
+pub(crate) fn fetch(app: &AppHandle, id: &str, track: &Value, quality: Option<String>, key: &str) -> R<crate::db::Track> {
     {
         let (id, key) = (id.to_owned(), key.to_owned());
         let exts = app.state::<Exts>();
@@ -741,19 +879,25 @@ fn fetch(app: &AppHandle, id: &str, track: &Value, quality: Option<String>, key:
             move |pct: f64| drop(app.emit("ext-download", Progress { key: key.clone(), pct }))
         };
         emit(0.0);
-        let options = json!({ "spotify_id": track["id"], "track": track, "isrc": track["isrc"] });
+        let options = json!({ "spotify_id": track["id"], "track": track, "isrc": track["isrc"],
+                              "deezer_id": track["deezer_id"], "duration_ms": track["duration_ms"] });
         let mut track_id = text("id");
         if track["provider_id"].as_str().is_some_and(|p| p != id) {
+            activity(&id, "Mencari lagu di sumber unduhan…");
             let found = exts.call(&id, "checkAvailability", json!([text("isrc"), text("name"), text("artists"), options]))?;
             track_id = found["track_id"].as_str().or_else(|| found["trackId"].as_str()).filter(|_| found["available"] != false)
                 .ok_or("this song was not found on the download source")?.to_owned();
         }
+        activity(&id, "Mengunduh…");
         let res = exts.call_with(&id, "download", json!([track_id, quality, out.to_string_lossy(), options]), Some(Box::new(emit)), Some(dir.clone()))?;
         if res["success"] != true {
             let msg = ["error_message", "errorMessage", "error"].iter().find_map(|k| res[k].as_str()).unwrap_or("download failed");
             return Err(msg.to_owned());
         }
         let path = ["file_path", "filePath", "path"].iter().find_map(|k| res[k].as_str()).map(PathBuf::from).unwrap_or(out);
+        // encrypted / MP4-wrapped streams become a plain playable file
+        let path = finish_stream(&path, &res)?;
+        activity(&id, "Menyimpan tag dan sampul…");
         tag_file(&path, &track);
         // a cover lookup that came up empty before the tags were written is cached as "none"
         if let Ok(dir) = app.path().app_cache_dir().map(|d| d.join("covers")) {
@@ -774,7 +918,7 @@ fn fetch(app: &AppHandle, id: &str, track: &Value, quality: Option<String>, key:
 }
 
 /// Extensions leave files without cover art or tags: fill what is missing from the catalog's metadata.
-fn tag_file(path: &Path, track: &Value) {
+pub(crate) fn tag_file(path: &Path, track: &Value) {
     use lofty::{config::WriteOptions, file::TaggedFileExt, picture::{Picture, PictureType}, probe::Probe, tag::{Accessor, Tag, TagExt}};
     let Ok(mut file) = Probe::open(path).and_then(|p| p.read()) else { return };
     if file.primary_tag().is_none() {
@@ -891,5 +1035,37 @@ mod tests {
         let opts = json!({ "spotify_id": t["id"], "track": t, "isrc": t["isrc"] });
         let r = exts.call_with(&id, "download", json!([t["id"], "LOSSLESS", out.join("t.flac").to_string_lossy(), opts]), Some(Box::new(|p| print!("{p:.0}% "))), Some(out.clone()));
         println!("\ndownload: {r:?}");
+    }
+}
+
+
+#[cfg(test)]
+mod transform_tests {
+    use super::*;
+    use blowfish::cipher::{BlockEncryptMut, KeyIvInit, block_padding::NoPadding};
+
+    #[test]
+    fn decrypts_every_third_segment() {
+        let dir = std::env::temp_dir().join(format!("neptunus-transform-{}", std::process::id()));
+        let host = Host::new("t".into(), &json!({}), dir.clone());
+        let (key, iv) = (*b"0123456789abcdef", *b"\x00\x01\x02\x03\x04\x05\x06\x07");
+        // 7 full segments and a partial one; the partial one must stay as it is
+        let plain: Vec<u8> = (0..(2048 * 7 + 1000)).map(|i| (i * 31 % 251) as u8).collect();
+        let mut enc = plain.clone();
+        for (i, seg) in enc.chunks_mut(2048).enumerate() {
+            if i % 3 == 0 && seg.len() == 2048 {
+                cbc::Encryptor::<blowfish::Blowfish>::new_from_slices(&key, &iv).unwrap().encrypt_padded_mut::<NoPadding>(seg, 2048).unwrap();
+            }
+        }
+        assert_ne!(enc, plain);
+        std::fs::create_dir_all(dir.join("files")).unwrap();
+        std::fs::write(dir.join("files/in.bin"), &enc).unwrap();
+        let opts = json!({ "operation": "decrypt", "algorithm": "blowfish", "mode": "cbc", "key": "30313233343536373839616263646566",
+            "keyEncoding": "hex", "iv": "0001020304050607", "ivEncoding": "hex", "padding": "none", "segmentSize": 2048,
+            "transformEvery": 3, "transformOffset": 0, "transformPartial": false });
+        let res: Value = serde_json::from_str(&host.transform("in.bin", "out.bin", &opts.to_string(), None)).unwrap();
+        assert_eq!(res["success"], true, "{res}");
+        assert_eq!(std::fs::read(dir.join("files/out.bin")).unwrap(), plain);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -5,6 +5,7 @@ mod lyrics;
 mod media;
 mod player;
 mod s3;
+mod spotify;
 mod tray;
 use db::{Db, Playlist, Track};
 use tauri::{Manager, State};
@@ -137,18 +138,106 @@ fn load_cover(path: &str, max: u32) -> Option<(String, Vec<u8>)> {
     })
 }
 
+/// Cache files of a song's cover: (`<hash><tag>.img`, `<hash><tag>.none`); `tag` is "t" for thumbnails.
+fn cover_cache(app: &tauri::AppHandle, path: &str, tag: &str) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(path, &mut h);
+    let name = format!("{:016x}{tag}", std::hash::Hasher::finish(&h));
+    let dir = app.path().app_cache_dir().ok()?.join("covers");
+    Some((dir.join(format!("{name}.img")), dir.join(format!("{name}.none"))))
+}
+
+/// A playing song without cover art: looks it up on the iTunes Search API by title and artist and
+/// caches it as the song's cover (the file itself is left alone). None when nothing matches well.
+#[tauri::command]
+async fn find_cover(app: tauri::AppHandle, db: State<'_, Db>, path: String) -> R<Option<String>> {
+    let Some(t) = db.track(&path).map_err(e)? else { return Ok(None) };
+    let (title, artist) = (spotify::norm(&t.title), spotify::norm(t.artist.split([',', '&', ';']).next().unwrap_or("")));
+    if title.is_empty() {
+        return Ok(None);
+    }
+    blocking(move || {
+        let hit = itunes(&format!("{} {}", t.artist, t.title), |name, a| name == title && (artist.is_empty() || a.contains(&artist)))?;
+        let Some(url) = hit.as_ref().and_then(|h| h["artworkUrl100"].as_str()) else { return Ok(None) };
+        let get = |url: &str| attohttpc::get(url).header("User-Agent", "Mozilla/5.0").timeout(std::time::Duration::from_secs(10));
+        let bytes = get(&url.replace("100x100bb", "600x600bb")).send().and_then(|r| r.bytes()).map_err(|e| e.to_string())?;
+        let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
+        let jpeg = |max: u32| {
+            let mut out = Vec::new();
+            let _ = img.resize(max, max, image::imageops::FilterType::Triangle).to_rgb8()
+                .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Jpeg);
+            out
+        };
+        let (full, thumb) = (jpeg(512), jpeg(192));
+        for (tag, data) in [("", &full), ("t", &thumb)] {
+            if let Some((img, none)) = cover_cache(&app, &path, tag) {
+                let _ = std::fs::create_dir_all(img.parent().unwrap());
+                let _ = std::fs::remove_file(none);
+                let _ = std::fs::write(img, data);
+            }
+        }
+        Ok(Some(data_url("image/jpeg", &full)))
+    })
+    .await
+}
+
+/// First iTunes Search song whose normalized (title, artist) passes `ok`.
+fn itunes(term: &str, ok: impl Fn(&str, &str) -> bool) -> R<Option<serde_json::Value>> {
+    let res: serde_json::Value = attohttpc::get("https://itunes.apple.com/search")
+        .header("User-Agent", "Mozilla/5.0").timeout(std::time::Duration::from_secs(10))
+        .params([("term", term), ("entity", "song"), ("limit", "10")])
+        .send().and_then(|r| r.json()).map_err(|e| e.to_string())?;
+    Ok(res["results"].as_array().into_iter().flatten()
+        .find(|r| ok(&spotify::norm(r["trackName"].as_str().unwrap_or("")), &spotify::norm(r["artistName"].as_str().unwrap_or(""))))
+        .cloned())
+}
+
+/// A playing song missing its artist or album: looks it up on iTunes (titles like "Song - Artist"
+/// count too; a bare title with no artist is too ambiguous), saves what was missing to the library and, for local files, the file's tags.
+#[tauri::command]
+async fn find_meta(db: State<'_, Db>, path: String) -> R<Option<db::Track>> {
+    let Some(mut t) = db.track(&path).map_err(e)? else { return Ok(None) };
+    if !t.artist.is_empty() && !t.album.is_empty() {
+        return Ok(None);
+    }
+    let found = blocking({
+        let t = t.clone();
+        move || {
+            let artist = spotify::norm(t.artist.split([',', '&', ';']).next().unwrap_or(""));
+            let (x, y) = t.title.split_once(" - ").map(|(x, y)| (spotify::norm(x), spotify::norm(y))).unwrap_or_default();
+            itunes(&format!("{} {}", t.artist, t.title), |name, a| {
+                (name == spotify::norm(&t.title) && !artist.is_empty() && a.contains(&artist))
+                    || (t.artist.is_empty() && !x.is_empty() && ((name == x && a.contains(&y)) || (name == y && a.contains(&x))))
+            })
+        }
+    })
+    .await?;
+    let Some(hit) = found else { return Ok(None) };
+    let text = |k: &str| hit[k].as_str().unwrap_or("").to_owned();
+    if t.artist.is_empty() {
+        (t.title, t.artist) = (text("trackName"), text("artistName"));
+    }
+    if t.album.is_empty() {
+        t.album = text("collectionName");
+    }
+    db.upsert(std::slice::from_ref(&t)).map_err(e)?;
+    if !path.starts_with("s3://") {
+        let tags = serde_json::json!({ "name": t.title, "artists": t.artist, "album_name": t.album });
+        let p = std::path::PathBuf::from(&path);
+        let _ = tauri::async_runtime::spawn_blocking(move || ext::tag_file(&p, &tags)).await;
+    }
+    Ok(Some(t))
+}
+
 /// Returns the embedded cover as a data URL. Covers are cached on disk (app cache dir, `covers/`), so a
 /// song's file (or S3 object) is only read once; an empty cache file means "no cover".
 #[tauri::command]
 async fn get_cover(app: tauri::AppHandle, path: String, thumb: Option<bool>) -> Option<String> {
     let (max, tag) = if thumb == Some(true) { (192, "t") } else { (512, "") };
     tauri::async_runtime::spawn_blocking(move || {
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        std::hash::Hash::hash(&path, &mut h);
-        let name = format!("{:016x}{tag}", std::hash::Hasher::finish(&h));
         let dir = app.path().app_cache_dir().ok().map(|d| d.join("covers"));
-        let (img, none) = match &dir {
-            Some(d) => (Some(d.join(format!("{name}.img"))), Some(d.join(format!("{name}.none")))),
+        let (img, none) = match cover_cache(&app, &path, tag) {
+            Some((i, n)) => (Some(i), Some(n)),
             None => (None, None),
         };
         if none.as_ref().is_some_and(|f| f.exists()) {
@@ -171,6 +260,64 @@ async fn get_cover(app: tauri::AppHandle, path: String, thumb: Option<bool>) -> 
     .await
     .ok()
     .flatten()
+}
+
+/// What a song file is encoded as, read from its header (tags and cover art are skipped).
+#[derive(serde::Serialize)]
+struct Quality {
+    /// FLAC, ALAC, AAC, MP3, Opus, Vorbis, WAV, ...
+    format: &'static str,
+    bits: Option<u8>,
+    /// Hz
+    rate: Option<u32>,
+    /// kbps
+    kbps: Option<u32>,
+    lossless: bool,
+}
+
+/// Audio quality of a local song file; `None` for cloud (S3) songs and unreadable files.
+#[tauri::command]
+async fn audio_quality(path: String) -> Option<Quality> {
+    if path.starts_with("s3://") {
+        return None;
+    }
+    tauri::async_runtime::spawn_blocking(move || quality_of(&path)).await.ok().flatten()
+}
+
+fn quality_of(path: &str) -> Option<Quality> {
+    use lofty::{config::ParseOptions, file::FileType};
+    {
+        // by content, not extension: a download may be named .flac while holding an MP4 stream
+        let file = Probe::open(path).ok()?.guess_file_type().ok()?.options(ParseOptions::new().read_tags(false).read_cover_art(false)).read().ok()?;
+        let p = file.properties();
+        let bits = p.bit_depth();
+        let (format, lossless) = match file.file_type() {
+            FileType::Flac => ("FLAC", true),
+            FileType::Mp4 => {
+                use lofty::{file::AudioFile, mp4::{Mp4Codec, Mp4File}};
+                let mut f = std::fs::File::open(path).ok()?;
+                let mp4 = Mp4File::read_from(&mut f, ParseOptions::new().read_tags(false).read_cover_art(false)).ok()?;
+                match mp4.properties().codec() {
+                    Some(Mp4Codec::ALAC) => ("ALAC", true),
+                    Some(Mp4Codec::FLAC) => ("FLAC", true),
+                    Some(Mp4Codec::MP3) => ("MP3", false),
+                    Some(Mp4Codec::AAC) => ("AAC", false),
+                    // e.g. an encrypted stream that was never decrypted
+                    _ => ("MP4", false),
+                }
+            }
+            FileType::Aac => ("AAC", false),
+            FileType::Mpeg => ("MP3", false),
+            FileType::Opus => ("Opus", false),
+            FileType::Vorbis => ("Vorbis", false),
+            FileType::Wav => ("WAV", true),
+            FileType::Aiff => ("AIFF", true),
+            FileType::WavPack => ("WavPack", true),
+            FileType::Ape => ("APE", true),
+            _ => ("Audio", false),
+        };
+        Some(Quality { format, bits: bits.filter(|_| lossless), rate: p.sample_rate(), kbps: p.audio_bitrate(), lossless })
+    }
 }
 
 /// Embedded cover art as (mime type, raw image bytes).
@@ -227,6 +374,10 @@ pub fn run() {
         .manage(player::AudioState::new().expect("no audio output device"))
         .invoke_handler(tauri::generate_handler![
             scan_folder,
+            spotify::spotify_import,
+            spotify::playlist_pending,
+            spotify::pending_remove,
+            spotify::pending_download,
             s3::s3_get_config,
             s3::s3_save_config,
             s3::s3_sync,
@@ -249,6 +400,9 @@ pub fn run() {
             add_to_playlist,
             remove_from_playlist,
             get_cover,
+            find_cover,
+            find_meta,
+            audio_quality,
             lyrics::get_lyrics,
             lyrics::search_lyrics,
             lyrics::save_lyrics,

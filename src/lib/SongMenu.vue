@@ -4,7 +4,9 @@ import Icon from "./Icon.vue";
 import { extName, type ExtInfo } from "./ext";
 
 // ⋮ menu on a song row: re-download with a chosen extension, or delete the song.
-defineProps<{ title: string; downloaders: ExtInfo[]; busy?: number | null }>();
+// `download`: a song not downloaded yet; the trigger is a download button and there is no delete entry.
+// `failed`: why the last download failed; the button then offers to try again.
+defineProps<{ title: string; downloaders: ExtInfo[]; busy?: number | null; download?: boolean; failed?: string }>();
 const emit = defineEmits<{ redownload: [string, string | null]; remove: [] }>();
 
 const open = ref(false);
@@ -46,10 +48,11 @@ onUnmounted(close);
 
 <template>
   <div ref="root" class="song-menu" :class="{ open }">
-    <button class="icon-btn" :title="busy != null ? `Mengunduh ulang ${Math.round(busy)}%` : 'Lainnya'" :aria-label="`Lainnya untuk ${title}`"
-      :aria-expanded="open" @click="toggle">
+    <button class="icon-btn" :disabled="download && busy != null"
+      :title="busy != null ? `Mengunduh${download ? '' : ' ulang'} ${Math.round(busy)}%` : failed ? `Gagal: ${failed}` : download ? 'Unduh lagu ini' : 'Lainnya'"
+      :aria-label="`${download ? 'Unduh' : 'Lainnya untuk'} ${title}`" :aria-expanded="open" @click="toggle">
       <span v-if="busy != null" class="pct">{{ Math.round(busy) }}%</span>
-      <Icon v-else name="moreVert" :size="20" />
+      <Icon v-else :name="failed ? 'refresh' : download ? 'download' : 'moreVert'" :size="20" />
     </button>
     <div v-if="open" ref="menu" class="menu" :class="{ up }" role="menu">
       <template v-if="ext">
@@ -60,13 +63,14 @@ onUnmounted(close);
         </button>
       </template>
       <template v-else-if="downloaders.length">
-        <p>Unduh ulang dengan</p>
+        <p>{{ download ? 'Unduh dengan' : 'Unduh ulang dengan' }}</p>
         <button v-for="d in downloaders" :key="d.id" role="menuitem" :disabled="busy != null" @click="d.qualityOptions?.length ? (ext = d) : pick(() => emit('redownload', d.id, null))">
           <img v-if="d.iconData" :src="d.iconData" alt="" /><Icon v-else name="download" :size="20" />{{ extName(d) }}
         </button>
-        <hr />
+        <hr v-if="!download" />
       </template>
-      <button v-if="!ext" role="menuitem" class="danger" @click="pick(() => emit('remove'))"><Icon name="trash" :size="20" />Hapus lagu</button>
+      <p v-else-if="download">Belum ada ekstensi unduhan. Pasang di Pengaturan › Ekstensi.</p>
+      <button v-if="!ext && !download" role="menuitem" class="danger" @click="pick(() => emit('remove'))"><Icon name="trash" :size="20" />Hapus lagu</button>
     </div>
   </div>
 </template>

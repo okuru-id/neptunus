@@ -37,7 +37,8 @@
    so the body draws the rounded surface and clips everything (fixed layers included). */
 html {
   touch-action: pan-x pan-y;
-  background: transparent; --frame-radius: 16px; --sheet-gap: 0px; --sheet-radius: 20px;
+  /* not plain `transparent`: that lets older WebKit (macOS) propagate body's background to the canvas, which a transparent window drops */
+  background: rgb(0 0 0 / 0.004); --frame-radius: 16px; --sheet-gap: 0px; --sheet-radius: 20px;
   --frame-bg: var(--surface-container-lowest); /* darker frame around the rounded content sheet */
 }
 @media (prefers-color-scheme: light) { html { --frame-bg: var(--surface-container-high); } }

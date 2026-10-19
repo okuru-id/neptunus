@@ -1,6 +1,6 @@
 [package]
 name = "neptunus"
-version = "0.2.4"
+version = "0.2.5"
 description = "Neptunus, a lightweight desktop music player"
 authors = ["you"]
 edition = "2024"
@@ -40,9 +40,12 @@ zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 
 # Desktop only: tray, OS media controls, system trash (iOS/Android have none of these)
 [target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
 souvlaki = { version = "0.8.3", default-features = false, features = ["use_zbus"] }
 trash = "5"
+
+# Windows/macOS tray; Linux uses ksni instead (the tray-icon feature would demand libappindicator when bundling)
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
 
 # Linux: StatusNotifierItem tray over D-Bus (pure Rust, no libayatana needed when bundling)
 [target.'cfg(target_os = "linux")'.dependencies]

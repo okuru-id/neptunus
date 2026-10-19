@@ -69,31 +69,50 @@ jobs:
       contents: write
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Check signing secrets
+        id: sign
+        env:
+          IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
+        run: |
+          if [ -z "$IOS_CERTIFICATE" ]; then
+            echo "IOS_CERTIFICATE secret is empty, skipping the iOS build."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
 
-      - uses: actions/setup-node@v4
+      - if: steps.sign.outputs.ok == 'true'
+        uses: actions/checkout@v4
+
+      - if: steps.sign.outputs.ok == 'true'
+        uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
 
-      - uses: dtolnay/rust-toolchain@stable
+      - if: steps.sign.outputs.ok == 'true'
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-ios
 
-      - uses: swatinem/rust-cache@v2
+      - if: steps.sign.outputs.ok == 'true'
+        uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
           key: ios
 
-      - run: npm ci
+      - if: steps.sign.outputs.ok == 'true'
+        run: npm ci
 
-      - name: Import signing certificate and profile
+      - if: steps.sign.outputs.ok == 'true'
+        name: Import signing certificate and profile
         env:
           IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
           IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
           IOS_MOBILE_PROVISION: ${{ secrets.IOS_MOBILE_PROVISION }}
         run: |
           echo -n "$IOS_CERTIFICATE" | base64 --decode > cert.p12
+          [ -s cert.p12 ] || { echo "IOS_CERTIFICATE is not valid base64 of a .p12 file"; exit 1; }
           security create-keychain -p ci build.keychain
           security default-keychain -s build.keychain
           security unlock-keychain -p ci build.keychain
@@ -103,12 +122,15 @@ jobs:
           mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
           echo -n "$IOS_MOBILE_PROVISION" | base64 --decode > "$HOME/Library/MobileDevice/Provisioning Profiles/build.mobileprovision"
 
-      - run: npm run tauri ios init
-      - run: npm run tauri ios build -- --export-method app-store-connect
+      - if: steps.sign.outputs.ok == 'true'
+        run: npm run tauri ios init
+      - if: steps.sign.outputs.ok == 'true'
+        run: npm run tauri ios build -- --export-method app-store-connect
         env:
           APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
 
-      - name: Attach IPA to the release
+      - if: steps.sign.outputs.ok == 'true'
+        name: Attach IPA to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

@@ -2,6 +2,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { computed, onMounted, onUnmounted, ref, watch, watchEffect } from "vue";
 import CoverArt from "./lib/CoverArt.vue";
 import { covers } from "./lib/covers";
@@ -9,6 +10,8 @@ import Icon from "./lib/Icon.vue";
 import ConfirmDialog, { confirm } from "./lib/ConfirmDialog.vue";
 import FileManager from "./lib/FileManager.vue";
 import Extensions from "./lib/Extensions.vue";
+import Equalizer from "./lib/Equalizer.vue";
+import About from "./lib/About.vue";
 import ExtCatalog from "./lib/ExtCatalog.vue";
 import SongMenu from "./lib/SongMenu.vue";
 import { downloadError, extName, has, unsupported, type ExtInfo } from "./lib/ext";
@@ -37,10 +40,13 @@ const NAV: { id: View; label: string; icon: IconName }[] = [
 const rawLibrary = ref<Track[]>([]);
 // A cloud song is hidden when a local one has the same title and artist (and about the same length).
 const sameSong = (t: Track) => `${t.title.trim().toLowerCase()}\u0000${t.artist.trim().toLowerCase()}`;
+// While S3 is disconnected its songs stay in the database (so reconnecting needs no re-read) but are hidden.
+const s3Visible = (t: Track) => s3Saved.value || !t.path.startsWith("s3://");
+const visibleLibrary = computed(() => rawLibrary.value.filter(s3Visible));
 const library = computed(() => {
   const local = new Map<string, number[]>();
-  for (const t of rawLibrary.value) if (!t.path.startsWith("s3://")) local.set(sameSong(t), [...(local.get(sameSong(t)) ?? []), t.duration_secs]);
-  return rawLibrary.value.filter(
+  for (const t of visibleLibrary.value) if (!t.path.startsWith("s3://")) local.set(sameSong(t), [...(local.get(sameSong(t)) ?? []), t.duration_secs]);
+  return visibleLibrary.value.filter(
     (t) => !t.path.startsWith("s3://") || !local.get(sameSong(t))?.some((d) => Math.abs(d - t.duration_secs) <= 3),
   );
 });
@@ -54,7 +60,7 @@ const plId = ref<number | null>(null);
 const plTracks = ref<Track[]>([]);
 const newPlaylist = ref("");
 
-type S3Config = { endpoint: string; region: string; bucket: string; prefix: string; access_key: string; secret_key: string };
+type S3Config = { endpoint: string; region: string; bucket: string; prefix: string; access_key: string; secret_key: string; disconnected?: boolean };
 const s3 = ref<S3Config>({ endpoint: "", region: "us-east-1", bucket: "", prefix: "", access_key: "", secret_key: "" });
 const s3Status = ref("");
 const s3Busy = ref(false);
@@ -137,7 +143,7 @@ const artists = computed(() => groupBy("artist"));
 // tracks shown in the main list, which also becomes the play queue
 const shown = computed(() => {
   if (view.value === "songs") return library.value.filter(match);
-  if (view.value === "playlists") return plTracks.value.filter(match);
+  if (view.value === "playlists") return plTracks.value.filter((t) => s3Visible(t) && match(t));
   const g = (view.value === "albums" ? albums.value : artists.value).find(([k]) => k === group.value);
   return g ? g[1] : [];
 });
@@ -252,11 +258,13 @@ function setView(v: View) {
   if (v === "playlists" && plId.value !== null) openPlaylist(plId.value);
 }
 
-type SettingsTab = "local" | "s3" | "ext";
+type SettingsTab = "local" | "s3" | "eq" | "ext" | "about";
 const SETTINGS_TABS: { id: SettingsTab; label: string; icon: IconName }[] = [
   { id: "local", label: "Lokal", icon: "folder" },
   { id: "s3", label: "Cloud", icon: "cloud" },
+  { id: "eq", label: "Equalizer", icon: "equalizer" },
   { id: "ext", label: "Ekstensi", icon: "extension" },
+  { id: "about", label: "Tentang", icon: "info" },
 ];
 const settingsTab = ref<SettingsTab>("local");
 function openSettings(tab: SettingsTab) {
@@ -295,6 +303,16 @@ function notify(text: string) {
   toast.value = text;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => (toast.value = ""), 7000);
+}
+// a newer GitHub release, checked once per launch; closing it skips that version
+const update = ref<{ version: string; url: string } | null>(null);
+async function checkUpdate() {
+  const r = await invoke<[string, string] | null>("check_update").catch(() => null);
+  if (r && localStorage.getItem("skipUpdate") !== r[0]) update.value = { version: r[0], url: r[1] };
+}
+function skipUpdate() {
+  localStorage.setItem("skipUpdate", update.value!.version);
+  update.value = null;
 }
 function onDownloadFailed(song: string, ext: string, err: unknown) {
   const e = exts.value.find((x) => x.id === ext);
@@ -391,10 +409,13 @@ async function forgetFolder(dir: string) {
   await refreshFolders();
 }
 
-async function s3Save() {
+// "Simpan saja" only stores the settings and keeps the connection state (a disconnected or new bucket
+// stays unconnected); "Simpan & sinkronkan" connects.
+async function s3Save(connect = false) {
+  s3.value.disconnected = !(connect || s3Saved.value);
   await invoke("s3_save_config", { config: s3.value });
   flash("Tersimpan.");
-  s3Saved.value = !!s3.value.bucket;
+  s3Saved.value = !!s3.value.bucket && !s3.value.disconnected;
   s3Edit.value = false;
 }
 // success messages go away by themselves; errors stay until closed or replaced
@@ -407,11 +428,30 @@ async function s3Cancel() {
   s3Edit.value = false;
   s3Status.value = "";
 }
+async function s3Disconnect() {
+  const ok = await confirm({
+    title: `Putuskan "${s3.value.bucket}"?`,
+    message: "Lagu cloud disembunyikan dari library sampai dihubungkan lagi. Pengaturan koneksi tetap disimpan, dan isi bucket tidak dihapus.",
+    confirm: "Putuskan",
+    icon: "cloud",
+    danger: true,
+  });
+  if (!ok) return;
+  try {
+    await invoke("s3_disconnect");
+    s3.value.disconnected = true;
+    s3Saved.value = false;
+    s3Edit.value = false;
+    flash("Koneksi S3 diputuskan.");
+  } catch (e) {
+    s3Status.value = `Gagal: ${e}`;
+  }
+}
 async function s3Sync() {
   s3Busy.value = true;
   s3Status.value = "Menghubungkan…";
   try {
-    await s3Save();
+    await s3Save(true);
     rawLibrary.value = await invoke<Track[]>("s3_sync");
     flash("Selesai. Lagu sudah masuk ke library.");
   } catch (e) {
@@ -666,8 +706,9 @@ onMounted(async () => {
   rawLibrary.value = await invoke<Track[]>("load_library");
   await refreshPlaylists();
   s3.value = await invoke<S3Config>("s3_get_config");
-  s3Saved.value = !!s3.value.bucket;
+  s3Saved.value = !!s3.value.bucket && !s3.value.disconnected;
   await refreshFolders();
+  checkUpdate();
 });
 onUnmounted(() => {
   window.removeEventListener("keydown", onKey);
@@ -788,6 +829,8 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
           <FileManager v-if="curFolder" ref="localFiles" :key="curFolder" kind="local" :root="`${curFolder.replace(/\/+$/, '')}/`" :label="baseName(curFolder)"
             @library="setLibrary" />
         </template>
+        <Equalizer v-else-if="settingsTab === 'eq'" />
+        <About v-else-if="settingsTab === 'about'" />
         <Extensions v-else-if="settingsTab === 'ext'" @changed="exts = $event" />
         <template v-else>
         <section class="panel conn">
@@ -800,6 +843,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
             <div v-if="s3Saved && !s3Edit" class="btn-group">
               <button class="btn tonal" @click="s3Sync" :disabled="s3Busy"><Icon name="sync" />{{ s3Busy ? "Menyinkronkan…" : "Sinkronkan" }}</button>
               <button class="icon-btn tonal conn-edit" title="Ubah koneksi" aria-label="Ubah koneksi" @click="s3Edit = true"><Icon name="edit" /></button>
+              <button class="icon-btn tonal conn-edit" title="Putuskan koneksi" aria-label="Putuskan koneksi" @click="s3Disconnect" :disabled="s3Busy"><Icon name="linkOff" /></button>
             </div>
           </div>
           <form v-if="!s3Saved || s3Edit" class="conn-form" @submit.prevent="s3Sync">
@@ -814,7 +858,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
             </div>
             <div class="btn-group">
               <button class="btn filled" :disabled="s3Busy"><Icon name="sync" />{{ s3Busy ? "Menyinkronkan…" : "Simpan & sinkronkan" }}</button>
-              <button type="button" class="btn tonal" @click="s3Save" :disabled="s3Busy"><Icon name="save" />Simpan saja</button>
+              <button type="button" class="btn tonal" @click="s3Save()" :disabled="s3Busy"><Icon name="save" />Simpan saja</button>
               <button v-if="s3Saved" type="button" class="btn outlined" @click="s3Cancel"><Icon name="close" />Batal</button>
             </div>
           </form>
@@ -851,7 +895,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
         </p>
 
         <div v-if="view === 'catalog'" class="catalog">
-          <ExtCatalog :exts="exts" :library="rawLibrary" :query="query" :now-path="now?.path" :playing="playing" :redl="redl"
+          <ExtCatalog :exts="exts" :library="visibleLibrary" :query="query" :now-path="now?.path" :playing="playing" :redl="redl"
             @downloaded="onDownloaded" @failed="onDownloadFailed" @play="(t) => playAt([t], 0)" @toggle="togglePause" @redownload="redownload" @remove="removeSong" />
           <section v-if="albums.length" class="shelf">
             <div class="shelf-head"><h2>Album</h2><button class="more" @click="setView('albums')">Lihat semua</button></div>
@@ -1030,6 +1074,17 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
       <button class="icon-btn small" title="Tutup" @click="toast = ''"><Icon name="close" :size="18" /></button>
     </div>
   </Transition>
+  <Transition name="pop">
+    <div v-if="update" class="update" role="status">
+      <span class="update-mark"><Icon name="update" :size="22" /></span>
+      <div class="update-text">
+        <strong>Versi {{ update.version }} tersedia</strong>
+        <span>Rilis baru Neptunus sudah ada di GitHub.</span>
+      </div>
+      <button class="btn filled small" @click="openUrl(update.url)">Lihat</button>
+      <button class="icon-btn small" title="Lewati versi ini" aria-label="Lewati versi ini" @click="skipUpdate"><Icon name="close" :size="18" /></button>
+    </div>
+  </Transition>
   <div v-if="downloads.length" class="downloads" :class="{ above: now }" role="status">
     <div v-for="d in downloads" :key="d.path" class="dl-item">
       <span class="dl-title">Mengunduh {{ d.title }}</span>
@@ -1146,6 +1201,7 @@ h1 {
   transition: border-radius 0.3s var(--spring), background 0.2s;
 }
 .btn.big { height: 64px; padding: 0 32px 0 24px; border-radius: 32px; font-size: 18px; font-variation-settings: "wdth" 110; }
+.btn.small { height: 36px; padding: 0 16px; border-radius: 18px; font-size: 14px; }
 .btn:active { border-radius: 12px; }
 .btn:disabled { opacity: 0.5; cursor: default; }
 .filled { background: var(--primary); color: var(--on-primary); }
@@ -1207,6 +1263,16 @@ h1 {
   background: var(--on-surface); color: var(--surface); box-shadow: 0 6px 20px rgb(0 0 0 / 0.3);
 }
 .toast.above { bottom: 128px; }
+.update {
+  position: fixed; top: calc(var(--titlebar) + 12px); right: 16px; z-index: 26; max-width: min(420px, calc(100vw - 32px));
+  display: flex; align-items: center; gap: 12px; padding: 12px 8px 12px 12px; border-radius: 20px;
+  background: var(--surface-container-highest); color: var(--on-surface); box-shadow: 0 6px 20px rgb(0 0 0 / 0.3);
+}
+.pop-enter-active, .pop-leave-active { transition: opacity 0.2s, transform 0.3s var(--emph); }
+.pop-enter-from, .pop-leave-to { opacity: 0; transform: translateY(-8px); }
+.update-mark { width: 40px; height: 40px; flex: none; display: grid; place-items: center; border-radius: 14px; background: var(--primary-container); color: var(--on-primary-container); }
+.update-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 13px; color: var(--on-surface-variant); }
+.update-text strong { font-size: 15px; font-weight: 700; color: var(--on-surface); }
 .toast .icon-btn { color: inherit; }
 .toast-enter-active, .toast-leave-active { transition: opacity 0.2s, transform 0.3s var(--emph); }
 .toast-enter-from, .toast-leave-to { opacity: 0; transform: translate(-50%, 12px); }
@@ -1359,6 +1425,7 @@ li:hover .row-act, .row-act:focus-visible, .row-menu.open .row-act, .row-act.ope
 .play:active { transform: scale(0.94); }
 .seek { display: flex; align-items: center; gap: 12px; font-size: 12px; font-weight: 600; color: var(--on-surface-variant); font-variant-numeric: tabular-nums; }
 .side { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; color: var(--on-surface-variant); }
+.eq-bands input { writing-mode: vertical-lr; direction: rtl; height: 110px; width: 16px; accent-color: var(--primary); cursor: pointer; }
 .slider {
   appearance: none; -webkit-appearance: none; width: clamp(56px, 8vw, 128px); height: 16px; border-radius: 8px; margin: 0; cursor: pointer;
   background: linear-gradient(to right, var(--primary) var(--p), var(--secondary-container) var(--p));

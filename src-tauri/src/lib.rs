@@ -58,6 +58,26 @@ pub(crate) async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, St
 }
 fn e(err: rusqlite::Error) -> String { err.to_string() }
 
+/// The newest GitHub release when it is newer than this build: (version, release page URL).
+#[tauri::command]
+async fn check_update() -> R<Option<(String, String)>> {
+    blocking(|| {
+        let r: serde_json::Value = attohttpc::get("https://api.github.com/repos/okuru-id/neptunus/releases/latest")
+            .header("User-Agent", "neptunus")
+            .header("Accept", "application/vnd.github+json")
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .and_then(|r| r.error_for_status())
+            .and_then(|r| r.json())
+            .map_err(|e| e.to_string())?;
+        let tag = r["tag_name"].as_str().unwrap_or_default();
+        let ver = |s: &str| -> Vec<u64> { s.trim_start_matches('v').split('.').map(|p| p.parse().unwrap_or(0)).collect() };
+        Ok((ver(tag) > ver(env!("CARGO_PKG_VERSION")))
+            .then(|| (tag.trim_start_matches('v').to_owned(), r["html_url"].as_str().unwrap_or_default().to_owned())))
+    })
+    .await
+}
+
 #[tauri::command]
 async fn scan_folder(db: State<'_, Db>, path: String) -> R<Vec<Track>> {
     db.add_folder(&path).map_err(e)?;
@@ -380,6 +400,7 @@ pub fn run() {
             spotify::pending_download,
             s3::s3_get_config,
             s3::s3_save_config,
+            s3::s3_disconnect,
             s3::s3_sync,
             s3::s3_download,
             s3::s3_list,
@@ -418,11 +439,13 @@ pub fn run() {
             ext::ext_redownload,
             ext::session::ext_session_verify,
             ext::session::ext_session_poll,
+            check_update,
             player::play,
             player::set_paused,
             player::queue_next,
             player::seek,
             player::set_volume,
+            player::set_eq,
             player::status,
             media::media_metadata,
             media::media_playback,

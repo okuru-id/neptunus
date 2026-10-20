@@ -20,6 +20,10 @@ import newFolder from "@material-symbols/svg-400/rounded/create_new_folder-fill.
 import home from "@material-symbols/svg-400/rounded/home-fill.svg?raw";
 import chevron from "@material-symbols/svg-400/rounded/chevron_right-fill.svg?raw";
 import edit from "@material-symbols/svg-400/rounded/edit-fill.svg?raw";
+import update from "@material-symbols/svg-400/rounded/system_update_alt-fill.svg?raw";
+import info from "@material-symbols/svg-400/rounded/info-fill.svg?raw";
+import code from "@material-symbols/svg-400/rounded/code-fill.svg?raw";
+import linkOff from "@material-symbols/svg-400/rounded/link_off-fill.svg?raw";
 import sync from "@material-symbols/svg-400/rounded/sync-fill.svg?raw";
 import save from "@material-symbols/svg-400/rounded/save-fill.svg?raw";
 import catalog from "@material-symbols/svg-400/rounded/explore-fill.svg?raw";
@@ -37,6 +41,7 @@ import addFolder from "@material-symbols/svg-400/rounded/create_new_folder-fill.
 import add from "@material-symbols/svg-400/rounded/add-fill.svg?raw";
 import close from "@material-symbols/svg-400/rounded/close-fill.svg?raw";
 import error from "@material-symbols/svg-400/rounded/error-fill.svg?raw";
+import equalizer from "@material-symbols/svg-400/rounded/equalizer-fill.svg?raw";
 import lyrics from "@material-symbols/svg-400/rounded/lyrics-fill.svg?raw";
 import playlistAdd from "@material-symbols/svg-400/rounded/playlist_add-fill.svg?raw";
 
@@ -73,6 +78,10 @@ export const icons = {
   home,
   chevron,
   edit,
+  linkOff,
+  info,
+  code,
+  update,
   sync,
   settings,
   panelClose,
@@ -90,6 +99,7 @@ export const icons = {
   close,
   error,
   lyrics,
+  equalizer,
   playlistAdd,
   extension,
   store,

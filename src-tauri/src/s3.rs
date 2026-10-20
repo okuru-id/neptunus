@@ -13,6 +13,9 @@ pub struct S3Config {
     prefix: String,
     access_key: String,
     secret_key: String,
+    /// Set by `s3_disconnect`: the settings are kept for reconnecting, but the bucket is not in use.
+    #[serde(default)]
+    disconnected: bool,
 }
 
 fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -31,6 +34,16 @@ pub fn s3_get_config(app: AppHandle) -> Result<S3Config, String> {
 pub fn s3_save_config(app: AppHandle, config: S3Config) -> Result<(), String> {
     let json = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
     std::fs::write(config_path(&app)?, json).map_err(|e| e.to_string())
+}
+
+/// Stops using the bucket but keeps the settings (marked disconnected) and the songs' metadata, so
+/// reconnecting is one click and reads nothing again; the app hides cloud songs meanwhile.
+/// Nothing in the bucket is touched.
+#[tauri::command]
+pub fn s3_disconnect(app: AppHandle) -> Result<(), String> {
+    let mut config = s3_get_config(app.clone())?;
+    config.disconnected = true;
+    s3_save_config(app, config)
 }
 
 fn open_bucket(c: &S3Config) -> Result<Box<Bucket>, String> {

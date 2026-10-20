@@ -3,8 +3,10 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { onMounted, onUnmounted, ref } from "vue";
 import Icon from "./Icon.vue";
 
-// Custom window frame: the system decorations are disabled in tauri.conf.json.
+// Custom window frame: the system decorations are disabled in tauri.conf.json. On macOS the native traffic
+// lights sit on the left of this bar instead (tauri.macos.conf.json), so only the settings button is drawn.
 const win = getCurrentWindow();
+const mac = document.documentElement.classList.contains("mac");
 defineEmits<{ settings: [] }>();
 const maximized = ref(false);
 
@@ -32,6 +34,7 @@ onUnmounted(() => off?.then((f) => f()));
       <button @click="$emit('settings')" title="Pengaturan" aria-label="Pengaturan">
         <Icon name="settings" :size="18" />
       </button>
+      <template v-if="!mac">
       <button @click="win.minimize()" title="Minimalkan" aria-label="Minimalkan">
         <Icon name="minimize" :size="18" />
       </button>
@@ -41,6 +44,7 @@ onUnmounted(() => off?.then((f) => f()));
       <button class="close" @click="win.close()" title="Tutup" aria-label="Tutup">
         <Icon name="close" :size="18" />
       </button>
+      </template>
     </div>
   </header>
 </template>
@@ -52,6 +56,8 @@ onUnmounted(() => off?.then((f) => f()));
   padding: 0 8px 0 24px; user-select: none; -webkit-user-select: none;
   /* sits on the darker window frame (body background) */
 }
+/* room for the traffic lights (x 20 + three 20px-spaced buttons) */
+:global(html.mac) .titlebar { padding-left: 88px; }
 .brand { display: flex; align-items: center; gap: 10px; pointer-events: none; }
 .mark { width: 30px; height: 30px; display: grid; place-items: center; background: var(--tertiary-container); color: var(--on-tertiary-container); }
 .name { font-size: 17px; font-weight: 800; letter-spacing: -0.02em; font-variation-settings: "wdth" 118; color: var(--on-surface); }

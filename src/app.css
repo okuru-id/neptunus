@@ -42,7 +42,7 @@ html {
   --frame-bg: var(--surface-container-lowest); /* darker frame around the rounded content sheet */
 }
 @media (prefers-color-scheme: light) { html { --frame-bg: var(--surface-container-high); } }
-html.maximized { --frame-radius: 0px; }
+html.maximized, html.mac { --frame-radius: 0px; } /* macOS: the native window rounds and shadows itself */
 body {
   height: 100vh;
   border-radius: var(--frame-radius);

@@ -50,6 +50,15 @@ jobs:
           workspaces: src-tauri -> target
           key: ${{ matrix.name }}
 
+      # WiX and NSIS are downloaded from GitHub on every bundle; keep them so a flaky download can't fail the build.
+      # Bump the key when tauri-bundler moves to newer WiX/NSIS versions.
+      - name: Cache Tauri bundler tools
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\tauri
+          key: tauri-tools-windows-wix314-nsis3.13
+
       - run: npm ci
 
       - uses: tauri-apps/tauri-action@v0

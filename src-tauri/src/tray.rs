@@ -282,6 +282,7 @@ mod backend {
 
 pub fn show_main(app: &AppHandle) {
     if let Some(main) = app.get_webview_window("main") {
+        #[cfg(desktop)]
         let _ = main.unminimize();
         let _ = main.show();
         let _ = main.set_focus();

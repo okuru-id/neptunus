@@ -7,7 +7,9 @@ use std::sync::mpsc;
 use std::{ffi::c_void, time::Duration};
 #[cfg(windows)]
 use tauri::Manager;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
+#[cfg(desktop)]
+use tauri::Emitter;
 
 enum Msg {
     Meta { title: String, artist: String, album: String, secs: f64 },
@@ -22,8 +24,9 @@ pub fn init(app: &AppHandle) -> Media {
     let (tx, rx) = mpsc::channel();
     #[cfg(windows)]
     let hwnd = app.get_webview_window("main").and_then(|w| w.hwnd().ok()).map(|h| h.0 as usize);
-    #[cfg(not(windows))]
+    #[cfg(all(desktop, not(windows)))]
     let hwnd: Option<usize> = None;
+    #[cfg(desktop)]
     let handle = app.clone();
 
     #[cfg(mobile)]

@@ -5,3 +5,9 @@ node_modules
 .env.*
 !.env.example
 vite.config.ts.timestamp-*
+
+# signing material, never commit
+cerificate-p12/
+cerificate-neptunus-p12/
+*.p12
+*.mobileprovision

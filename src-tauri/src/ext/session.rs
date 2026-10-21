@@ -357,16 +357,9 @@ fn retry_after(res: &attohttpc::Response) -> u64 {
 
 // ---------------------------------------------------------------- the browser hand-off
 
-// phones have no HOME and no second process: the grant only comes from the app's own webview
-#[cfg(mobile)]
+// only the app's own webview writes the grant, so it lives in the app data folder (Windows has no HOME/XDG)
 fn inbox() -> Option<PathBuf> {
     crate::DATA_DIR.get().map(|d| d.join("grant-inbox"))
-}
-
-#[cfg(desktop)]
-fn inbox() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).or_else(|| Some(PathBuf::from(std::env::var_os("HOME")?).join(".local/share")))?;
-    Some(base.join("id.neptunus.desktop").join("grant-inbox"))
 }
 
 fn save_grant(url: &str) {

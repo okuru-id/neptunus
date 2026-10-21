@@ -312,6 +312,12 @@ impl Host {
     }
 
     fn send_within(&self, timeout: Duration, url: &str, method: &str, body: &str, headers: &Map<String, Value>) -> R<attohttpc::Response> {
+        self.http(timeout, true, url, method, body, headers)
+    }
+
+    /// `whole` caps the entire request, body included; without it only a stalled read times out, so a large
+    /// file that keeps arriving is never cut off mid-transfer.
+    fn http(&self, timeout: Duration, whole: bool, url: &str, method: &str, body: &str, headers: &Map<String, Value>) -> R<attohttpc::Response> {
         let host = self.allowed(url)?;
         let left = self.deadline.borrow().saturating_duration_since(Instant::now());
         if left.is_zero() {
@@ -319,10 +325,12 @@ impl Host {
         }
         let verb = attohttpc::Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?;
         let mut req = attohttpc::RequestBuilder::new(verb, url)
-            .timeout(timeout.min(left))
             .read_timeout(timeout)
             .header("User-Agent", UA)
             .follow_redirects(true);
+        if whole {
+            req = req.timeout(timeout.min(left));
+        }
         let cookies = self.cookie_header(&host);
         if !cookies.is_empty() {
             req = req.header("Cookie", cookies);
@@ -410,31 +418,55 @@ impl Host {
             }
             let headers: Map<String, Value> = serde_json::from_str(headers).unwrap_or_default();
             *self.deadline.borrow_mut() = Instant::now() + DOWNLOAD_TIMEOUT;
-            let res = self.send(url, "GET", "", &headers)?;
-            if !res.is_success() {
-                return Err(format!("HTTP error {}", res.status().as_u16()));
-            }
-            let total = res.headers().get("content-length").and_then(|v| v.to_str().ok()?.parse::<u64>().ok()).unwrap_or(0);
             let part = dest.with_extension("part");
             let mut out = std::fs::File::create(&part).map_err(|e| e.to_string())?;
-            let mut body = res.split().2;
-            let (mut got, mut buf, mut last) = (0u64, vec![0u8; 64 * 1024], Instant::now());
-            loop {
-                let n = body.read(&mut buf).map_err(|e| e.to_string())?;
-                if n == 0 {
-                    break;
+            let (mut got, mut total, mut buf, mut last) = (0u64, 0u64, vec![0u8; 64 * 1024], Instant::now());
+            // a dropped connection resumes with a Range request where the server allows it
+            let mut tries = 0;
+            'fetch: loop {
+                let mut hs = headers.clone();
+                if got > 0 {
+                    hs.insert("Range".into(), format!("bytes={got}-").into());
                 }
-                std::io::Write::write_all(&mut out, &buf[..n]).map_err(|e| e.to_string())?;
-                got += n as u64;
-                if last.elapsed() > Duration::from_millis(250) {
-                    last = Instant::now();
-                    if let Some(cb) = &cb {
-                        let _: rquickjs::Result<()> = cb.call((got as f64, total as f64));
+                let res = self.http(self.timeout, false, url, "GET", "", &hs)?;
+                if !res.is_success() {
+                    return Err(format!("HTTP error {}", res.status().as_u16()));
+                }
+                if got > 0 && res.status().as_u16() != 206 {
+                    return Err("download interrupted and the server cannot resume it".into());
+                }
+                if got == 0 {
+                    total = res.headers().get("content-length").and_then(|v| v.to_str().ok()?.parse::<u64>().ok()).unwrap_or(0);
+                }
+                let mut body = res.split().2;
+                loop {
+                    let n = match body.read(&mut buf) {
+                        Ok(n) => n,
+                        Err(e) if tries < 5 && (total == 0 || got < total) => {
+                            tries += 1;
+                            eprintln!("[ext {}] download stalled at {got} bytes ({e}), resuming", self.id);
+                            continue 'fetch;
+                        }
+                        Err(e) => return Err(e.to_string()),
+                    };
+                    if n == 0 {
+                        break 'fetch;
                     }
-                    if total > 0 {
-                        self.report(got as f64 * 100.0 / total as f64);
+                    std::io::Write::write_all(&mut out, &buf[..n]).map_err(|e| e.to_string())?;
+                    got += n as u64;
+                    if last.elapsed() > Duration::from_millis(250) {
+                        last = Instant::now();
+                        if let Some(cb) = &cb {
+                            let _: rquickjs::Result<()> = cb.call((got as f64, total as f64));
+                        }
+                        if total > 0 {
+                            self.report(got as f64 * 100.0 / total as f64);
+                        }
                     }
                 }
+            }
+            if total > 0 && got < total {
+                return Err(format!("download incomplete: {got} of {total} bytes"));
             }
             drop(out);
             std::fs::rename(&part, &dest).map_err(|e| e.to_string())?;

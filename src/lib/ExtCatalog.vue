@@ -369,7 +369,7 @@ const others = computed(() => results.value?.filter((i) => kind(i) !== "track") 
 .shelf h2, .page-head h2 { margin: 0 0 16px; font-size: 24px; font-weight: 750; letter-spacing: -0.01em; font-variation-settings: "wdth" 112; }
 .row {
   display: grid; grid-auto-flow: column; grid-auto-columns: 168px; gap: 20px;
-  overflow-x: auto; padding: 4px 4px 12px; margin: -4px -4px 0; scrollbar-width: thin; scrollbar-color: var(--outline-variant) transparent;
+  overflow-x: auto; padding: 4px 4px 12px; margin: -4px -4px 0;
 }
 .tile { display: flex; flex-direction: column; gap: 4px; text-align: left; min-width: 0; }
 .tile .art { position: relative; display: block; }

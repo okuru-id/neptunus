@@ -1160,7 +1160,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
 .collapsed .fab, .collapsed .dest-item { justify-content: center; padding: 0; }
 .collapsed .fab { align-self: center; width: 56px; }
 .collapsed .dest-item { width: 56px; align-self: center; border-radius: 16px; }
-main { overflow-y: auto; padding: 0 40px 40px 16px; scrollbar-width: thin; scrollbar-color: var(--outline-variant) transparent; }
+main { overflow-y: auto; padding: 0 40px 40px 16px; }
 main.has-player { padding-bottom: 136px; }
 
 /* ---------- navigation drawer ---------- */
@@ -1250,7 +1250,7 @@ h1 {
 .more:hover { background: color-mix(in srgb, var(--primary) 8%, transparent); }
 .shelf-row {
   display: grid; grid-auto-flow: column; grid-auto-columns: 168px; gap: 20px;
-  overflow-x: auto; padding: 4px 4px 12px; margin: -4px -4px 0; scrollbar-width: thin; scrollbar-color: var(--outline-variant) transparent;
+  overflow-x: auto; padding: 4px 4px 12px; margin: -4px -4px 0;
 }
 .shelf-row.artists .tile { align-items: center; text-align: center; }
 .shelf-row.artists .tile strong, .shelf-row.artists .tile > span { max-width: 100%; }
@@ -1531,7 +1531,7 @@ li:hover .row-act, .row-act:focus-visible, .row-menu.open .row-act, .row-act.ope
 .lyric-search > .more { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; }
 .ls-note { margin: 0; color: var(--on-surface-variant); line-height: 1.5; }
 .ls-note code { background: var(--surface-container-high); padding: 2px 6px; border-radius: 6px; }
-.ls-hits { list-style: none; margin: 0; padding: 0; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 2px; scrollbar-width: thin; }
+.ls-hits { list-style: none; margin: 0; padding: 0; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 2px; }
 .ls-hits button {
   width: 100%; display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: 16px; text-align: left;
   transition: background 0.2s;

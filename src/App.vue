@@ -20,6 +20,7 @@ import { activity } from "./lib/activity";
 import QualityTag from "./lib/QualityTag.vue";
 import { loadQuality, longQuality, qualities, shortQuality } from "./lib/quality";
 import TitleBar from "./lib/TitleBar.vue";
+import Notifications, { type Job, type Note } from "./lib/Notifications.vue";
 import type { IconName } from "./lib/icons";
 import WavyProgress from "./lib/WavyProgress.vue";
 import { applyTheme, DEFAULT_SEED, seedFromImage } from "./lib/theme";
@@ -195,7 +196,7 @@ async function importSpotify(url: string) {
   plNote.value = "Membaca playlist Spotify…";
   try {
     const r = await invoke<{ id: number; name: string; added: number; pending: number }>("spotify_import", { url });
-    plNote.value = `“${r.name}”: ${r.added} lagu dari library, ${r.pending} belum diunduh (klik tombol unduh di baris lagunya).`;
+    plNote.value = `“${r.name}”: ${r.added} lagu dari library, ${r.pending} belum diunduh (unduh per lagu atau dengan Unduh semua).`;
     await refreshPlaylists();
     await openPlaylist(r.id);
   } catch (e) {
@@ -228,9 +229,12 @@ async function download(path: string) {
   progress.value = { ...progress.value, [path]: 0 };
   try {
     // the saved copy joins the library, which hides the cloud version of the same song
+    const title = rawLibrary.value.find((t) => t.path === path)?.title ?? path;
     rawLibrary.value = await invoke<Track[]>("s3_download", { path });
+    addNote("done", `“${title}” tersimpan di folder Musik.`);
   } catch (e) {
     s3Status.value = `Gagal mengunduh: ${e}`;
+    addNote("error", `Gagal mengunduh dari S3: ${e}`);
   } finally {
     const { [path]: _, ...rest } = progress.value;
     progress.value = rest;
@@ -285,6 +289,7 @@ async function redownload(t: Track, id: string, quality: string | null = null) {
   redl.value = { ...redl.value, [t.path]: 0 };
   try {
     await invoke("ext_redownload", { path: t.path, id, quality });
+    addNote("done", `“${t.title}” selesai diunduh ulang.`);
     setLibrary(await invoke<Track[]>("load_library"));
     if (plId.value !== null) await openPlaylist(plId.value);
   } catch (e) {
@@ -297,10 +302,20 @@ async function redownload(t: Track, id: string, quality: string | null = null) {
 // pending playlist song -> progress percent while it downloads, and the extension doing it
 const pdl = ref<Record<number, number>>({});
 const pdlExt: Record<number, string> = {};
-// short-lived notice at the bottom of the window (a failed download, ...)
+const pdlTitle: Record<number, string> = {};
+// notices kept in the title bar's bell (newest first), and how many arrived since it was last opened
+const notes = ref<Note[]>([]);
+const unread = ref(0);
+let noteId = 0;
+function addNote(kind: Note["kind"], text: string, url?: string) {
+  notes.value = [{ id: ++noteId, kind, text, time: Date.now(), url }, ...notes.value].slice(0, 50);
+  unread.value++;
+}
+// short-lived notice at the bottom of the window (a failed download, ...), also kept in the bell
 const toast = ref("");
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 function notify(text: string) {
+  addNote("error", text);
   toast.value = text;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => (toast.value = ""), 7000);
@@ -309,6 +324,7 @@ function notify(text: string) {
 const update = ref<{ version: string; url: string } | null>(null);
 async function checkUpdate() {
   const r = await invoke<[string, string] | null>("check_update").catch(() => null);
+  if (r) addNote("update", `Neptunus versi ${r[0]} tersedia.`, r[1]);
   if (r && localStorage.getItem("skipUpdate") !== r[0]) update.value = { version: r[0], url: r[1] };
 }
 function skipUpdate() {
@@ -324,8 +340,9 @@ const pfail = ref<Record<number, string>>({});
 async function downloadPending(p: Pending, ext: string, quality: string | null) {
   const { [p.id]: _, ...ok } = pfail.value;
   pfail.value = ok;
-  pdl.value = { ...pdl.value, [p.id]: 0 };
   pdlExt[p.id] = ext;
+  pdlTitle[p.id] = p.title;
+  pdl.value = { ...pdl.value, [p.id]: 0 };
   activity[ext] = "";
   try {
     // the song as the catalog knows it (full metadata, cover, album), so it downloads the same way
@@ -336,9 +353,11 @@ async function downloadPending(p: Pending, ext: string, quality: string | null) 
           .then((t) => (t ? { ...t, provider_id: meta.id } : null)).catch(() => null)
       : null;
     await withVerify(ext, () => invoke("pending_download", { id: p.id, ext, quality, track }), () => (pdl.value = { ...pdl.value, [p.id]: 0 }));
+    addNote("done", `“${p.title}” selesai diunduh.`);
     setLibrary(await invoke<Track[]>("load_library"));
     if (plId.value !== null) await openPlaylist(plId.value);
   } catch (e) {
+    if (String(e).includes("dibatalkan")) return; // cancelled by the user: no error to show
     // like the catalog: no dialog, the row's button turns into "try again" with the reason as its tooltip
     pfail.value = { ...pfail.value, [p.id]: String(e) };
     onDownloadFailed(p.title, ext, e);
@@ -347,6 +366,50 @@ async function downloadPending(p: Pending, ext: string, quality: string | null) 
     pdl.value = rest;
   }
 }
+// pending songs waiting for their download, at most PARALLEL at a time (a whole playlist would otherwise
+// hit the extension all at once)
+const PARALLEL = 5;
+const pqueue = ref<{ p: Pending; ext: string; quality: string | null }[]>([]);
+const queuedIds = computed(() => new Set(pqueue.value.map((q) => q.p.id)));
+let pqWorkers = 0;
+function queuePending(p: Pending, ext: string, quality: string | null) {
+  if (p.id in pdl.value || queuedIds.value.has(p.id)) return;
+  const { [p.id]: _, ...ok } = pfail.value;
+  pfail.value = ok;
+  pqueue.value = [...pqueue.value, { p, ext, quality }];
+  runPending();
+}
+function runPending() {
+  for (; pqWorkers < PARALLEL && pqueue.value.length; pqWorkers++) {
+    (async () => {
+      while (pqueue.value.length) {
+        const [job, ...rest] = pqueue.value;
+        pqueue.value = rest;
+        await downloadPending(job.p, job.ext, job.quality);
+      }
+      pqWorkers--;
+    })();
+  }
+}
+// a queued song leaves the queue; a running download is stopped by the backend
+function cancelPending(p: Pending) {
+  pqueue.value = pqueue.value.filter((q) => q.p.id !== p.id);
+  if (p.id in pdl.value) invoke("ext_cancel", { key: `pending:${p.id}` });
+}
+function cancelAll() {
+  pqueue.value = [];
+  Object.keys(pdl.value).forEach((id) => invoke("ext_cancel", { key: `pending:${id}` }));
+}
+const downloadAll = (ext: string, quality: string | null) => plPending.value.forEach((p) => queuePending(p, ext, quality));
+const pendingLeft = computed(() => pqueue.value.length + Object.keys(pdl.value).length);
+const pendingFailed = computed(() => plPending.value.filter((p) => p.id in pfail.value).length);
+// everything downloading or waiting, for the bell
+const jobs = computed<Job[]>(() => [
+  ...downloads.value.map((d) => ({ key: `s3:${d.path}`, title: d.title, pct: d.pct })),
+  ...Object.entries(redl.value).map(([path, pct]) => ({ key: `re:${path}`, title: rawLibrary.value.find((t) => t.path === path)?.title ?? path, pct })),
+  ...Object.entries(pdl.value).map(([id, pct]) => ({ key: `p:${id}`, title: pdlTitle[+id] ?? "", pct, cancel: () => invoke("ext_cancel", { key: `pending:${id}` }) })),
+  ...pqueue.value.map((q) => ({ key: `q:${q.p.id}`, title: q.p.title, pct: null, queued: true, cancel: () => cancelPending(q.p) })),
+]);
 async function removePending(p: Pending) {
   await invoke("pending_remove", { id: p.id });
   if (plId.value !== null) await openPlaylist(plId.value);
@@ -765,7 +828,9 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
   </svg>
 
   <ConfirmDialog />
-  <TitleBar @settings="openSettings('local')" />
+  <TitleBar @settings="openSettings('local')">
+    <Notifications :jobs="jobs" :notes="notes" :unread="unread" @read="unread = 0" @clear="notes = []" @cancel-all="cancelAll" @open="openUrl" />
+  </TitleBar>
 
   <div class="app" :class="{ collapsed: !sidebarOpen || narrow }">
     <nav class="drawer" :class="{ 'has-player': !!now }" aria-label="Navigasi">
@@ -796,9 +861,15 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
           <input placeholder="Cari lagu, artis, album" v-model="query" />
           <button v-if="query" class="icon-btn" @click="query = ''" title="Hapus pencarian"><Icon name="close" :size="20" /></button>
         </label>
-        <div v-if="showingList && (view !== 'playlists' || plId !== null) && shown.length" class="btn-group actions">
-          <button class="btn filled big" @click="playAt(shown, 0)"><Icon name="play" :size="28" />Putar</button>
-          <button class="btn tonal big" @click="playShuffled"><Icon name="shuffle" />Acak</button>
+        <div v-if="showingList && (view !== 'playlists' || plId !== null) && (shown.length || (view === 'playlists' && plPending.length))" class="btn-group actions">
+          <template v-if="shown.length">
+            <button class="btn filled big" @click="playAt(shown, 0)"><Icon name="play" :size="28" />Putar</button>
+            <button class="btn tonal big" @click="playShuffled"><Icon name="shuffle" />Acak</button>
+          </template>
+          <SongMenu v-if="view === 'playlists' && plPending.length" download title="semua lagu yang belum diunduh" :downloaders="downloaders"
+            :label="pendingLeft ? `Mengunduh… ${pendingLeft} tersisa` : pendingFailed ? `Coba lagi yang gagal (${pendingFailed})` : `Unduh semua (${plPending.length})`"
+            @redownload="downloadAll" />
+          <button v-if="view === 'playlists' && pendingLeft" class="btn outlined big" @click="cancelAll"><Icon name="close" />Batalkan</button>
         </div>
         <div v-if="view === 's3'" class="tabs" role="tablist">
           <button v-for="t in SETTINGS_TABS" :key="t.id" class="tab" :class="{ sel: settingsTab === t.id }" role="tab"
@@ -998,13 +1069,15 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
                 <span class="meta">
                   <strong>{{ p.title }}</strong>
                   <span v-if="p.id in pdl" class="live">{{ activity[pdlExt[p.id]] || "Memulai…" }}</span>
+                  <span v-else-if="queuedIds.has(p.id)">Dalam antrean</span>
                   <span v-else>{{ unknown(p.artist) }}<template v-if="p.album"> · {{ p.album }}</template> · belum diunduh</span>
                 </span>
               </div>
               <SongMenu class="row-act" :class="{ busy: p.id in pdl || p.id in pfail }" download :title="p.title" :downloaders="downloaders"
                 :busy="pdl[p.id] ?? null" :failed="pfail[p.id]"
-                @redownload="(id, q) => downloadPending(p, id, q)" />
-              <button class="icon-btn row-act" title="Hapus dari playlist" :disabled="p.id in pdl" @click="removePending(p)"><Icon name="close" :size="20" /></button>
+                @redownload="(id, q) => queuePending(p, id, q)" />
+              <button v-if="p.id in pdl || queuedIds.has(p.id)" class="icon-btn row-act" title="Batalkan unduhan" @click="cancelPending(p)"><Icon name="close" :size="20" /></button>
+              <button v-else class="icon-btn row-act" title="Hapus dari playlist" @click="removePending(p)"><Icon name="close" :size="20" /></button>
               <span class="dur">{{ fmt(p.duration_secs) }}</span>
             </li>
           </template>
@@ -1100,14 +1173,6 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
       <button class="icon-btn small" title="Lewati versi ini" aria-label="Lewati versi ini" @click="skipUpdate"><Icon name="close" :size="18" /></button>
     </div>
   </Transition>
-  <div v-if="downloads.length" class="downloads" :class="{ above: now }" role="status">
-    <div v-for="d in downloads" :key="d.path" class="dl-item">
-      <span class="dl-title">Mengunduh {{ d.title }}</span>
-      <span class="dl-bar"><i :style="{ width: `${d.pct}%` }"></i></span>
-      <span class="pct">{{ d.pct }}%</span>
-    </div>
-  </div>
-
   <footer v-if="now" class="player">
     <button class="np" @click="showNow = !showNow" :title="showNow ? 'Tutup layar putar' : 'Buka layar putar'">
       <CoverArt :path="now.path" />
@@ -1270,8 +1335,6 @@ h1 {
 .art-overlay { position: absolute; inset: 0; display: grid; place-items: center; border-radius: 12px; background: rgb(0 0 0 / 0.45); color: #fff; }
 .meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
 .meta strong { font-size: 16px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.downloads { position: fixed; right: 24px; bottom: 24px; z-index: 25; display: flex; flex-direction: column; gap: 8px; width: min(360px, calc(100vw - 48px)); }
-.downloads.above { bottom: 128px; }
 .toast {
   position: fixed; left: 50%; bottom: 24px; z-index: 26; transform: translateX(-50%); width: max-content; max-width: min(560px, calc(100vw - 32px));
   display: flex; align-items: center; gap: 12px; padding: 10px 8px 10px 16px; border-radius: 16px; font-size: 14px;
@@ -1291,11 +1354,6 @@ h1 {
 .toast .icon-btn { color: inherit; }
 .toast-enter-active, .toast-leave-active { transition: opacity 0.2s, transform 0.3s var(--emph); }
 .toast-enter-from, .toast-leave-to { opacity: 0; transform: translate(-50%, 12px); }
-.dl-item { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; padding: 12px 16px; border-radius: 16px; background: var(--secondary-container); color: var(--on-secondary-container); box-shadow: 0 4px 16px rgb(0 0 0 / 0.25); font-size: 14px; }
-.dl-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dl-bar { grid-column: 1 / -1; grid-row: 2; height: 4px; border-radius: 2px; background: color-mix(in srgb, currentColor 20%, transparent); overflow: hidden; }
-.dl-bar i { display: block; height: 100%; background: var(--primary); transition: width 0.2s; }
-.dl-item .pct { font-variant-numeric: tabular-nums; font-weight: 600; }
 .dl .pct { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .cloud-mark { vertical-align: -2px; margin-right: 6px; color: var(--primary); }
 .meta span { font-size: 14px; color: var(--on-surface-variant); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

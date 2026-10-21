@@ -31,6 +31,7 @@ onUnmounted(() => off?.then((f) => f()));
       <span class="name">Neptunus</span>
     </div>
     <div class="controls">
+      <slot />
       <button @click="$emit('settings')" title="Pengaturan" aria-label="Pengaturan">
         <Icon name="settings" :size="18" />
       </button>

@@ -52,6 +52,8 @@ import restore from "@material-symbols/svg-400/rounded/filter_none.svg?raw";
 import extension from "@material-symbols/svg-400/rounded/extension-fill.svg?raw";
 import store from "@material-symbols/svg-400/rounded/storefront-fill.svg?raw";
 import done from "@material-symbols/svg-400/rounded/check_circle-fill.svg?raw";
+import bell from "@material-symbols/svg-400/rounded/notifications-fill.svg?raw";
+import bellActive from "@material-symbols/svg-400/rounded/notifications_active-fill.svg?raw";
 export const icons = {
   minimize,
   maximize,
@@ -104,6 +106,8 @@ export const icons = {
   extension,
   store,
   done,
+  bell,
+  bellActive,
 };
 
 export type IconName = keyof typeof icons;

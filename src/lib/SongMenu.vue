@@ -6,7 +6,8 @@ import { extName, type ExtInfo } from "./ext";
 // ⋮ menu on a song row: re-download with a chosen extension, or delete the song.
 // `download`: a song not downloaded yet; the trigger is a download button and there is no delete entry.
 // `failed`: why the last download failed; the button then offers to try again.
-defineProps<{ title: string; downloaders: ExtInfo[]; busy?: number | null; download?: boolean; failed?: string }>();
+// `label`: shown next to the icon, making the trigger a pill button (a playlist's "download all").
+defineProps<{ title: string; downloaders: ExtInfo[]; busy?: number | null; download?: boolean; failed?: string; label?: string }>();
 const emit = defineEmits<{ redownload: [string, string | null]; remove: [] }>();
 
 const open = ref(false);
@@ -48,11 +49,12 @@ onUnmounted(close);
 
 <template>
   <div ref="root" class="song-menu" :class="{ open }">
-    <button class="icon-btn" :disabled="download && busy != null"
+    <button class="icon-btn" :class="{ labeled: label }" :disabled="download && busy != null"
       :title="busy != null ? `Mengunduh${download ? '' : ' ulang'} ${Math.round(busy)}%` : failed ? `Gagal: ${failed}` : download ? 'Unduh lagu ini' : 'Lainnya'"
       :aria-label="`${download ? 'Unduh' : 'Lainnya untuk'} ${title}`" :aria-expanded="open" @click="toggle">
       <span v-if="busy != null" class="pct">{{ Math.round(busy) }}%</span>
       <Icon v-else :name="failed ? 'refresh' : download ? 'download' : 'moreVert'" :size="20" />
+      <template v-if="label">{{ label }}</template>
     </button>
     <div v-if="open" ref="menu" class="menu" :class="{ up }" role="menu">
       <template v-if="ext">
@@ -82,6 +84,13 @@ onUnmounted(close);
   color: var(--on-surface-variant); transition: background 0.2s, border-radius 0.3s var(--spring);
 }
 .icon-btn:hover, .open .icon-btn { background: var(--surface-container-highest); }
+/* same as the app's .btn.tonal.big */
+.icon-btn.labeled {
+  width: auto; height: 64px; padding: 0 32px 0 24px; border-radius: 32px; display: inline-flex; gap: 8px;
+  font-size: 18px; font-weight: 600; font-variation-settings: "wdth" 110;
+  background: var(--secondary-container); color: var(--on-secondary-container);
+}
+.icon-btn.labeled:active { border-radius: 12px; }
 .pct { font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--primary); }
 .menu {
   position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; min-width: 220px; padding: 8px 0; border-radius: 16px;

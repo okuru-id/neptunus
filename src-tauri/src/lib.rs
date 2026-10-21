@@ -402,6 +402,7 @@ pub fn run() {
             s3::s3_save_config,
             s3::s3_disconnect,
             s3::s3_buffered,
+            ext::ext_cancel,
             s3::s3_sync,
             s3::s3_download,
             s3::s3_list,

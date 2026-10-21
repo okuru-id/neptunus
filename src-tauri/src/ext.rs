@@ -13,7 +13,7 @@ use std::{
     collections::HashMap,
     io::Read,
     path::{Component, Path, PathBuf},
-    sync::{Mutex, mpsc},
+    sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering::Relaxed}, mpsc},
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -36,8 +36,8 @@ type R<T> = Result<T, String>;
 struct Job {
     method: String,
     args: String,
-    /// download progress, 0-100
-    progress: Option<Box<dyn Fn(f64) + Send>>,
+    /// download progress, 0-100 (-1: only asking); returns false once the download is cancelled
+    progress: Option<Box<dyn Fn(f64) -> bool + Send>>,
     /// absolute paths the extension may write to during this call
     root: Option<PathBuf>,
     reply: mpsc::Sender<R<String>>,
@@ -46,8 +46,13 @@ struct Job {
 pub struct Exts {
     code: PathBuf,
     data: PathBuf,
-    workers: Mutex<HashMap<String, mpsc::Sender<Job>>>,
+    /// per extension: its VM threads, each with the number of calls it has in hand
+    workers: Mutex<HashMap<String, Vec<(mpsc::Sender<Job>, Arc<AtomicUsize>)>>>,
 }
+
+/// VMs an extension may run side by side, so several downloads go at once. Only downloads (and the lookup
+/// before one) spread over them; every other call goes to the first VM, which keeps login state in one place.
+const POOL: usize = 5;
 
 /// For `ext-activity` events, sent from extension threads that have no `AppHandle` of their own.
 static APP: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
@@ -116,7 +121,7 @@ impl Exts {
         out
     }
 
-    /// Stops the extension's thread; the next call starts it again with fresh settings.
+    /// Stops the extension's threads; the next call starts them again with fresh settings.
     fn unload(&self, id: &str) {
         self.workers.lock().unwrap().remove(id);
     }
@@ -125,30 +130,41 @@ impl Exts {
         self.call_with(id, method, args, None, None)
     }
 
-    fn call_with(&self, id: &str, method: &str, args: Value, progress: Option<Box<dyn Fn(f64) + Send>>, root: Option<PathBuf>) -> R<Value> {
+    fn call_with(&self, id: &str, method: &str, args: Value, progress: Option<Box<dyn Fn(f64) -> bool + Send>>, root: Option<PathBuf>) -> R<Value> {
         if !self.enabled(id) {
             return Err(format!("extension {id} is disabled"));
         }
         let (reply, answer) = mpsc::channel();
         let job = Job { method: method.to_owned(), args: args.to_string(), progress, root, reply };
+        let parallel = matches!(method, "download" | "checkAvailability");
         let mut workers = self.workers.lock().unwrap();
-        let tx = match workers.get(id) {
-            Some(tx) => tx.clone(),
+        let slots = workers.entry(id.to_owned()).or_default();
+        let pick = match parallel {
+            false => (!slots.is_empty()).then_some(0),
+            true => slots.iter().position(|(_, busy)| busy.load(Relaxed) == 0).or_else(|| {
+                (slots.len() >= POOL).then(|| (0..slots.len()).min_by_key(|&i| slots[i].1.load(Relaxed)).unwrap())
+            }),
+        };
+        let i = match pick {
+            Some(i) => i,
             None => {
-                let tx = self.spawn(id)?;
-                workers.insert(id.to_owned(), tx.clone());
-                tx
+                slots.push((self.spawn(id)?, Arc::default()));
+                slots.len() - 1
             }
         };
+        let (tx, busy) = slots[i].clone();
         drop(workers);
-        if tx.send(job).is_err() {
-            self.unload(id);
-            return Err("extension stopped".into());
+        busy.fetch_add(1, Relaxed);
+        let sent = tx.send(job);
+        let out = match sent {
+            Err(_) => Err("extension stopped".to_owned()),
+            Ok(()) => answer.recv().map_err(|_| "extension stopped".to_owned()), // the thread died (e.g. out of memory)
+        };
+        busy.fetch_sub(1, Relaxed);
+        if out.is_err() {
+            self.unload(id); // start over next time
         }
-        let out = answer.recv().map_err(|_| {
-            self.unload(id); // the thread died (e.g. out of memory); start over next time
-            "extension stopped".to_owned()
-        })??;
+        let out = out??;
         serde_json::from_str(&out).map_err(|e| e.to_string())
     }
 
@@ -242,7 +258,7 @@ struct Host {
     timeout: Duration,
     deadline: RefCell<Instant>,
     root: RefCell<Option<PathBuf>>,
-    progress: RefCell<Option<Box<dyn Fn(f64) + Send>>>,
+    progress: RefCell<Option<Box<dyn Fn(f64) -> bool + Send>>>,
     /// the manifest's `signedSession` block
     sess_cfg: Value,
 }
@@ -319,6 +335,9 @@ impl Host {
     /// file that keeps arriving is never cut off mid-transfer.
     fn http(&self, timeout: Duration, whole: bool, url: &str, method: &str, body: &str, headers: &Map<String, Value>) -> R<attohttpc::Response> {
         let host = self.allowed(url)?;
+        if !self.alive() {
+            return Err(CANCELLED_MSG.into());
+        }
         let left = self.deadline.borrow().saturating_duration_since(Instant::now());
         if left.is_zero() {
             return Err("timeout: extension took too long to respond".into());
@@ -459,8 +478,10 @@ impl Host {
                         if let Some(cb) = &cb {
                             let _: rquickjs::Result<()> = cb.call((got as f64, total as f64));
                         }
-                        if total > 0 {
-                            self.report(got as f64 * 100.0 / total as f64);
+                        if !self.report(if total > 0 { got as f64 * 100.0 / total as f64 } else { -1.0 }) {
+                            drop(out);
+                            let _ = std::fs::remove_file(&part);
+                            return Err(CANCELLED_MSG.into());
                         }
                     }
                 }
@@ -478,10 +499,13 @@ impl Host {
         }
     }
 
-    fn report(&self, pct: f64) {
-        if let Some(p) = &*self.progress.borrow() {
-            p(pct.clamp(0.0, 100.0));
-        }
+    /// Passes download progress on (negative: unknown); false once the download is cancelled.
+    fn report(&self, pct: f64) -> bool {
+        self.progress.borrow().as_ref().is_none_or(|p| p(pct.min(100.0)))
+    }
+
+    fn alive(&self) -> bool {
+        self.report(-1.0)
     }
 
     fn file(&self, op: &str, p: &str, data: &str) -> R<String> {
@@ -723,6 +747,19 @@ impl Vm {
 }
 
 // ---------------------------------------------------------------- commands
+const CANCELLED_MSG: &str = "dibatalkan";
+/// Progress keys (`ext-download`) of downloads the user cancelled.
+static CANCELLED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+fn cancelled(key: &str) -> bool {
+    CANCELLED.lock().unwrap().iter().any(|k| k == key)
+}
+
+/// Stops the running download tagged `key`; it then fails with "dibatalkan".
+#[tauri::command]
+pub fn ext_cancel(key: String) {
+    CANCELLED.lock().unwrap().push(key);
+}
+
 
 #[tauri::command]
 pub fn ext_list(exts: State<Exts>) -> Vec<Value> {
@@ -882,6 +919,16 @@ fn finish_stream(path: &Path, res: &Value) -> R<PathBuf> {
 }
 
 pub(crate) fn fetch(app: &AppHandle, id: &str, track: &Value, quality: Option<String>, key: &str) -> R<crate::db::Track> {
+    CANCELLED.lock().unwrap().retain(|k| k != key);
+    let out = fetch_inner(app, id, track, quality, key);
+    if cancelled(key) {
+        CANCELLED.lock().unwrap().retain(|k| k != key);
+        return Err(CANCELLED_MSG.into());
+    }
+    out
+}
+
+fn fetch_inner(app: &AppHandle, id: &str, track: &Value, quality: Option<String>, key: &str) -> R<crate::db::Track> {
     {
         let (id, key) = (id.to_owned(), key.to_owned());
         let exts = app.state::<Exts>();
@@ -908,7 +955,12 @@ pub(crate) fn fetch(app: &AppHandle, id: &str, track: &Value, quality: Option<St
         let out = folder.join(format!("{}.flac", clean(&format!("{artists} - {}", text("name")))));
         let emit = {
             let (app, key) = (app.clone(), key.clone());
-            move |pct: f64| drop(app.emit("ext-download", Progress { key: key.clone(), pct }))
+            move |pct: f64| {
+                if pct >= 0.0 {
+                    let _ = app.emit("ext-download", Progress { key: key.clone(), pct });
+                }
+                !cancelled(&key)
+            }
         };
         emit(0.0);
         let options = json!({ "spotify_id": track["id"], "track": track, "isrc": track["isrc"],
@@ -919,6 +971,9 @@ pub(crate) fn fetch(app: &AppHandle, id: &str, track: &Value, quality: Option<St
             let found = exts.call(&id, "checkAvailability", json!([text("isrc"), text("name"), text("artists"), options]))?;
             track_id = found["track_id"].as_str().or_else(|| found["trackId"].as_str()).filter(|_| found["available"] != false)
                 .ok_or("this song was not found on the download source")?.to_owned();
+        }
+        if cancelled(&key) {
+            return Err(CANCELLED_MSG.into());
         }
         activity(&id, "Mengunduh…");
         let res = exts.call_with(&id, "download", json!([track_id, quality, out.to_string_lossy(), options]), Some(Box::new(emit)), Some(dir.clone()))?;
@@ -1041,7 +1096,7 @@ mod tests {
             let out = tmp.join("dl");
             std::fs::create_dir_all(&out).unwrap();
             let r = exts.call_with(id, "download", json!([track, "", out.join("t.flac").to_string_lossy(), {}]),
-                Some(Box::new(|p| print!("{p:.0}% "))), Some(out.clone()));
+                Some(Box::new(|p| { print!("{p:.0}% "); true })), Some(out.clone()));
             println!("\ndownload: {r:?}");
         }
         if let Ok(l) = std::env::var("EXT_LYRICS") {
@@ -1065,7 +1120,7 @@ mod tests {
         let out = std::env::temp_dir().join("neptunus-live");
         std::fs::create_dir_all(&out).unwrap();
         let opts = json!({ "spotify_id": t["id"], "track": t, "isrc": t["isrc"] });
-        let r = exts.call_with(&id, "download", json!([t["id"], "LOSSLESS", out.join("t.flac").to_string_lossy(), opts]), Some(Box::new(|p| print!("{p:.0}% "))), Some(out.clone()));
+        let r = exts.call_with(&id, "download", json!([t["id"], "LOSSLESS", out.join("t.flac").to_string_lossy(), opts]), Some(Box::new(|p| { print!("{p:.0}% "); true })), Some(out.clone()));
         println!("\ndownload: {r:?}");
     }
 }

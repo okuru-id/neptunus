@@ -166,8 +166,8 @@ jobs:
           echo "NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
           echo "LIBCLANG_PATH=$TC/lib" >> "$GITHUB_ENV"
           echo "CLANG_PATH=$TC/bin/clang" >> "$GITHUB_ENV"
-          # newer NDKs reject the unversioned triple bindgen passes; 24 is the minSdk tauri generates
-          echo "BINDGEN_EXTRA_CLANG_ARGS=--sysroot=$TC/sysroot --target=aarch64-linux-android24" >> "$GITHUB_ENV"
+          # newer NDKs reject the unversioned triple bindgen passes; 26 is the minSdk in tauri.conf.json (AAudio, used by cpal)
+          echo "BINDGEN_EXTRA_CLANG_ARGS=--sysroot=$TC/sysroot --target=aarch64-linux-android26" >> "$GITHUB_ENV"
 
       - run: npm ci
       - run: npm run tauri android init -- --ci

@@ -11,3 +11,4 @@ cerificate-p12/
 cerificate-neptunus-p12/
 *.p12
 *.mobileprovision
+keystore/

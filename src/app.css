@@ -43,8 +43,11 @@ html {
 }
 @media (prefers-color-scheme: light) { html { --frame-bg: var(--surface-container-high); } }
 html.maximized, html.mac { --frame-radius: 0px; } /* macOS: the native window rounds and shadows itself */
+/* iOS/Android: full screen, the app bar sits under the status bar */
+html.mobile { --frame-radius: 0px; --sheet-radius: 0px; --titlebar: calc(52px + env(safe-area-inset-top)); }
 body {
   height: 100vh;
+  height: 100dvh;
   border-radius: var(--frame-radius);
   contain: paint;
   margin: 0;
@@ -68,3 +71,6 @@ input, select { font: inherit; color: inherit; }
 ::-webkit-scrollbar-thumb:hover { border-width: 3px; background-color: color-mix(in srgb, var(--on-surface-variant) 62%, transparent); }
 ::-webkit-scrollbar-thumb:active { border-width: 3px; background-color: var(--on-surface-variant); }
 ::-webkit-scrollbar-button { display: none; }
+/* phones: a hairline that takes almost no room from the content */
+html.mobile ::-webkit-scrollbar { width: 4px; height: 4px; }
+html.mobile ::-webkit-scrollbar-thumb, html.mobile ::-webkit-scrollbar-thumb:hover { border: 0; }

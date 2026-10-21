@@ -266,6 +266,8 @@ svg { display: block; width: 100%; height: auto; touch-action: none; user-select
 .panel.eqz { container-type: inline-size; }
 .bands { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
 @container (min-width: 1000px) { .bands { grid-template-columns: repeat(10, minmax(0, 1fr)); } }
+@container (max-width: 560px) { .bands { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@container (max-width: 400px) { .bands { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .band {
   display: flex; flex-direction: column; gap: 8px; padding: 10px 8px; border-radius: 20px; cursor: pointer;
   background: var(--surface-container); transition: background-color 0.2s var(--emph);

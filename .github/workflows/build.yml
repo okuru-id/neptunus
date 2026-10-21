@@ -1,6 +1,6 @@
 name: Build
 
-# Pushing a tag like v0.2.0 builds the installers for Linux, Windows, macOS and an unsigned iOS IPA (iPhone + iPad) and
+# Pushing a tag like v0.2.0 builds the installers for Linux, Windows, macOS, an unsigned iOS IPA (iPhone + iPad) and an Android APK, and
 # attaches them to a draft GitHub release for that tag.
 # The okuru-id org keeps GITHUB_TOKEN read-only, so creating the release needs a RELEASE_TOKEN secret: a personal
 # access token with Contents read/write on this repo. Without it the jobs fall back to GITHUB_TOKEN.
@@ -129,3 +129,74 @@ jobs:
         run: |
           for i in 1 2 3 4 5 6; do gh release view "$GITHUB_REF_NAME" && break; sleep 20; done
           gh release upload "$GITHUB_REF_NAME" Neptunus_*_unsigned.ipa --clobber
+
+  # arm64 APK (practically every phone since 2017). Signed with the ANDROID_KEYSTORE secret (base64 .jks) and
+  # ANDROID_KEYSTORE_PASSWORD when set, so updates install over the previous version; otherwise with a throwaway key
+  # (still installable, but each release then needs the old app uninstalled first).
+  android:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: android
+
+      # The runner image ships the SDK and NDK; rquickjs generates its bindings with the NDK's clang and sysroot
+      - name: NDK environment
+        run: |
+          TC=$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64
+          echo "NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=$TC/lib" >> "$GITHUB_ENV"
+          echo "CLANG_PATH=$TC/bin/clang" >> "$GITHUB_ENV"
+          echo "BINDGEN_EXTRA_CLANG_ARGS=--sysroot=$TC/sysroot" >> "$GITHUB_ENV"
+
+      - run: npm ci
+      - run: npm run tauri android init -- --ci
+      - run: npm run tauri android build -- --ci --apk --target aarch64
+
+      - name: Sign APK
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE" ]; then
+            echo "$KEYSTORE" | base64 -d > release.jks
+          else
+            KEYSTORE_PASSWORD=$(openssl rand -hex 16)
+            keytool -genkeypair -keystore release.jks -storepass "$KEYSTORE_PASSWORD" -alias neptunus -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Neptunus"
+          fi
+          APK=$(find src-tauri/gen/android -name '*-release-unsigned.apk' | head -1)
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BT/apksigner" sign --ks release.jks --ks-pass "pass:$KEYSTORE_PASSWORD" --out "Neptunus_${GITHUB_REF_NAME#v}_arm64.apk" "$APK"
+          rm release.jks
+
+      - name: Upload APK as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: neptunus-${{ github.ref_name }}-android
+          path: Neptunus_*_arm64.apk
+
+      - name: Attach APK to the release
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          for i in 1 2 3 4 5 6; do gh release view "$GITHUB_REF_NAME" && break; sleep 20; done
+          gh release upload "$GITHUB_REF_NAME" Neptunus_*_arm64.apk --clobber

@@ -17,7 +17,6 @@ import SongMenu from "./lib/SongMenu.vue";
 import { downloadError, extName, has, unsupported, type ExtInfo } from "./lib/ext";
 import { pasted, verifyError, waiting, withVerify } from "./lib/verify";
 import { activity } from "./lib/activity";
-import QualityTag from "./lib/QualityTag.vue";
 import { loadQuality, longQuality, qualities, shortQuality } from "./lib/quality";
 import TitleBar from "./lib/TitleBar.vue";
 import Notifications, { type Job, type Note } from "./lib/Notifications.vue";
@@ -85,6 +84,10 @@ const sidebarOpen = ref(localStorage.getItem("sidebar") !== "0");
 const narrowMq = matchMedia("(max-width: 900px)");
 const narrow = ref(narrowMq.matches);
 narrowMq.addEventListener("change", (e) => (narrow.value = e.matches));
+// phones: a song row's buttons fold into its ⋮ menu
+const phoneMq = matchMedia("(max-width: 600px)");
+const phone = ref(phoneMq.matches);
+phoneMq.addEventListener("change", (e) => (phone.value = e.matches));
 const toggleSidebar = () => {
   sidebarOpen.value = !sidebarOpen.value;
   localStorage.setItem("sidebar", sidebarOpen.value ? "1" : "0");
@@ -1022,7 +1025,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
         </div>
         <ul v-else-if="showingList" class="songs">
           <li v-for="(t, i) in shown" :key="t.path" :class="{ active: now?.path === t.path }">
-            <button class="row" @dblclick="playAt(shown, i)" @keydown.enter="playAt(shown, i)" title="Klik dua kali untuk memutar">
+            <button class="row" @click="playAt(shown, i)">
               <span class="art-wrap">
                 <CoverArt :path="t.path" />
                 <span v-if="now?.path === t.path" class="art-overlay">
@@ -1037,15 +1040,13 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
                 <span>{{ unknown(t.artist) }} · {{ unknown(t.album) }}</span>
               </span>
             </button>
-            <button class="icon-btn row-act" title="Putar" :aria-label="`Putar ${t.title}`" @click="playAt(shown, i)">
-              <Icon name="play" :size="22" />
-            </button>
-            <button v-if="isS3(t.path)" class="icon-btn row-act dl" :disabled="t.path in progress"
+            <button v-if="isS3(t.path) && !phone" class="icon-btn row-act dl" :disabled="t.path in progress"
               :title="t.path in progress ? `Mengunduh ${progress[t.path]}%` : 'Unduh ke folder Musik'"
               :aria-label="`Unduh ${t.title}`" @click="download(t.path)">
               <span v-if="t.path in progress" class="pct">{{ progress[t.path] }}%</span>
               <Icon v-else name="download" :size="20" />
             </button>
+            <template v-if="!phone">
             <button v-if="view === 'playlists'" class="icon-btn row-act" title="Hapus dari playlist" @click="removeFrom(t.path)"><Icon name="close" :size="20" /></button>
             <div v-else-if="playlists.length" class="row-menu" :class="{ open: addMenu === t.path }">
               <button class="icon-btn row-act" title="Tambah ke playlist" :aria-label="`Tambah ${t.title} ke playlist`"
@@ -1057,9 +1058,20 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
                 <button v-for="p in playlists" :key="p.id" role="menuitem" @click="addTo(p.id, t.path)">{{ p.name }}</button>
               </div>
             </div>
+            </template>
             <SongMenu class="row-act" :class="{ busy: t.path in redl }" :title="t.title" :downloaders="isS3(t.path) ? [] : downloaders"
-              :busy="redl[t.path] ?? null" @redownload="(id, q) => redownload(t, id, q)" @remove="removeSong(t)" />
-            <QualityTag :path="t.path" />
+              :busy="redl[t.path] ?? null" @redownload="(id, q) => redownload(t, id, q)" @remove="removeSong(t)">
+              <template v-if="phone" #default="{ pick }">
+                <button v-if="isS3(t.path)" role="menuitem" :disabled="t.path in progress" @click="pick(() => download(t.path))">
+                  <Icon name="download" :size="20" />{{ t.path in progress ? `Mengunduh ${progress[t.path]}%` : "Unduh ke folder Musik" }}
+                </button>
+                <button v-if="view === 'playlists'" role="menuitem" @click="pick(() => removeFrom(t.path))"><Icon name="close" :size="20" />Hapus dari playlist</button>
+                <template v-else-if="playlists.length">
+                  <p>Tambah ke playlist</p>
+                  <button v-for="p in playlists" :key="p.id" role="menuitem" @click="pick(() => addTo(p.id, t.path))"><Icon name="playlistAdd" :size="20" />{{ p.name }}</button>
+                </template>
+              </template>
+            </SongMenu>
             <span class="dur">{{ fmt(t.duration_secs) }}</span>
           </li>
           <template v-if="view === 'playlists'">
@@ -1216,6 +1228,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
 .app {
   display: grid; grid-template-columns: var(--sidebar) 1fr;
   height: calc(100vh - var(--titlebar) - var(--sheet-gap));
+  height: calc(100dvh - var(--titlebar) - var(--sheet-gap));
   margin: var(--titlebar) var(--sheet-gap) 0; overflow: hidden;
   border-radius: var(--sheet-radius) var(--sheet-radius) 0 0; background: var(--surface);
 }
@@ -1225,7 +1238,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
 .collapsed .fab, .collapsed .dest-item { justify-content: center; padding: 0; }
 .collapsed .fab { align-self: center; width: 56px; }
 .collapsed .dest-item { width: 56px; align-self: center; border-radius: 16px; }
-main { overflow-y: auto; padding: 0 40px 40px 16px; }
+main { --pad-l: 16px; --pad-r: 8px; overflow-y: auto; padding: 0 var(--pad-r) 40px var(--pad-l); }
 main.has-player { padding-bottom: 136px; }
 
 /* ---------- navigation drawer ---------- */
@@ -1253,7 +1266,9 @@ main.has-player { padding-bottom: 136px; }
 /* ---------- header ---------- */
 .top {
   position: sticky; top: 0; z-index: 4; background: var(--surface);
-  display: flex; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: 16px 24px; padding: 12px 0 24px;
+  display: flex; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: 16px 24px;
+  /* spans main's side padding too, so scrolled content doesn't show beside the sticky header */
+  margin: 0 calc(-1 * var(--pad-r)) 0 calc(-1 * var(--pad-l)); padding: 12px var(--pad-r) 24px var(--pad-l);
 }
 .heading { display: flex; align-items: center; gap: 16px; min-width: 0; }
 h1 {
@@ -1603,7 +1618,7 @@ li:hover .row-act, .row-act:focus-visible, .row-menu.open .row-act, .row-act.ope
 .ls-dur { flex: none; width: 44px; text-align: right; font-size: 14px; color: var(--on-surface-variant); font-variant-numeric: tabular-nums; }
 .no-lyrics code { background: var(--surface-container-high); padding: 2px 6px; border-radius: 6px; }
 
-/* player: below the desktop minimum (960px) the seek bar stacks under the controls */
+/* player: in narrow windows the seek bar stacks under the controls */
 @media (max-width: 1100px) {
   /* small windows: lyrics take the screen; the artwork goes, title and lyric actions stay on top */
   .now { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); gap: 8px; padding: 64px 32px 132px; }
@@ -1627,17 +1642,67 @@ li:hover .row-act, .row-act:focus-visible, .row-menu.open .row-act, .row-act.ope
 }
 @media (max-width: 600px) {
   .top .search { width: 100%; }
-  main { padding: 0 16px 40px 8px; }
-  .player { left: 8px; right: 8px; bottom: 8px; padding-right: 8px; }
-  .transport { gap: 4px; }
+  main { --pad-l: 8px; --pad-r: 16px; }
+  .player { left: 8px; right: 8px; bottom: 8px; padding: 8px 8px 2px 10px; row-gap: 4px; }
+  .transport { gap: 2px; }
   .transport > .icon-btn:not(.tonal), .side { display: none; }
-  .transport .icon-btn.tonal { width: 40px; height: 40px; }
-  .play { width: 52px; height: 44px; }
-  .np .art { width: 44px; height: 44px; }
-  .np { gap: 10px; }
+  .transport .icon-btn.tonal { width: 34px; height: 34px; }
+  .transport .icon-btn.tonal .icon { width: 22px; height: 22px; }
+  .play { width: 44px; height: 36px; }
+  .play .icon { width: 24px; height: 24px; }
+  .np .art { width: 36px; height: 36px; border-radius: 10px; }
+  .np { gap: 8px; }
   .meta strong { font-size: 14px; }
   .meta span { font-size: 12px; }
+  .player .meta strong { font-size: 13px; }
+  .player .meta span { font-size: 11px; }
   .seek > span { display: none; }
+}
+/* touch screens: no hover, so the row actions are always there */
+@media (hover: none) {
+  .row-act { opacity: 1; }
+}
+/* phones: bottom navigation bar instead of the rail, one-column forms, tighter panels */
+@media (max-width: 600px) {
+  .app, .app.collapsed { grid-template-columns: minmax(0, 1fr); }
+  .drawer, .drawer.has-player {
+    /* floating rounded bar, clear of the screen edges and the home indicator */
+    position: fixed; left: max(12px, env(safe-area-inset-left)); right: max(12px, env(safe-area-inset-right));
+    bottom: calc(12px + env(safe-area-inset-bottom)); z-index: 21; flex-direction: row; gap: 0; overflow: visible;
+    padding: 6px; border-radius: 32px;
+    background: var(--surface-container-high); box-shadow: 0 6px 20px rgb(0 0 0 / 0.3);
+  }
+  .dest { display: contents; }
+  .collapse-btn { display: none; }
+  .drawer .fab, .drawer .dest-item, .collapsed .fab, .collapsed .dest-item {
+    flex: 1 1 0; min-width: 0; width: auto; height: 56px; padding: 0; gap: 2px; margin: 0;
+    flex-direction: column; justify-content: center; align-self: auto;
+    font-size: 11px; font-weight: 600; border-radius: 26px; box-shadow: none;
+    background: none; color: var(--on-surface-variant);
+  }
+  .drawer .lbl, .collapsed .lbl { display: block; }
+  .drawer .badge, .collapsed .badge { display: none; }
+  .drawer .fab :deep(.icon), .drawer .dest-item :deep(.icon) { padding: 4px 18px; border-radius: 16px; transition: background 0.25s var(--emph); }
+  .drawer .sel { color: var(--on-surface); }
+  .drawer .sel :deep(.icon) { background: var(--secondary-container); color: var(--on-secondary-container); }
+  main { --pad-l: max(16px, env(safe-area-inset-left)); --pad-r: max(8px, env(safe-area-inset-right)); padding-bottom: calc(100px + env(safe-area-inset-bottom)); }
+  main.has-player { padding-bottom: calc(176px + env(safe-area-inset-bottom)); }
+  /* the player sits just above the nav bar: one floating stack, a small gap and tighter inner corners between them */
+  .player {
+    bottom: calc(84px + env(safe-area-inset-bottom)); left: max(12px, env(safe-area-inset-left)); right: max(12px, env(safe-area-inset-right));
+    border-radius: 20px 20px 8px 8px; box-shadow: 0 6px 20px rgb(0 0 0 / 0.25), 0 0 0 10px var(--surface);
+  }
+  .drawer.has-player { border-radius: 8px 8px 32px 32px; }
+  .toast, .toast.above { bottom: calc(164px + env(safe-area-inset-bottom)); }
+  .now { padding-bottom: calc(200px + env(safe-area-inset-bottom)); }
+  .fields { grid-template-columns: 1fr; }
+  .panel { padding: 20px 16px; border-radius: 24px; }
+  .conn-id { min-width: 0; flex-basis: calc(100% - 72px); } /* buttons wrap under the title */
+  .chip.new input { width: 140px; }
+  .btn.big { height: 56px; padding: 0 24px 0 18px; font-size: 16px; }
+  .songs .dur { display: none; }
+  .songs li { padding-right: 6px; } /* no duration column: just keep the ⋮ off the row edge */
+  .songs .row-act { opacity: 1; } /* the ⋮ menu holds every row action here, so it always shows */
 }
 @media (prefers-reduced-motion: reduce) {
   .empty-mark, .empty-mark .icon, .eq i { animation: none; }

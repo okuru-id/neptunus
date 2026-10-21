@@ -326,7 +326,7 @@ onUnmounted(() => subs.forEach((s) => s.then((f) => f())));
 
 .btn {
   display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 20px 0 16px; border-radius: 20px;
-  font-size: 14px; font-weight: 600; transition: border-radius 0.3s var(--spring), background 0.2s;
+  font-size: 14px; font-weight: 600; white-space: nowrap; transition: border-radius 0.3s var(--spring), background 0.2s;
 }
 .btn:active { border-radius: 10px; }
 .btn:disabled, .icon-btn:disabled { opacity: 0.5; cursor: default; }
@@ -400,5 +400,14 @@ onUnmounted(() => subs.forEach((s) => s.then((f) => f())));
 @media (max-width: 760px) {
   .row { grid-template-columns: 40px minmax(0, 1fr) 80px 40px; }
   .row > :nth-child(4) { display: none; }
+}
+/* touch screens: no hover, so a row's menu button is always there */
+@media (hover: none) { .row .icon-btn { opacity: 1; } }
+/* phones: the tools get their own full-width line under the path */
+@media (max-width: 600px) {
+  .files { padding: 16px 12px; border-radius: 24px; }
+  .tools { flex-wrap: wrap; width: 100%; }
+  .tools .btn { flex: 1 1 0; min-width: 0; justify-content: center; gap: 6px; padding: 0 12px 0 10px; }
+  .row { grid-template-columns: 32px minmax(0, 1fr) 64px 40px; gap: 4px; padding: 0 0 0 4px; }
 }
 </style>

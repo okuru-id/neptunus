@@ -118,5 +118,9 @@ li { display: flex; align-items: center; gap: 12px; padding: 8px 12px 8px 16px; 
 .empty { margin: 8px 20px 12px; font-size: 13px; color: var(--on-surface-variant); }
 .drop-enter-active, .drop-leave-active { transition: opacity 0.15s, transform 0.25s var(--emph); transform-origin: top right; }
 .drop-enter-from, .drop-leave-to { opacity: 0; transform: translateY(-6px) scale(0.97); }
+/* phones: the bell isn't at the window edge, so the panel spans the screen under the app bar */
+@media (max-width: 600px) {
+  .panel { position: fixed; top: calc(var(--titlebar) + 4px); left: 8px; right: 8px; width: auto; }
+}
 @keyframes spin { to { transform: rotate(360deg); } }
 </style>

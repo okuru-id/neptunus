@@ -1,10 +1,11 @@
 use rodio::{ChannelCount, Decoder, Player, Sample, SampleRate, Source, mixer::Mixer};
 use serde::Serialize;
+use tauri::Manager;
 use std::{
     fs::File,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicI32, Ordering::Relaxed},
+        atomic::{AtomicI32, AtomicU64, Ordering::Relaxed},
     },
     time::Duration,
 };
@@ -14,6 +15,8 @@ pub struct AudioState {
     mixer: Mixer,
     player: Mutex<Option<Player>>,
     eq: Arc<[AtomicI32; 2 * BANDS]>,
+    /// bumped by every `play`, so a song that took long to open doesn't start over a newer pick
+    play_id: AtomicU64,
 }
 
 #[derive(Serialize)]
@@ -40,7 +43,7 @@ impl AudioState {
             }
         });
         let mixer = rx.recv().map_err(|e| e.to_string())??;
-        Ok(Self { mixer, player: Mutex::new(None), eq: Arc::new(std::array::from_fn(|i| AtomicI32::new(if i < BANDS { 0 } else { FREQS[i - BANDS] as i32 }))) })
+        Ok(Self { mixer, player: Mutex::new(None), play_id: AtomicU64::new(0), eq: Arc::new(std::array::from_fn(|i| AtomicI32::new(if i < BANDS { 0 } else { FREQS[i - BANDS] as i32 }))) })
     }
 }
 
@@ -57,7 +60,7 @@ fn decode(path: &str, eq: &Arc<[AtomicI32; 2 * BANDS]>) -> Result<Box<dyn Source
 
 fn decode_raw(path: &str) -> Result<Box<dyn Source + Send>, String> {
     if let Some(r) = crate::s3::reader(path) {
-        let r = r?.with_readahead();
+        let r = r?.with_readahead(path);
         let len = r.len();
         let d = Decoder::builder().with_data(r).with_byte_len(len).build().map_err(|e| e.to_string())?;
         return Ok(Box::new(d));
@@ -66,20 +69,43 @@ fn decode_raw(path: &str) -> Result<Box<dyn Source + Send>, String> {
     Ok(Box::new(Decoder::try_from(file).map_err(|e| e.to_string())?))
 }
 
+/// Length of the crossfade when switching songs.
+const FADE: Duration = Duration::from_millis(400);
+
+/// Opens `path` and switches to it: the old song keeps playing while the new one opens (an S3 stream takes
+/// a moment), then fades out as the new one fades in. `false` when a newer pick came first and this one
+/// was dropped.
 #[tauri::command]
-pub async fn play(state: tauri::State<'_, AudioState>, path: String, volume: f32) -> Result<(), String> {
-    let source = decode(&path, &state.eq)?;
+pub async fn play(app: tauri::AppHandle, path: String, volume: f32) -> Result<bool, String> {
+    let state = app.state::<AudioState>();
+    let id = state.play_id.fetch_add(1, Relaxed) + 1;
+    let eq = state.eq.clone();
+    let source = crate::blocking(move || decode(&path, &eq)).await?;
+    if state.play_id.load(Relaxed) != id {
+        return Ok(false);
+    }
     let player = Player::connect_new(&state.mixer);
     player.set_volume(volume as _);
-    player.append(source);
-    *state.player.lock().unwrap() = Some(player);
-    Ok(())
+    player.append(source.fade_in(FADE));
+    if let Some(old) = state.player.lock().unwrap().replace(player) {
+        std::thread::spawn(move || {
+            let (v, steps) = (old.volume(), 20);
+            for i in 1..=steps {
+                old.set_volume(v * (steps - i) as f32 / steps as f32);
+                std::thread::sleep(FADE / steps);
+            }
+            old.stop();
+        });
+    }
+    Ok(true)
 }
 
 /// Appends a track to the running player so it starts with no gap when the current one ends.
 #[tauri::command]
-pub async fn queue_next(state: tauri::State<'_, AudioState>, path: String) -> Result<(), String> {
-    let source = decode(&path, &state.eq)?;
+pub async fn queue_next(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let state = app.state::<AudioState>();
+    let eq = state.eq.clone();
+    let source = crate::blocking(move || decode(&path, &eq)).await?;
     if let Some(p) = state.player.lock().unwrap().as_ref() {
         p.append(source);
     }

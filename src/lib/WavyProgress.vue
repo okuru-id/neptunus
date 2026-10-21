@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 
-const props = withDefaults(defineProps<{ value: number; max: number; playing: boolean; height?: number }>(), { height: 28 });
+const props = withDefaults(defineProps<{ value: number; max: number; playing: boolean; height?: number; buffered?: number | null }>(), { height: 28, buffered: null });
 const emit = defineEmits<{ scrub: [v: number]; seek: [v: number] }>();
 
 const WAVELENGTH = 30;
@@ -37,6 +37,8 @@ onUnmounted(() => {
 
 const mid = computed(() => props.height / 2);
 const played = computed(() => (props.max > 0 ? Math.min(1, props.value / props.max) * width.value : 0));
+// end of the fetched-ahead part of a stream (0-1 of the track), drawn over the rest of the track
+const bufEnd = computed(() => (props.buffered == null ? 0 : Math.min(width.value - 2, props.buffered * width.value)));
 const wave = computed(() => {
   const a = (props.height / 7) * amp.value;
   let d = `M2 ${mid.value}`;
@@ -52,6 +54,7 @@ const num = (e: Event) => +(e.target as HTMLInputElement).value;
     <svg :width="width" :height="height" aria-hidden="true">
       <path v-if="played > 2" class="active" :d="wave" />
       <line v-if="played + GAP < width - 4" class="track" :x1="played + GAP" :y1="mid" :x2="width - 2" :y2="mid" />
+      <line v-if="bufEnd > played + GAP" class="buffer" :x1="played + GAP" :y1="mid" :x2="bufEnd" :y2="mid" />
       <circle class="stop" :cx="width - 2" :cy="mid" r="2" />
       <rect class="thumb" :x="Math.max(0, played - 2)" :y="mid - height / 2.6" width="4" :height="height / 1.3" rx="2" />
     </svg>
@@ -73,6 +76,7 @@ const num = (e: Event) => +(e.target as HTMLInputElement).value;
 svg { display: block; overflow: visible; }
 .active { fill: none; stroke: var(--primary); stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
 .track { stroke: var(--secondary-container); stroke-width: 4; stroke-linecap: round; }
+.buffer { stroke: var(--primary); stroke-opacity: 0.35; stroke-width: 4; stroke-linecap: round; }
 .stop { fill: var(--primary); }
 .thumb { fill: var(--primary); opacity: 0; transition: opacity 0.2s; }
 .wavy:hover .thumb, .wavy:has(input:focus-visible) .thumb { opacity: 1; }

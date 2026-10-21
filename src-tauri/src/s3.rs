@@ -90,9 +90,47 @@ fn fetch_range(bucket: &Bucket, key: &str, start: u64, len: u64) -> io::Result<V
     Err(last.unwrap())
 }
 
+/// Chunks kept fetched ahead of the play position while streaming (32 MB, ~40 s of hi-res FLAC).
+const AHEAD: u64 = 32;
+/// Range requests in flight at once while filling the read-ahead buffer.
+const FETCHERS: usize = 3;
+
+/// Read-ahead buffer shared with the fetch thread: the chunks around `want` (chunk index), by index.
+#[derive(Default)]
+struct Window {
+    chunks: std::collections::HashMap<u64, Result<Vec<u8>, String>>,
+    want: u64,
+    len: u64,
+    /// chunks a fetch thread is working on
+    busy: std::collections::HashSet<u64>,
+    closed: bool,
+}
+
+#[derive(Default)]
+struct Ahead {
+    w: std::sync::Mutex<Window>,
+    cv: std::sync::Condvar,
+}
+
+/// Streams with read-ahead by track path, for the buffer indicator on the progress bar.
+static STREAMS: std::sync::Mutex<Vec<(String, std::sync::Weak<Ahead>)>> = std::sync::Mutex::new(Vec::new());
+
+/// How far the stream of S3 track `path` is buffered, as a fraction of the file (`None` when not streaming).
+#[tauri::command]
+pub fn s3_buffered(path: String) -> Option<f64> {
+    let a = STREAMS.lock().unwrap().iter().rev().find(|(p, _)| *p == path)?.1.upgrade()?;
+    let w = a.w.lock().unwrap();
+    let len = w.len.max(1);
+    let mut end = w.want;
+    while matches!(w.chunks.get(&end), Some(Ok(_))) {
+        end += 1;
+    }
+    Some((end * CHUNK).min(len) as f64 / len as f64)
+}
+
 /// An S3 object as `Read + Seek`, fetched in chunks with range requests (nothing is written to disk).
-/// With read-ahead on (playback), the next chunk is fetched on another thread while the current one plays,
-/// so the audio thread doesn't wait for the network at every chunk boundary.
+/// With read-ahead on (playback), `FETCHERS` threads keep the next `AHEAD` chunks fetched while the song plays,
+/// so the audio thread doesn't wait for the network and a slow request doesn't break up the sound.
 pub struct S3Reader {
     bucket: Box<Bucket>,
     key: String,
@@ -100,9 +138,7 @@ pub struct S3Reader {
     pos: u64,
     buf: Vec<u8>,
     buf_start: u64,
-    readahead: bool,
-    // in a Mutex only because the decoder needs the reader to be `Sync`
-    ahead: Option<(u64, std::sync::Mutex<std::sync::mpsc::Receiver<io::Result<Vec<u8>>>>)>,
+    ahead: Option<std::sync::Arc<Ahead>>,
 }
 
 impl S3Reader {
@@ -110,21 +146,72 @@ impl S3Reader {
         self.len
     }
 
-    pub fn with_readahead(mut self) -> Self {
-        self.readahead = true;
+    pub fn with_readahead(mut self, path: &str) -> Self {
+        let a = std::sync::Arc::new(Ahead::default());
+        a.w.lock().unwrap().len = self.len;
+        let mut streams = STREAMS.lock().unwrap();
+        streams.retain(|(_, w)| w.strong_count() > 0);
+        streams.push((path.to_owned(), std::sync::Arc::downgrade(&a)));
+        drop(streams);
+        let (bucket, key, len) = (self.bucket.clone(), self.key.clone(), self.len);
+        let last = len.saturating_sub(1) / CHUNK;
+        for _ in 0..FETCHERS {
+            let (t, bucket, key) = (a.clone(), bucket.clone(), key.clone());
+            std::thread::spawn(move || loop {
+                let idx = {
+                    let mut w = t.w.lock().unwrap();
+                    loop {
+                        if w.closed {
+                            return;
+                        }
+                        let want = w.want;
+                        w.chunks.retain(|&i, _| i + 1 >= want && i <= want + AHEAD);
+                        match (want..=(want + AHEAD).min(last)).find(|i| !w.chunks.contains_key(i) && !w.busy.contains(i)) {
+                            Some(i) => {
+                                w.busy.insert(i);
+                                break i;
+                            }
+                            None => w = t.cv.wait(w).unwrap(),
+                        }
+                    }
+                };
+                let got = fetch_range(&bucket, &key, idx * CHUNK, len).map_err(|e| e.to_string());
+                let mut w = t.w.lock().unwrap();
+                w.busy.remove(&idx);
+                w.chunks.insert(idx, got);
+                drop(w);
+                t.cv.notify_all();
+            });
+        }
+        self.ahead = Some(a);
         self
     }
 
-    fn prefetch(&mut self, start: u64) {
-        if start >= self.len {
-            return;
+    /// The buffered chunk holding `pos`, waiting for the fetch thread if it isn't there yet.
+    fn buffered(a: &Ahead, pos: u64) -> io::Result<Vec<u8>> {
+        let idx = pos / CHUNK;
+        let mut w = a.w.lock().unwrap();
+        if w.want != idx {
+            w.want = idx;
+            a.cv.notify_all();
         }
-        let (tx, rx) = std::sync::mpsc::channel();
-        let (bucket, key, len) = (self.bucket.clone(), self.key.clone(), self.len);
-        std::thread::spawn(move || {
-            let _ = tx.send(fetch_range(&bucket, &key, start, len));
-        });
-        self.ahead = Some((start, std::sync::Mutex::new(rx)));
+        loop {
+            match w.chunks.get(&idx) {
+                Some(Ok(c)) => return Ok(c.clone()),
+                // dropped, so the next read fetches it again
+                Some(Err(_)) => return Err(io::Error::other(w.chunks.remove(&idx).unwrap().unwrap_err())),
+                None => w = a.cv.wait(w).unwrap(),
+            }
+        }
+    }
+}
+
+impl Drop for S3Reader {
+    fn drop(&mut self) {
+        if let Some(a) = &self.ahead {
+            a.w.lock().unwrap().closed = true;
+            a.cv.notify_all();
+        }
     }
 }
 
@@ -134,15 +221,10 @@ impl Read for S3Reader {
             return Ok(0);
         }
         if self.pos < self.buf_start || self.pos >= self.buf_start + self.buf.len() as u64 {
-            let pos = self.pos;
-            self.buf = match self.ahead.take() {
-                Some((start, rx)) if start == pos => rx.into_inner().unwrap_or_else(|e| e.into_inner()).recv().map_err(io::Error::other)??,
-                _ => fetch_range(&self.bucket, &self.key, pos, self.len)?,
+            (self.buf, self.buf_start) = match &self.ahead {
+                Some(a) => (Self::buffered(a, self.pos)?, self.pos / CHUNK * CHUNK),
+                None => (fetch_range(&self.bucket, &self.key, self.pos, self.len)?, self.pos),
             };
-            self.buf_start = pos;
-            if self.readahead {
-                self.prefetch(pos + self.buf.len() as u64);
-            }
         }
         let off = (self.pos - self.buf_start) as usize;
         let n = out.len().min(self.buf.len() - off);
@@ -167,7 +249,7 @@ impl Seek for S3Reader {
 fn open_object(bucket: Box<Bucket>, key: &str) -> Result<S3Reader, String> {
     let (head, _) = bucket.head_object(key).map_err(|e| format!("{key}: {e}"))?;
     let len = head.content_length.unwrap_or(0).max(0) as u64;
-    Ok(S3Reader { bucket, key: key.to_owned(), len, pos: 0, buf: Vec::new(), buf_start: 0, readahead: false, ahead: None })
+    Ok(S3Reader { bucket, key: key.to_owned(), len, pos: 0, buf: Vec::new(), buf_start: 0, ahead: None })
 }
 
 /// `Some` when `path` is an `s3://bucket/key` track; the credentials come from the saved config.

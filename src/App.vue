@@ -76,6 +76,7 @@ const queue = ref<Track[]>([]);
 const current = ref(-1);
 const paused = ref(false);
 const position = ref(0);
+const buffered = ref<number | null>(null); // fraction of an S3 stream fetched ahead, for the progress bar
 const volume = ref(0.8);
 const shuffle = ref(false);
 const sidebarOpen = ref(localStorage.getItem("sidebar") !== "0");
@@ -469,14 +470,22 @@ function source(t: Track): string {
   return twin?.path ?? t.path;
 }
 
+// path of the picked song while the backend opens it (an S3 stream takes a moment); the current song
+// keeps playing and showing until then
+const loadingPath = ref("");
 async function playAt(list: Track[], i: number) {
   if (!list[i]) return;
-  queue.value = list;
-  current.value = i;
-  preloaded = -1;
-  position.value = 0;
-  paused.value = false;
-  await invoke("play", { path: source(list[i]), volume: volume.value });
+  loadingPath.value = list[i].path;
+  try {
+    if (!(await invoke<boolean>("play", { path: source(list[i]), volume: volume.value }))) return;
+    queue.value = list;
+    current.value = i;
+    preloaded = -1;
+    position.value = 0;
+    paused.value = false;
+  } finally {
+    if (loadingPath.value === list[i].path) loadingPath.value = "";
+  }
 }
 
 // the audio lives in the backend and survives a webview reload, so keep what the page needs to show it
@@ -540,6 +549,7 @@ async function poll() {
   const st = await invoke<{ position_secs: number; paused: boolean; finished: boolean; queued: number } | null>("status");
   if (!st) return;
   if (st.finished) {
+    if (loadingPath.value) return; // the next song is already on its way
     if (preloaded >= 0) current.value = preloaded;
     preloaded = -1;
     return next(true);
@@ -550,7 +560,9 @@ async function poll() {
     preloaded = -1;
   }
   if (!seeking) position.value = st.position_secs;
-  if (preloaded < 0 && st.queued === 1 && now.value && now.value.duration_secs - st.position_secs < 10) {
+  const path = now.value ? source(now.value) : "";
+  buffered.value = isS3(path) ? await invoke<number | null>("s3_buffered", { path }) : null;
+  if (!loadingPath.value && preloaded < 0 && st.queued === 1 && now.value && now.value.duration_secs - st.position_secs < 10) {
     const i = nextIndex(true);
     if (i !== null) {
       preloaded = i;
@@ -945,6 +957,9 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
                 <span v-if="now?.path === t.path" class="art-overlay">
                   <span class="eq" :class="{ still: paused }" aria-label="Sedang diputar"><i></i><i></i><i></i></span>
                 </span>
+                <span v-else-if="loadingPath === t.path" class="art-overlay">
+                  <span class="spinner" :style="{ clipPath: 'url(#shape-cookie12)' }" aria-label="Memuat"></span>
+                </span>
               </span>
               <span class="meta">
                 <strong><Icon v-if="isS3(t.path)" name="cloud" :size="16" class="cloud-mark" title="Di-stream dari S3" />{{ t.title }}</strong>
@@ -1115,7 +1130,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
       </div>
       <div class="seek">
         <span>{{ fmt(position) }}</span>
-        <WavyProgress :value="position" :max="now.duration_secs" :playing="playing" @scrub="scrub" @seek="seekTo" />
+        <WavyProgress :value="position" :max="now.duration_secs" :buffered="buffered" :playing="playing" @scrub="scrub" @seek="seekTo" />
         <span>{{ fmt(now.duration_secs) }}</span>
       </div>
     </div>

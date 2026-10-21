@@ -2,6 +2,8 @@ name: Build
 
 # Pushing a tag like v0.2.0 builds the installers for Linux, Windows, macOS and an unsigned iOS IPA (iPhone + iPad) and
 # attaches them to a draft GitHub release for that tag.
+# The okuru-id org keeps GITHUB_TOKEN read-only, so creating the release needs a RELEASE_TOKEN secret: a personal
+# access token with Contents read/write on this repo. Without it the jobs fall back to GITHUB_TOKEN.
 on:
   push:
     tags: ["v*"]
@@ -63,7 +65,7 @@ jobs:
 
       - uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
         with:
           args: ${{ matrix.args }}
           tagName: ${{ github.ref_name }}
@@ -100,7 +102,7 @@ jobs:
 
       - name: Attach IPA to the release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           ipa="Neptunus_${GITHUB_REF_NAME#v}_unsigned.ipa"
           mv src-tauri/gen/apple/build/arm64/*.ipa "$ipa"

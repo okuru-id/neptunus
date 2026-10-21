@@ -16,6 +16,16 @@ use walkdir::WalkDir;
 /// App data dir, for code that has no `AppHandle` (the audio thread reading S3 objects).
 pub(crate) static DATA_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 
+/// Where downloads go when no library folder is set: `Music/Neptunus`, or on iOS `Documents/Neptunus`,
+/// the folder the Files app shows (Info.ios.plist) and the one "Tambah folder" adds there.
+pub(crate) fn download_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    #[cfg(target_os = "ios")]
+    let base = app.path().document_dir();
+    #[cfg(not(target_os = "ios"))]
+    let base = app.path().audio_dir();
+    Ok(base.map_err(|e| e.to_string())?.join("Neptunus"))
+}
+
 /// Moves a path to the system trash (permanent delete on mobile, which has none).
 pub(crate) fn trash(path: impl AsRef<std::path::Path>) -> Result<(), String> {
     #[cfg(desktop)]

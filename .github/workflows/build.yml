@@ -113,6 +113,8 @@ jobs:
 
       - run: npm ci
       - run: npm run tauri ios init -- --ci
+      # the generated Xcode project has Tauri's default icon; src-tauri/icons/ios holds Neptunus' (tauri icon output)
+      - run: cp src-tauri/icons/ios/*.png src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/
       - run: npm run tauri ios build -- --ci --no-sign
 
       - run: mv src-tauri/gen/apple/build/arm64/*.ipa "Neptunus_${GITHUB_REF_NAME#v}_unsigned.ipa"

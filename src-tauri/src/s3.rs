@@ -312,7 +312,7 @@ pub async fn s3_sync(app: AppHandle, db: State<'_, Db>) -> Result<Vec<Track>, St
 pub async fn s3_download(app: AppHandle, db: State<'_, Db>, path: String) -> Result<Vec<Track>, String> {
     use std::io::Write;
     let mut r = reader(&path).ok_or("bukan lagu S3")??;
-    let dir = app.path().audio_dir().map_err(|e| e.to_string())?.join("Neptunus");
+    let dir = crate::download_dir(&app)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let name = Path::new(&r.key).file_name().ok_or("nama file tidak valid")?.to_owned();
     let dest = dir.join(name);

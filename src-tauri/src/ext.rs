@@ -936,7 +936,7 @@ fn fetch_inner(app: &AppHandle, id: &str, track: &Value, quality: Option<String>
         let db = app.state::<crate::db::Db>();
         let dir = match db.folders().ok().and_then(|f| f.into_iter().next()) {
             Some(d) => PathBuf::from(d),
-            None => app.path().audio_dir().map_err(|e| e.to_string())?.join("Neptunus"),
+            None => crate::download_dir(&app)?,
         };
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let text = |k: &str| track[k].as_str().unwrap_or_default().to_owned();

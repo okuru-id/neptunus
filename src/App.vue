@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { documentDir } from "@tauri-apps/api/path";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { computed, onMounted, onUnmounted, ref, watch, watchEffect } from "vue";
@@ -458,9 +459,13 @@ async function scan(dir: string) {
   }
 }
 async function pickFolder() {
-  // Android has no system folder picker in Tauri: an in-app one browses the phone's storage (READ_MEDIA_AUDIO)
-  const dir = navigator.userAgent.includes("Android") ? await chooseFolder() : await open({ directory: true });
+  // Android has no system folder picker in Tauri: an in-app one browses the phone's storage (READ_MEDIA_AUDIO).
+  // iOS apps only see their own Documents folder, which the Files app shows (Info.ios.plist).
+  const android = navigator.userAgent.includes("Android");
+  const ios = !android && document.documentElement.classList.contains("mobile");
+  const dir = android ? await chooseFolder() : ios ? await documentDir() : await open({ directory: true });
   if (!dir) return;
+  if (ios) notify("Salin lagu lewat app File › Di iPhone Saya › Neptunus, lalu pindai ulang folder ini.", "done");
   curFolder.value = dir;
   await scan(dir);
   if (view.value !== "s3") setView("songs");

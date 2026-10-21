@@ -8,6 +8,7 @@ import CoverArt from "./lib/CoverArt.vue";
 import { covers } from "./lib/covers";
 import Icon from "./lib/Icon.vue";
 import ConfirmDialog, { confirm } from "./lib/ConfirmDialog.vue";
+import FolderPicker, { chooseFolder } from "./lib/FolderPicker.vue";
 import FileManager from "./lib/FileManager.vue";
 import Extensions from "./lib/Extensions.vue";
 import Equalizer from "./lib/Equalizer.vue";
@@ -317,8 +318,8 @@ function addNote(kind: Note["kind"], text: string, url?: string) {
 // short-lived notice at the bottom of the window (a failed download, ...), also kept in the bell
 const toast = ref("");
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
-function notify(text: string) {
-  addNote("error", text);
+function notify(text: string, kind: Note["kind"] = "error") {
+  addNote(kind, text);
   toast.value = text;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => (toast.value = ""), 7000);
@@ -457,7 +458,8 @@ async function scan(dir: string) {
   }
 }
 async function pickFolder() {
-  const dir = await open({ directory: true });
+  // Android has no system folder picker in Tauri: an in-app one browses the phone's storage (READ_MEDIA_AUDIO)
+  const dir = navigator.userAgent.includes("Android") ? await chooseFolder() : await open({ directory: true });
   if (!dir) return;
   curFolder.value = dir;
   await scan(dir);
@@ -755,6 +757,12 @@ onMounted(async () => {
   window.addEventListener("pointerdown", closeMenu);
   pollId = setInterval(poll, 500);
   invoke<ExtInfo[]>("ext_list").then((l) => (exts.value = l));
+  // phones: the verification page replaced the app, and the grant it left behind is finished here
+  if (document.documentElement.classList.contains("mobile"))
+    invoke<string | null>("ext_session_poll", { text: null }).then(
+      (id) => id && notify("Verifikasi selesai, silakan unduh ulang lagunya.", "done"),
+      (e) => notify(String(e)),
+    );
   subs.push(
     listen<{ key: string; pct: number }>("ext-download", ({ payload: { key, pct } }) => {
       if (key in redl.value) redl.value = { ...redl.value, [key]: pct };
@@ -831,6 +839,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
   </svg>
 
   <ConfirmDialog />
+  <FolderPicker />
   <TitleBar @settings="openSettings('local')">
     <Notifications :jobs="jobs" :notes="notes" :unread="unread" @read="unread = 0" @clear="notes = []" @cancel-all="cancelAll" @open="openUrl" />
   </TitleBar>
@@ -1685,7 +1694,7 @@ li:hover .row-act, .row-act:focus-visible, .row-menu.open .row-act, .row-act.ope
   .drawer .fab :deep(.icon), .drawer .dest-item :deep(.icon) { padding: 4px 18px; border-radius: 16px; transition: background 0.25s var(--emph); }
   .drawer .sel { color: var(--on-surface); }
   .drawer .sel :deep(.icon) { background: var(--secondary-container); color: var(--on-secondary-container); }
-  main { --pad-l: max(16px, env(safe-area-inset-left)); --pad-r: max(8px, env(safe-area-inset-right)); padding-bottom: calc(100px + env(safe-area-inset-bottom)); }
+  main { --pad-l: max(16px, env(safe-area-inset-left)); --pad-r: max(16px, env(safe-area-inset-right)); padding-bottom: calc(100px + env(safe-area-inset-bottom)); }
   main.has-player { padding-bottom: calc(176px + env(safe-area-inset-bottom)); }
   /* the player sits just above the nav bar: one floating stack, a small gap and tighter inner corners between them */
   .player {

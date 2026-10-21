@@ -357,6 +357,13 @@ fn retry_after(res: &attohttpc::Response) -> u64 {
 
 // ---------------------------------------------------------------- the browser hand-off
 
+// phones have no HOME and no second process: the grant only comes from the app's own webview
+#[cfg(mobile)]
+fn inbox() -> Option<PathBuf> {
+    crate::DATA_DIR.get().map(|d| d.join("grant-inbox"))
+}
+
+#[cfg(desktop)]
 fn inbox() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).or_else(|| Some(PathBuf::from(std::env::var_os("HOME")?).join(".local/share")))?;
     Some(base.join("id.neptunus.desktop").join("grant-inbox"))
@@ -368,32 +375,91 @@ fn save_grant(url: &str) {
     }
 }
 
-/// Opens the challenge of extension `id` (the one its last call asked for) in a window of this app; the
-/// redirect to `spotiflac://session-grant?...` is caught before it leaves the webview. `false`: nothing pending.
-#[tauri::command]
-pub async fn ext_session_verify(app: AppHandle, id: String) -> R<bool> {
-    use tauri::{WebviewUrl, WebviewWindowBuilder};
-    let rec = read_json(&app.state::<Exts>().data.join(&id).join("session.json"));
-    let Some(url) = rec["auth_url"].as_str().and_then(|u| u.parse::<tauri::Url>().ok()).filter(|u| u.scheme() == "https") else { return Ok(false) };
-    let _ = std::fs::remove_file(inbox().unwrap_or_default());
-    if let Some(old) = app.get_webview_window("ext-verify") {
-        let _ = old.close();
-    }
-    let handle = app.clone();
-    WebviewWindowBuilder::new(&app, "ext-verify", WebviewUrl::External(url))
-        .title("Verifikasi ekstensi")
-        .inner_size(480.0, 680.0)
-        .on_navigation(move |to| {
+/// The app page the main webview left for the challenge (phones), to go back to once the grant arrives.
+#[cfg(mobile)]
+static BACK: Mutex<Option<tauri::Url>> = Mutex::new(None);
+
+#[cfg(mobile)]
+const CLOSE_BUTTON: &str = r#"if (!document.getElementById("neptunus-close")) {
+  const b = document.createElement("button");
+  b.id = "neptunus-close";
+  b.textContent = "✕  Tutup";
+  b.style.cssText = "position:fixed;z-index:2147483647;top:calc(env(safe-area-inset-top) + 12px);right:12px;padding:10px 16px;border:0;border-radius:20px;background:#3b2f2c;color:#fff;font:600 15px system-ui;box-shadow:0 2px 8px rgba(0,0,0,.35)";
+  b.onclick = () => (location.href = "spotiflac://cancel");
+  document.documentElement.appendChild(b);
+}"#;
+
+/// Phones: every navigation of the main webview passes here; the challenge's final redirect is caught,
+/// stored and the app page loaded again, where `ext_session_poll` finishes the exchange on startup.
+#[cfg(mobile)]
+pub fn grant_catcher<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("grant-catcher")
+        .on_navigation(|webview, to| {
             if to.scheme() != "spotiflac" {
                 return true;
             }
-            save_grant(to.as_str());
-            let handle = handle.clone();
-            std::thread::spawn(move || handle.get_webview_window("ext-verify").map(|w| w.close()));
+            // `spotiflac://cancel` is the close button below: back to the app without a grant
+            if to.host_str() != Some("cancel") {
+                save_grant(to.as_str());
+            }
+            if let Some(back) = BACK.lock().unwrap().take() {
+                let w = webview.clone();
+                std::thread::spawn(move || w.navigate(back));
+            }
             false
         })
+        // a close button over the challenge page, so a stuck page never traps the user outside the app
+        .on_page_load(|webview, load| {
+            if load.event() != tauri::webview::PageLoadEvent::Finished {
+                return;
+            }
+            let mut back = BACK.lock().unwrap();
+            match back.as_ref() {
+                // the phone's Back button returned to the app: verification over
+                Some(b) if b.origin() == load.url().origin() => *back = None,
+                Some(_) => drop(webview.eval(CLOSE_BUTTON)),
+                None => {}
+            }
+        })
         .build()
-        .map_err(|e| e.to_string())?;
+}
+
+/// Opens the challenge of extension `id` (the one its last call asked for) in a window of this app; the
+/// redirect to `spotiflac://session-grant?...` is caught before it leaves the webview. `false`: nothing pending.
+/// Phones have a single window, so the main webview itself goes to the challenge (see `grant_catcher`).
+#[tauri::command]
+pub async fn ext_session_verify(app: AppHandle, id: String) -> R<bool> {
+    let rec = read_json(&app.state::<Exts>().data.join(&id).join("session.json"));
+    let Some(url) = rec["auth_url"].as_str().and_then(|u| u.parse::<tauri::Url>().ok()).filter(|u| u.scheme() == "https") else { return Ok(false) };
+    let _ = std::fs::remove_file(inbox().unwrap_or_default());
+    #[cfg(mobile)]
+    {
+        let w = app.get_webview_window("main").ok_or("no main window")?;
+        *BACK.lock().unwrap() = Some(w.url().map_err(|e| e.to_string())?);
+        w.navigate(url).map_err(|e| e.to_string())?;
+    }
+    #[cfg(desktop)]
+    {
+        use tauri::{WebviewUrl, WebviewWindowBuilder};
+        if let Some(old) = app.get_webview_window("ext-verify") {
+            let _ = old.close();
+        }
+        let handle = app.clone();
+        WebviewWindowBuilder::new(&app, "ext-verify", WebviewUrl::External(url))
+            .title("Verifikasi ekstensi")
+            .inner_size(480.0, 680.0)
+            .on_navigation(move |to| {
+                if to.scheme() != "spotiflac" {
+                    return true;
+                }
+                save_grant(to.as_str());
+                let handle = handle.clone();
+                std::thread::spawn(move || handle.get_webview_window("ext-verify").map(|w| w.close()));
+                false
+            })
+            .build()
+            .map_err(|e| e.to_string())?;
+    }
     Ok(true)
 }
 

@@ -170,7 +170,7 @@ jobs:
           echo "BINDGEN_EXTRA_CLANG_ARGS=--sysroot=$TC/sysroot --target=aarch64-linux-android26" >> "$GITHUB_ENV"
 
       - run: npm ci
-      - run: npm run tauri android init -- --ci
+      # src-tauri/gen/android is committed (audio permission in the manifest, asked for in MainActivity)
       - run: npm run tauri android build -- --ci --apk --target aarch64
 
       - name: Sign APK

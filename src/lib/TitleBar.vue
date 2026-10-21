@@ -67,9 +67,10 @@ onUnmounted(() => off?.then((f) => f()));
   color: var(--on-surface-variant);
   transition: background 0.15s, color 0.15s, border-radius 0.3s var(--spring);
 }
-.controls button:hover { background: var(--surface-container-highest); color: var(--on-surface); }
+/* touch screens keep :hover after a tap, so only real pointers get it */
+@media (hover: hover) { .controls button:hover { background: var(--surface-container-highest); color: var(--on-surface); } }
 .controls button:active { border-radius: 8px; }
-.controls .close:hover { background: #b3261e; color: #fff; }
+@media (hover: hover) { .controls .close:hover { background: #b3261e; color: #fff; } }
 /* a desktop window as narrow as a phone: the app name makes room for the window buttons */
 @media (max-width: 440px) { :root:not(.mobile) .name { display: none; } }
 </style>
@@ -80,6 +81,7 @@ onUnmounted(() => off?.then((f) => f()));
 html.mac .titlebar { padding-left: 88px; }
 /* below the status bar / notch, clear of rounded corners in landscape */
 html.mobile .titlebar {
+  box-sizing: border-box; /* --titlebar already includes the inset */
   padding: env(safe-area-inset-top) max(8px, env(safe-area-inset-right)) 0 max(16px, env(safe-area-inset-left));
 }
 html.mobile .titlebar .controls button { width: 44px; height: 40px; border-radius: 20px; }

@@ -83,7 +83,8 @@ const badge = () => props.jobs.length + props.unread;
   position: relative; width: 44px; height: 30px; border-radius: 15px; display: grid; place-items: center; color: var(--on-surface-variant);
   transition: background 0.15s, color 0.15s, border-radius 0.3s var(--spring);
 }
-.bell:hover, .bell.on { background: var(--surface-container-highest); color: var(--on-surface); }
+.bell.on { background: var(--surface-container-highest); color: var(--on-surface); }
+@media (hover: hover) { .bell:hover { background: var(--surface-container-highest); color: var(--on-surface); } }
 .bell:active { border-radius: 8px; }
 .badge {
   position: absolute; top: 1px; right: 6px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; box-sizing: border-box;

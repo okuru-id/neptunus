@@ -44,7 +44,14 @@ html {
 @media (prefers-color-scheme: light) { html { --frame-bg: var(--surface-container-high); } }
 html.maximized, html.mac { --frame-radius: 0px; } /* macOS: the native window rounds and shadows itself */
 /* iOS/Android: full screen, the app bar sits under the status bar */
-html.mobile { --frame-radius: 0px; --sheet-radius: 0px; --titlebar: calc(52px + env(safe-area-inset-top)); }
+/* the app bar is the darker frame and the content a sheet with rounded top corners, as on desktop; taps get no blue flash */
+html.mobile {
+  --frame-radius: 0px; --titlebar: calc(44px + env(safe-area-inset-top));
+  -webkit-tap-highlight-color: transparent;
+  /* an app, not a web page: long-press doesn't select text (form fields still do) */
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+}
+html.mobile :is(input, textarea, [contenteditable]) { -webkit-user-select: text; user-select: text; }
 body {
   height: 100vh;
   height: 100dvh;
@@ -71,6 +78,6 @@ input, select { font: inherit; color: inherit; }
 ::-webkit-scrollbar-thumb:hover { border-width: 3px; background-color: color-mix(in srgb, var(--on-surface-variant) 62%, transparent); }
 ::-webkit-scrollbar-thumb:active { border-width: 3px; background-color: var(--on-surface-variant); }
 ::-webkit-scrollbar-button { display: none; }
-/* phones: a hairline that takes almost no room from the content */
-html.mobile ::-webkit-scrollbar { width: 4px; height: 4px; }
-html.mobile ::-webkit-scrollbar-thumb, html.mobile ::-webkit-scrollbar-thumb:hover { border: 0; }
+/* phones: no scrollbars, like native lists */
+html.mobile * { scrollbar-width: none; }
+html.mobile ::-webkit-scrollbar { display: none; }

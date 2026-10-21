@@ -370,9 +370,12 @@ fn migrate_old_dirs(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_dialog::init());
+    #[cfg(mobile)]
+    let builder = builder.plugin(ext::session::grant_catcher());
+    builder
         .setup(|app| {
             migrate_old_dirs(app.handle());
             let dir = app.path().app_data_dir()?;

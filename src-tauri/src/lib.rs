@@ -3,6 +3,8 @@ mod ext;
 mod local;
 mod lyrics;
 mod media;
+#[cfg(target_os = "ios")]
+mod media_ios;
 mod player;
 mod s3;
 mod spotify;

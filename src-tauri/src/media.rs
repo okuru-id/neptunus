@@ -8,7 +8,7 @@ use std::{ffi::c_void, time::Duration};
 #[cfg(windows)]
 use tauri::Manager;
 use tauri::AppHandle;
-#[cfg(desktop)]
+#[cfg(any(desktop, target_os = "ios"))]
 use tauri::Emitter;
 
 enum Msg {
@@ -29,10 +29,32 @@ pub fn init(app: &AppHandle) -> Media {
     #[cfg(desktop)]
     let handle = app.clone();
 
-    #[cfg(mobile)]
+    // Android: the UI reports to MediaService (MainActivity) itself
+    #[cfg(target_os = "android")]
     {
-        let _ = (app, &rx);
+        let _ = app;
         std::thread::spawn(move || for _ in rx {});
+    }
+    #[cfg(target_os = "ios")]
+    {
+        let (key, seek) = (app.clone(), app.clone());
+        crate::media_ios::commands(
+            move |k| { let _ = key.emit("media-key", k); },
+            move |secs| { let _ = seek.emit("media-seek", secs); },
+        );
+        std::thread::spawn(move || {
+            let (mut meta, mut playback) = ((String::new(), String::new(), String::new(), 0.0), None);
+            for msg in rx {
+                match msg {
+                    Msg::Meta { title, artist, album, secs } => {
+                        meta = (title, artist, album, secs);
+                        playback = playback.map(|(p, _)| (p, 0.0));
+                    }
+                    Msg::Playback(p) => playback = p,
+                }
+                crate::media_ios::now_playing(&meta.0, &meta.1, &meta.2, meta.3, playback);
+            }
+        });
     }
     #[cfg(desktop)]
     std::thread::spawn(move || {

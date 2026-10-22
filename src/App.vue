@@ -747,10 +747,11 @@ watch(now, (n) => {
   });
   android?.meta(n.title, n.artist, n.album, n.duration_secs);
 });
-watch([current, paused], () => {
+function reportPlayback() {
   invoke("media_playback", { playing: current.value < 0 ? null : !paused.value, position: position.value });
   android?.state(current.value < 0 ? -1 : paused.value ? 0 : 1, position.value);
-}, { immediate: true });
+}
+watch([current, paused], reportPlayback, { immediate: true });
 
 function mediaKey(key: string) {
   if (key === "next") next();
@@ -760,7 +761,7 @@ function mediaKey(key: string) {
 async function mediaSeek(secs: number) {
   await invoke("seek", { secs });
   position.value = secs;
-  android?.state(paused.value ? 0 : 1, secs);
+  reportPlayback();
 }
 Object.assign(window, { __mediaKey: mediaKey, __mediaSeek: mediaSeek });
 
@@ -824,7 +825,7 @@ async function seekTo(v: number) {
   await invoke("seek", { secs: v });
   position.value = v;
   seeking = false;
-  android?.state(paused.value ? 0 : 1, v);
+  reportPlayback();
   startWipe(); // a seek inside the same line must restart the fill from the new spot
 }
 
@@ -1561,6 +1562,9 @@ li:hover .row-act, .row-act:focus-visible, .row-menu.open .row-act, .row-act.ope
 .now-leave-active .spin { transition: transform 0.3s var(--emph); transform: scale(0.9); }
 .close { position: absolute; top: 12px; left: 12px; width: 48px; height: 48px; border-radius: 24px; background: var(--secondary-container); }
 .stage { display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; min-width: 0; }
+/* mobile app and phone-width windows: the player bar already shows the song, so the sheet is all lyrics */
+:global(html.mobile .now .stage) { display: none; }
+:global(html.mobile .now) { grid-template-rows: minmax(0, 1fr); }
 .spin {
   width: min(52vh, 34vw); aspect-ratio: 1; display: grid; place-items: center; overflow: hidden;
   background: var(--primary-container); color: var(--on-primary-container);
@@ -1643,10 +1647,9 @@ li:hover .row-act, .row-act:focus-visible, .row-menu.open .row-act, .row-act.ope
 
 /* player: in narrow windows the seek bar stacks under the controls */
 @media (max-width: 1100px) {
-  /* small windows: lyrics take the screen; the artwork goes, title and lyric actions stay on top */
-  .now { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); gap: 8px; padding: 64px 32px 132px; }
-  .spin { display: none; }
-  .stage h2 { margin: 0 0 4px; font-size: clamp(24px, 3vw, 32px); }
+  /* small windows: lyrics take the screen; artwork and title go (the player bar shows the song) */
+  .now { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr); gap: 8px; padding: 64px 32px 132px; }
+  .stage { display: none; }
   .lyrics { padding: 12vh 8px; text-align: center; }
   .lyrics p { transform-origin: center; }
   .lyric-search { padding-top: 8px; }
@@ -1713,7 +1716,8 @@ li:hover .row-act, .row-act:focus-visible, .row-menu.open .row-act, .row-act.ope
   /* the player sits just above the nav bar: one floating stack, a small gap and tighter inner corners between them */
   .player {
     bottom: calc(84px + env(safe-area-inset-bottom)); left: max(12px, env(safe-area-inset-left)); right: max(12px, env(safe-area-inset-right));
-    border-radius: 20px 20px 8px 8px; box-shadow: 0 6px 20px rgb(0 0 0 / 0.25), 0 0 0 10px var(--surface);
+    /* no surface-coloured mask ring here: the stack floats over the list */
+    border-radius: 20px 20px 8px 8px; box-shadow: 0 6px 20px rgb(0 0 0 / 0.25);
   }
   .drawer.has-player { border-radius: 8px 8px 32px 32px; }
   .toast, .toast.above { bottom: calc(164px + env(safe-area-inset-bottom)); }

@@ -48,6 +48,10 @@ rquickjs = { version = "0.14.0", features = ["bindgen"] }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2-avf-audio = { version = "0.3", default-features = false, features = ["std", "AVAudioSession", "AVAudioSessionTypes"] }
+objc2-media-player = { version = "0.3", default-features = false, features = ["std", "block2", "MPNowPlayingInfoCenter", "MPMediaItem", "MPRemoteCommandCenter", "MPRemoteCommand", "MPRemoteCommandEvent"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSDictionary", "NSString", "NSValue"] }
+objc2 = "0.6"
+block2 = "0.6"
 
 # Desktop only: tray, OS media controls, system trash (iOS/Android have none of these)
 [target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]

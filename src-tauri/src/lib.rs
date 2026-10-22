@@ -392,7 +392,24 @@ pub fn run() {
             std::fs::create_dir_all(&dir)?;
             let _ = DATA_DIR.set(dir.clone());
             app.manage(Db::open(&dir.join("library.db"))?);
+            // iOS mutes the default (solo ambient) session when the app leaves the foreground.
+            #[cfg(target_os = "ios")]
+            unsafe {
+                use objc2_avf_audio::{AVAudioSession, AVAudioSessionCategoryPlayback};
+                let session = AVAudioSession::sharedInstance();
+                if let Some(playback) = AVAudioSessionCategoryPlayback {
+                    let _ = session.setCategory_error(playback);
+                }
+                let _ = session.setActive_error(true);
+            }
             app.manage(media::init(app.handle()));
+            // Drives the player poll in the UI: webview timers get throttled while the window is
+            // hidden (Android in the background, tray), which would stall the move to the next song.
+            let ticker = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                let _ = tauri::Emitter::emit(&ticker, "player-tick", ());
+            });
             app.manage(ext::init(app.handle())?);
             tray::init(app.handle())?;
             // WebKitGTK turns trackpad pinch into page zoom; drop pinch events before GTK dispatches them.

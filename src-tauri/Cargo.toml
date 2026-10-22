@@ -1,6 +1,6 @@
 [package]
 name = "neptunus"
-version = "0.2.21"
+version = "0.2.22"
 description = "Neptunus, a lightweight desktop music player"
 authors = ["you"]
 edition = "2024"
@@ -45,6 +45,9 @@ ctr = "0.9"
 # rquickjs ships no prebuilt bindings for iOS/Android, so generate them there (bindgen needs libclang)
 [target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies]
 rquickjs = { version = "0.14.0", features = ["bindgen"] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2-avf-audio = { version = "0.3", default-features = false, features = ["std", "AVAudioSession", "AVAudioSessionTypes"] }
 
 # Desktop only: tray, OS media controls, system trash (iOS/Android have none of these)
 [target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]

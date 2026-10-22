@@ -736,16 +736,33 @@ watch([lyricIdx, showNow], () => {
     document.querySelector(".lyrics .cur")?.scrollIntoView({ block: "center", behavior: "smooth" });
 }, { flush: "post" });
 
-// OS media keys / MPRIS / SMTC
+// OS media keys / MPRIS / SMTC; on Android the MediaService notification (see MainActivity)
+const android = (window as any).NeptunusAndroid as
+  | { meta(t: string, a: string, al: string, secs: number): void; state(s: number, secs: number): void }
+  | undefined;
 watch(now, (n) => {
-  if (n)
-    invoke("media_metadata", {
-      path: n.path, title: n.title, artist: n.artist, album: n.album, durationSecs: n.duration_secs,
-    });
+  if (!n) return;
+  invoke("media_metadata", {
+    path: n.path, title: n.title, artist: n.artist, album: n.album, durationSecs: n.duration_secs,
+  });
+  android?.meta(n.title, n.artist, n.album, n.duration_secs);
 });
 watch([current, paused], () => {
   invoke("media_playback", { playing: current.value < 0 ? null : !paused.value, position: position.value });
+  android?.state(current.value < 0 ? -1 : paused.value ? 0 : 1, position.value);
 }, { immediate: true });
+
+function mediaKey(key: string) {
+  if (key === "next") next();
+  else if (key === "prev") prev();
+  else if (key === "toggle" || (key === "play") === paused.value) togglePause();
+}
+async function mediaSeek(secs: number) {
+  await invoke("seek", { secs });
+  position.value = secs;
+  android?.state(paused.value ? 0 : 1, secs);
+}
+Object.assign(window, { __mediaKey: mediaKey, __mediaSeek: mediaSeek });
 
 function onKey(e: KeyboardEvent) {
   if (e.key === "Escape" && addMenu.value) return void (addMenu.value = null);
@@ -755,12 +772,10 @@ function onKey(e: KeyboardEvent) {
   else if (e.key === "Escape") showNow.value = false;
 }
 
-let pollId = 0;
 const subs: Promise<UnlistenFn>[] = [];
 onMounted(async () => {
   window.addEventListener("keydown", onKey);
   window.addEventListener("pointerdown", closeMenu);
-  pollId = setInterval(poll, 500);
   invoke<ExtInfo[]>("ext_list").then((l) => (exts.value = l));
   // phones: the verification page replaced the app, and the grant it left behind is finished here
   if (document.documentElement.classList.contains("mobile"))
@@ -769,6 +784,7 @@ onMounted(async () => {
       (e) => notify(String(e)),
     );
   subs.push(
+    listen("player-tick", poll),
     listen<{ key: string; pct: number }>("ext-download", ({ payload: { key, pct } }) => {
       if (key in redl.value) redl.value = { ...redl.value, [key]: pct };
       const pid = key.startsWith("pending:") ? Number(key.slice(8)) : NaN;
@@ -782,15 +798,8 @@ onMounted(async () => {
       // each batch is saved before this event, so the songs read so far can show up right away
       rawLibrary.value = await invoke<Track[]>("load_library");
     }),
-    listen<string>("media-key", ({ payload }) => {
-      if (payload === "next") next();
-      else if (payload === "prev") prev();
-      else if (payload === "toggle" || (payload === "play") === paused.value) togglePause();
-    }),
-    listen<number>("media-seek", async ({ payload }) => {
-      await invoke("seek", { secs: payload });
-      position.value = payload;
-    }),
+    listen<string>("media-key", ({ payload }) => mediaKey(payload)),
+    listen<number>("media-seek", ({ payload }) => mediaSeek(payload)),
   );
   applyTheme(DEFAULT_SEED);
   await restorePlayer();
@@ -804,7 +813,6 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener("keydown", onKey);
   window.removeEventListener("pointerdown", closeMenu);
-  clearInterval(pollId);
   subs.forEach((p) => p.then((off) => off()));
 });
 
@@ -816,6 +824,7 @@ async function seekTo(v: number) {
   await invoke("seek", { secs: v });
   position.value = v;
   seeking = false;
+  android?.state(paused.value ? 0 : 1, v);
   startWipe(); // a seek inside the same line must restart the fill from the new spot
 }
 

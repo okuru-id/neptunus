@@ -1,12 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- Merged into the iOS app's Info.plist: the app's Documents folder shows up in the Files app
-     (On My iPhone › Neptunus), so songs copied there become the local library. -->
+     (On My iPhone › Neptunus), so songs copied there become the local library, and audio keeps
+     playing in the background. -->
 <plist version="1.0">
 <dict>
 	<key>UIFileSharingEnabled</key>
 	<true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
 </dict>
 </plist>

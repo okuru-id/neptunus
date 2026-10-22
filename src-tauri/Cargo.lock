@@ -3064,7 +3064,7 @@ dependencies = [
 
 [[package]]
 name = "neptunus"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "aes",
  "attohttpc",
@@ -3078,6 +3078,7 @@ dependencies = [
  "ksni",
  "lofty",
  "md-5",
+ "objc2-avf-audio",
  "rodio",
  "rquickjs",
  "rusqlite",

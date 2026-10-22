@@ -11,9 +11,9 @@ use serde_json::{Map, Value, json};
 use std::{
     cell::RefCell,
     collections::HashMap,
-    io::Read,
-    path::{Component, Path, PathBuf},
     sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering::Relaxed}, mpsc},
+    io::{Read, Write},
+    path::{Component, Path, PathBuf},
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -22,6 +22,7 @@ pub mod session;
 mod mp4;
 
 const PRELUDE: &str = include_str!("ext_prelude.js");
+const STREMIO_BRIDGE: &str = include_str!("stremio_bridge.js");
 const UA: &str = concat!("Neptunus/", env!("CARGO_PKG_VERSION"));
 const BROWSER_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
 /// One call (and its HTTP requests) may run this long; downloads get longer.
@@ -170,7 +171,12 @@ impl Exts {
 
     fn spawn(&self, id: &str) -> R<mpsc::Sender<Job>> {
         let manifest = self.manifest(id)?;
-        let script = std::fs::read_to_string(self.code.join(id).join("index.js")).map_err(|e| e.to_string())?;
+        // Stremio addons run the bridge built into this app, so installed ones pick up its fixes
+        let script = if id.starts_with("stremio-") {
+            STREMIO_BRIDGE.to_owned()
+        } else {
+            std::fs::read_to_string(self.code.join(id).join("index.js")).map_err(|e| e.to_string())?
+        };
         let settings = Value::Object(self.settings(id, &manifest));
         let data = self.data.join(id);
         let _ = std::fs::create_dir_all(data.join("files"));
@@ -775,6 +781,61 @@ pub async fn ext_install_file(app: AppHandle, path: String) -> R<Value> {
     .await
 }
 
+/// Installs a Stremio addon as a video_provider extension from just its manifest URL — pasting
+/// `https://host/xxx/manifest.json` is all it takes. The addon's host becomes the package's network
+/// permission; the generic bridge (`stremio_bridge.js`) reads the addon URL from the setting.
+#[tauri::command]
+pub async fn ext_install_stremio(app: AppHandle, url: String) -> R<Value> {
+    crate::blocking(move || {
+        let url = url.trim();
+        if !url.starts_with("https://") {
+            return Err("URL manifest harus https".into());
+        }
+        // Accept both the bare base and a .../manifest.json URL; the bridge wants the base.
+        let base = url.trim_end_matches("manifest.json").trim_end_matches('/');
+        let host = base.split_once("://").unwrap_or(("", "")).1
+            .split(['/', '?', '#']).next().unwrap_or_default()
+            .rsplit('@').next().unwrap_or_default().split(':').next().unwrap_or_default()
+            .to_lowercase();
+        if host.is_empty() {
+            return Err("URL tidak punya host".into());
+        }
+        let m: Value = attohttpc::get(format!("{base}/manifest.json"))
+            .header("User-Agent", UA).timeout(Duration::from_secs(20))
+            .send().and_then(|r| r.error_for_status()).and_then(|r| r.json())
+            .map_err(|e| format!("manifest tidak bisa dimuat: {e}"))?;
+        let name = m["name"].as_str().filter(|s| !s.is_empty())
+            .ok_or("bukan manifest addon Stremio (tidak ada name)")?;
+        if !m["catalogs"].is_array() && !m["resources"].is_array() {
+            return Err("bukan manifest addon Stremio (tidak ada catalogs/resources)".into());
+        }
+        // One id per addon URL so several addons can coexist; same URL reinstalls over itself.
+        let h: String = digest("sha256", base.as_bytes().to_vec(), vec![]).iter().take(4)
+            .map(|b| format!("{b:02x}")).collect();
+        let id = format!("stremio-{h}");
+        let manifest = json!({
+            "name": id,
+            "displayName": name,
+            "version": m["version"].as_str().unwrap_or("1.0.0"),
+            "description": m["description"].as_str().unwrap_or("Addon Stremio"),
+            "type": ["video_provider"],
+            "settings": [{ "key": "manifestUrl", "type": "text", "label": "URL manifest addon",
+                "description": format!("Host addon ini diizinkan: {host}"), "default": base }],
+            "permissions": { "network": [host] },
+            "capabilities": { "networkTimeoutSeconds": 30 },
+        });
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let opts = zip::write::SimpleFileOptions::default();
+        zip.start_file("manifest.json", opts).map_err(|e| e.to_string())?;
+        zip.write_all(serde_json::to_vec_pretty(&manifest).unwrap().as_slice()).map_err(|e| e.to_string())?;
+        zip.start_file("index.js", opts).map_err(|e| e.to_string())?;
+        zip.write_all(STREMIO_BRIDGE.as_bytes()).map_err(|e| e.to_string())?;
+        let bytes = zip.finish().map_err(|e| e.to_string())?.into_inner();
+        app.state::<Exts>().install_zip(&bytes)
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn ext_install_url(app: AppHandle, url: String, sha256: Option<String>) -> R<Value> {
     crate::blocking(move || {
@@ -798,6 +859,9 @@ pub async fn ext_install_url(app: AppHandle, url: String, sha256: Option<String>
 /// A repository is a `registry.json` URL (or a GitHub repo URL that has one on its main branch).
 #[tauri::command]
 pub async fn ext_repo(url: String) -> R<Value> {
+    if url.trim().ends_with("manifest.json") {
+        return Err("ini URL addon Stremio — pakai kotak “Tambah addon Stremio” di atas".into());
+    }
     crate::blocking(move || {
         let url = url.trim().trim_end_matches('/').to_owned();
         let url = match url.strip_prefix("https://github.com/") {

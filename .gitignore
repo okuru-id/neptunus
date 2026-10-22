@@ -12,3 +12,7 @@ cerificate-neptunus-p12/
 *.p12
 *.mobileprovision
 keystore/
+
+# built extension packages
+*.spotiflac-ext
+*.sflx

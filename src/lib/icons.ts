@@ -41,6 +41,7 @@ import addFolder from "@material-symbols/svg-400/rounded/create_new_folder-fill.
 import add from "@material-symbols/svg-400/rounded/add-fill.svg?raw";
 import close from "@material-symbols/svg-400/rounded/close-fill.svg?raw";
 import error from "@material-symbols/svg-400/rounded/error-fill.svg?raw";
+import openInNew from "@material-symbols/svg-400/rounded/open_in_new-fill.svg?raw";
 import equalizer from "@material-symbols/svg-400/rounded/equalizer-fill.svg?raw";
 import lyrics from "@material-symbols/svg-400/rounded/lyrics-fill.svg?raw";
 import playlistAdd from "@material-symbols/svg-400/rounded/playlist_add-fill.svg?raw";
@@ -54,7 +55,22 @@ import store from "@material-symbols/svg-400/rounded/storefront-fill.svg?raw";
 import done from "@material-symbols/svg-400/rounded/check_circle-fill.svg?raw";
 import bell from "@material-symbols/svg-400/rounded/notifications-fill.svg?raw";
 import bellActive from "@material-symbols/svg-400/rounded/notifications_active-fill.svg?raw";
+import movie from "@material-symbols/svg-400/rounded/movie-fill.svg?raw";
+import volumeOff from "@material-symbols/svg-400/rounded/volume_off-fill.svg?raw";
+import fullscreen from "@material-symbols/svg-400/rounded/fullscreen-fill.svg?raw";
+import fullscreenExit from "@material-symbols/svg-400/rounded/fullscreen_exit-fill.svg?raw";
+import subtitles from "@material-symbols/svg-400/rounded/subtitles-fill.svg?raw";
+import replay10 from "@material-symbols/svg-400/rounded/replay_10-fill.svg?raw";
+import forward10 from "@material-symbols/svg-400/rounded/forward_10-fill.svg?raw";
+
 export const icons = {
+  volumeOff,
+  fullscreen,
+  fullscreenExit,
+  subtitles,
+  replay10,
+  forward10,
+  movie,
   minimize,
   maximize,
   restore,
@@ -100,6 +116,7 @@ export const icons = {
   add,
   close,
   error,
+  openInNew,
   lyrics,
   equalizer,
   playlistAdd,

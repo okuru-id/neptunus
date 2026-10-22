@@ -58,6 +58,7 @@ Release builds are made on Ubuntu 22.04 so the binaries run on more distros (old
 ### Linux notes
 
 - The app runs natively on Wayland by default. Set `NEPTUNUS_X11=1` to run through XWayland instead; the window can sometimes stay unclickable there.
+- Videos play through GStreamer: H.264 MP4 needs `gstreamer1.0-plugins-good`, `gstreamer1.0-plugins-bad` and `gstreamer1.0-libav` (the `.deb` pulls them in).
 - The tray icon needs a StatusNotifierItem host. On GNOME that is the AppIndicator extension, which Ubuntu ships by default.
 
 ## Mobile (Android and iOS)

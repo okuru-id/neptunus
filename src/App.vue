@@ -15,6 +15,7 @@ import Extensions from "./lib/Extensions.vue";
 import Equalizer from "./lib/Equalizer.vue";
 import About from "./lib/About.vue";
 import ExtCatalog from "./lib/ExtCatalog.vue";
+import VideoLibrary from "./lib/VideoLibrary.vue";
 import SongMenu from "./lib/SongMenu.vue";
 import { downloadError, extName, has, unsupported, type ExtInfo } from "./lib/ext";
 import { pasted, verifyError, waiting, withVerify } from "./lib/verify";
@@ -29,7 +30,7 @@ import { ART_SHAPES, CLIP_SHAPES } from "./lib/shapes";
 
 type Track = { path: string; title: string; artist: string; album: string; duration_secs: number };
 type Playlist = { id: number; name: string };
-type View = "catalog" | "songs" | "albums" | "artists" | "playlists" | "s3";
+type View = "catalog" | "songs" | "albums" | "artists" | "playlists" | "videos" | "s3";
 
 const NAV: { id: View; label: string; icon: IconName }[] = [
   { id: "catalog", label: "Katalog", icon: "catalog" },
@@ -37,6 +38,7 @@ const NAV: { id: View; label: string; icon: IconName }[] = [
   { id: "albums", label: "Album", icon: "album" },
   { id: "artists", label: "Artis", icon: "artist" },
   { id: "playlists", label: "Playlist", icon: "playlist" },
+  { id: "videos", label: "Video", icon: "movie" },
 ];
 
 const rawLibrary = ref<Track[]>([]);
@@ -55,10 +57,14 @@ const library = computed(() => {
 const playlists = ref<Playlist[]>([]);
 const loading = ref(false);
 
-const view = ref<View>("catalog");
+// the page that was open survives a reload (not a restart: sessionStorage)
+const PAGE_KEY = "neptunus.page";
+const page = (() => { try { return JSON.parse(sessionStorage.getItem(PAGE_KEY) ?? "{}"); } catch { return {}; } })();
+const view = ref<View>(page.view ?? "catalog");
 const query = ref("");
-const group = ref<string | null>(null); // selected album/artist name
-const plId = ref<number | null>(null);
+const videoCount = ref(0);
+const group = ref<string | null>(page.group ?? null); // selected album/artist name
+const plId = ref<number | null>(page.plId ?? null);
 const plTracks = ref<Track[]>([]);
 const newPlaylist = ref("");
 
@@ -164,6 +170,7 @@ const title = computed(() => {
   return NAV.find((n) => n.id === view.value)!.label;
 });
 const subtitle = computed(() => {
+  if (view.value === "videos") return `${videoCount.value} video`;
   if (view.value === "catalog") return `${library.value.length} lagu · ${albums.value.length} album · ${artists.value.length} artis`;
   if (view.value === "albums" && group.value === null) return `${albums.value.length} album`;
   if (view.value === "artists" && group.value === null) return `${artists.value.length} artis`;
@@ -276,7 +283,10 @@ const SETTINGS_TABS: { id: SettingsTab; label: string; icon: IconName }[] = [
   { id: "ext", label: "Ekstensi", icon: "extension" },
   { id: "about", label: "Tentang", icon: "info" },
 ];
-const settingsTab = ref<SettingsTab>("local");
+const settingsTab = ref<SettingsTab>(page.settingsTab ?? "local");
+watch([view, group, plId, settingsTab], ([view, group, plId, settingsTab]) => {
+  try { sessionStorage.setItem(PAGE_KEY, JSON.stringify({ view, group, plId, settingsTab })); } catch {}
+});
 function openSettings(tab: SettingsTab) {
   settingsTab.value = tab;
   setView("s3");
@@ -778,6 +788,7 @@ onMounted(async () => {
   window.addEventListener("keydown", onKey);
   window.addEventListener("pointerdown", closeMenu);
   invoke<ExtInfo[]>("ext_list").then((l) => (exts.value = l));
+  if (view.value === "playlists" && plId.value !== null) openPlaylist(plId.value);
   // phones: the verification page replaced the app, and the grant it left behind is finished here
   if (document.documentElement.classList.contains("mobile"))
     invoke<string | null>("ext_session_poll", { text: null }).then(
@@ -880,12 +891,12 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
           <button v-if="group !== null" class="icon-btn tonal" @click="group = null" title="Kembali"><Icon name="back" /></button>
           <div>
             <h1>{{ title }}</h1>
-            <p v-if="library.length && view !== 's3'" class="sub">{{ subtitle }}</p>
+            <p v-if="(library.length || view === 'videos') && view !== 's3'" class="sub">{{ subtitle }}</p>
           </div>
         </div>
-        <label v-if="(library.length || (view === 'catalog' && extCatalog)) && view !== 's3'" class="search">
+        <label v-if="(library.length || (view === 'catalog' && extCatalog) || view === 'videos') && view !== 's3'" class="search">
           <Icon name="search" />
-          <input placeholder="Cari lagu, artis, album" v-model="query" />
+          <input :placeholder="view === 'videos' ? 'Cari video' : 'Cari lagu, artis, album'" v-model="query" />
           <button v-if="query" class="icon-btn" @click="query = ''" title="Hapus pencarian"><Icon name="close" :size="20" /></button>
         </label>
         <div v-if="showingList && (view !== 'playlists' || plId !== null) && (shown.length || (view === 'playlists' && plPending.length))" class="btn-group actions">
@@ -900,13 +911,14 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
         </div>
         <div v-if="view === 's3'" class="tabs" role="tablist">
           <button v-for="t in SETTINGS_TABS" :key="t.id" class="tab" :class="{ sel: settingsTab === t.id }" role="tab"
-            :aria-selected="settingsTab === t.id" @click="settingsTab = t.id"><span class="tab-c"><Icon :name="t.icon" :size="24" />{{ t.label }}</span></button>
+            :aria-selected="settingsTab === t.id" @click="settingsTab = t.id"><span class="tab-c"><Icon :name="t.icon" :size="20" />{{ t.label }}</span></button>
         </div>
       </header>
 
       <p v-if="loading" class="scanning"><span class="spinner" :style="{ clipPath: 'url(#shape-cookie12)' }"></span>Memindai folder musik…</p>
 
-      <section v-if="!library.length && view !== 's3' && !(view === 'catalog' && extCatalog)" class="empty">
+      <VideoLibrary v-if="view === 'videos'" :query="query" :exts="exts" @play="current >= 0 && !paused && togglePause()" @count="videoCount = $event" @exts="exts = $event" />
+      <section v-else-if="!library.length && view !== 's3' && !(view === 'catalog' && extCatalog)" class="empty">
         <div class="empty-mark" :style="{ clipPath: 'url(#shape-cookie12)' }"><Icon name="note" :size="72" /></div>
         <h2>Belum ada musik</h2>
         <p>Pilih folder berisi lagu di komputer ini, atau sinkronkan dari bucket S3.</p>
@@ -1419,22 +1431,19 @@ li:hover .row-act, .row-act:focus-visible, .row-menu.open .row-act, .row-act.ope
 .eq.still i { animation-play-state: paused; }
 @keyframes eq { from { transform: scaleY(0.25); } to { transform: scaleY(1); } }
 
-/* ---------- tabs (M3 primary, icon + label, scrollable) ---------- */
-.tabs { flex-basis: 100%; display: flex; overflow-x: auto; scrollbar-width: none; box-shadow: inset 0 -1px var(--outline-variant); }
+/* ---------- tabs (segmented pills, same as the Video menu) ---------- */
+.tabs {
+  flex-basis: 100%; display: flex; gap: 4px; padding: 4px; border-radius: 28px; background: var(--surface-container-low);
+  width: fit-content; max-width: 100%; flex-grow: 0; overflow-x: auto; scrollbar-width: none;
+}
 .tab {
-  position: relative; display: flex; justify-content: center; min-width: 90px; height: 64px; padding: 0 16px;
-  font-size: 14px; font-weight: 500; line-height: 20px; letter-spacing: 0.1px; color: var(--on-surface-variant);
-  --state: var(--on-surface);
+  flex: none; height: 44px; padding: 0 18px 0 14px; border-radius: 22px; display: inline-flex; align-items: center;
+  font-size: 15px; font-weight: 600; color: var(--on-surface-variant); transition: background 0.2s, color 0.2s;
 }
-.tab::before { content: ""; position: absolute; inset: 0; background: var(--state); opacity: 0; transition: opacity 0.15s; }
-.tab:hover::before { opacity: 0.08; }
-.tab:focus-visible::before, .tab:active::before { opacity: 0.1; }
-.tab-c { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; min-width: 24px; }
-.tab.sel { color: var(--primary); --state: var(--primary); }
-.tab.sel .tab-c::after {
-  content: ""; position: absolute; left: 2px; right: 2px; bottom: 0; height: 3px;
-  border-radius: 3px 3px 0 0; background: var(--primary);
-}
+.tab:hover { background: var(--surface-container-highest); }
+.tab-c { display: inline-flex; align-items: center; gap: 8px; }
+.tab.sel { background: var(--secondary-container); color: var(--on-secondary-container); }
+@media (max-width: 600px) { .tab { padding: 0 14px 0 12px; font-size: 14px; } }
 
 /* ---------- chips ---------- */
 .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }

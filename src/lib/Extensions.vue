@@ -11,8 +11,10 @@ import { extName, has, newer, unsupported, type ExtInfo, type RepoExt } from "./
 const emit = defineEmits<{ changed: [ExtInfo[]] }>();
 
 const REPO_KEY = "neptunus.extRepo";
+const KIND_KEY = "neptunus.extKind";
 const installed = ref<ExtInfo[]>([]);
-const repoUrl = ref(localStorage.getItem(REPO_KEY) ?? "");
+const repoUrl = ref("");
+const stremioUrl = ref("");
 const repo = ref<RepoExt[] | null>(null);
 const repoBusy = ref(false);
 const busy = ref<string | null>(null); // id being installed / saved
@@ -20,8 +22,32 @@ const msg = ref<{ text: string; err?: boolean } | null>(null);
 const openId = ref<string | null>(null);
 const draft = ref<Record<string, unknown>>({});
 
-const TYPE_LABEL: Record<string, string> = { metadata_provider: "Katalog", download_provider: "Unduh", lyrics_provider: "Lirik" };
+const TYPE_LABEL: Record<string, string> = { metadata_provider: "Katalog", download_provider: "Unduh", lyrics_provider: "Lirik", video_provider: "Video" };
 const byId = computed(() => new Map(installed.value.map((e) => [e.id, e])));
+
+// Music (SpotiFLAC catalog/download/lyrics) and video (catalog addons) extensions are set up apart,
+// so one list never mixes the two.
+type Kind = "music" | "video";
+const stored = (() => { try { return localStorage.getItem(KIND_KEY); } catch { return null; } })();
+const kind = ref<Kind>(stored === "video" ? "video" : "music");
+const isVideo = (e: ExtInfo) => has(e, "video_provider");
+const count = computed(() => ({
+  music: installed.value.filter((e) => !isVideo(e)).length,
+  video: installed.value.filter(isVideo).length,
+}));
+const listed = computed(() => installed.value.filter((e) => isVideo(e) === (kind.value === "video")));
+// music: the repository's extensions join the installed ones in one list, with an install button
+const repoById = computed(() => new Map((repo.value ?? []).map((r) => [r.id, r])));
+const available = computed(() => kind.value === "music" ? (repo.value ?? []).filter((r) => !byId.value.get(r.id)) : []);
+const update = (e: ExtInfo) => {
+  const r = repoById.value.get(e.id);
+  return r && newer(r.version, e.version) ? r : undefined;
+};
+function setKind(k: Kind) {
+  kind.value = k;
+  openId.value = null;
+  try { localStorage.setItem(KIND_KEY, k); } catch {}
+}
 
 function flash(text: string, err = false) {
   msg.value = { text, err };
@@ -31,14 +57,15 @@ async function reload() {
   installed.value = await invoke<ExtInfo[]>("ext_list");
   emit("changed", installed.value);
 }
-async function loadRepo() {
-  const url = repoUrl.value.trim();
+// the field empties once loaded, like the video one; the URL stays saved and reloads on open
+async function loadRepo(url = repoUrl.value.trim()) {
   if (!url) return;
   repoBusy.value = true;
   try {
     const reg = await invoke<{ extensions: RepoExt[] }>("ext_repo", { url });
     repo.value = reg.extensions;
     localStorage.setItem(REPO_KEY, url);
+    repoUrl.value = "";
   } catch (e) {
     repo.value = null;
     flash(`Gagal memuat repository: ${e}`, true);
@@ -68,6 +95,20 @@ async function installFile() {
     flash(`${extName(e)} ${e.version} terpasang.`);
   } catch (e) {
     flash(`Gagal memasang: ${e}`, true);
+  } finally {
+    busy.value = null;
+  }
+}
+// a Stremio addon is just a manifest URL — the app wraps it into a video_provider extension
+async function installStremio() {
+  busy.value = "stremio";
+  try {
+    const e = await invoke<ExtInfo>("ext_install_stremio", { url: stremioUrl.value.trim() });
+    stremioUrl.value = "";
+    await reload();
+    flash(`Addon ${extName(e)} terpasang. Buka menu Video untuk memakainya.`);
+  } catch (e) {
+    flash(`Gagal memasang addon: ${e}`, true);
   } finally {
     busy.value = null;
   }
@@ -114,20 +155,31 @@ async function action(e: ExtInfo, fn: string) {
 
 onMounted(() => {
   reload();
-  if (repoUrl.value) loadRepo();
+  const saved = localStorage.getItem(REPO_KEY);
+  if (saved) loadRepo(saved);
 });
 </script>
 
 <template>
   <div class="exts">
+    <div class="kinds" role="tablist" aria-label="Jenis ekstensi">
+      <button role="tab" :aria-selected="kind === 'music'" :class="{ on: kind === 'music' }" @click="setKind('music')">
+        <Icon name="note" :size="20" />Musik<span v-if="count.music" class="n">{{ count.music }}</span>
+      </button>
+      <button role="tab" :aria-selected="kind === 'video'" :class="{ on: kind === 'video' }" @click="setKind('video')">
+        <Icon name="movie" :size="20" />Video<span v-if="count.video" class="n">{{ count.video }}</span>
+      </button>
+    </div>
+
     <section class="panel">
       <div class="head">
-        <span class="mark" :style="{ clipPath: 'url(#shape-cookie9)' }"><Icon name="extension" :size="28" /></span>
+        <span class="mark" :class="{ alt: kind === 'video' }" :style="{ clipPath: 'url(#shape-cookie9)' }"><Icon :name="kind === 'video' ? 'movie' : 'note'" :size="28" /></span>
         <div class="id">
-          <strong>Ekstensi</strong>
-          <span>Tambah sumber katalog, unduhan dan lirik. Format ekstensi SpotiFLAC (.spotiflac-ext).</span>
+          <strong>{{ kind === "video" ? "Ekstensi video" : "Ekstensi musik" }}</strong>
+          <span v-if="kind === 'video'">Katalog film dan serial untuk menu Video, dari URL manifest addon (format Stremio).</span>
+          <span v-else>Sumber katalog, unduhan dan lirik lagu. Format ekstensi SpotiFLAC (.spotiflac-ext).</span>
         </div>
-        <button class="btn tonal" :disabled="busy === 'file'" @click="installFile"><Icon name="upload" />Pasang dari file</button>
+        <button v-if="kind === 'music'" class="btn tonal" :disabled="busy === 'file'" @click="installFile"><Icon name="upload" />Pasang dari file</button>
       </div>
       <Transition name="fade">
         <p v-if="msg" class="status" :class="{ err: msg.err }" role="status">
@@ -136,18 +188,28 @@ onMounted(() => {
         </p>
       </Transition>
 
-      <ul v-if="installed.length" class="list">
-        <li v-for="e in installed" :key="e.id" class="item" :class="{ off: !e.enabled, open: openId === e.id }">
+      <form v-if="kind === 'music'" class="repo-form" @submit.prevent="loadRepo()">
+        <input v-model="repoUrl" placeholder="URL repository ekstensi SpotiFLAC (repo GitHub atau …/registry.json)" aria-label="URL repository" />
+        <button class="btn filled" :disabled="repoBusy || !repoUrl.trim()"><Icon name="sync" />{{ repoBusy ? "Memuat…" : "Muat" }}</button>
+      </form>
+      <form v-else class="repo-form" @submit.prevent="installStremio">
+        <input v-model="stremioUrl" placeholder="URL manifest addon Stremio (…/manifest.json)" aria-label="URL manifest addon Stremio" />
+        <button class="btn filled" :disabled="busy === 'stremio' || !stremioUrl.trim()"><Icon name="download" />{{ busy === "stremio" ? "Memasang…" : "Tambah" }}</button>
+      </form>
+
+      <ul v-if="listed.length || available.length" class="list">
+        <li v-for="e in listed" :key="e.id" class="item" :class="{ off: !e.enabled, open: openId === e.id }">
           <div class="item-row">
             <img v-if="e.iconData" :src="e.iconData" class="ic" alt="" />
             <span v-else class="ic ph"><Icon name="extension" /></span>
             <div class="meta">
               <strong>{{ extName(e) }} <small>{{ e.version }}</small></strong>
               <span class="tags">
-                <span v-for="t in e.type" :key="t" class="tag">{{ TYPE_LABEL[t] ?? t }}</span>
+                <span v-for="t in e.type.filter((t) => t !== 'video_provider')" :key="t" class="tag">{{ TYPE_LABEL[t] ?? t }}</span>
                 <span v-if="unsupported(e).length" class="tag warn" :title="unsupported(e).join(', ')">Butuh fitur yang belum didukung</span>
               </span>
             </div>
+            <button v-if="update(e)" class="btn filled sm" :disabled="busy === e.id" @click="install(update(e)!)"><Icon name="sync" />{{ busy === e.id ? "Memperbarui…" : "Perbarui" }}</button>
             <button v-if="e.settings?.length" class="icon-btn" :class="{ on: openId === e.id }" title="Pengaturan" @click="edit(e)"><Icon name="settings" /></button>
             <button class="icon-btn" title="Hapus" @click="remove(e)"><Icon name="trash" /></button>
             <button class="switch" role="switch" :aria-checked="e.enabled" :title="e.enabled ? 'Nonaktifkan' : 'Aktifkan'" @click="toggle(e)"><span></span></button>
@@ -175,24 +237,7 @@ onMounted(() => {
             </div>
           </form>
         </li>
-      </ul>
-      <p v-else class="hint">Belum ada ekstensi terpasang.</p>
-    </section>
-
-    <section class="panel">
-      <div class="head">
-        <span class="mark alt" :style="{ clipPath: 'url(#shape-cookie9)' }"><Icon name="store" :size="28" /></span>
-        <div class="id">
-          <strong>Repository</strong>
-          <span>URL repository ekstensi (registry.json, atau repo GitHub yang berisi registry.json).</span>
-        </div>
-      </div>
-      <form class="repo-form" @submit.prevent="loadRepo">
-        <input v-model="repoUrl" placeholder="https://github.com/pemilik/repo-ekstensi" aria-label="URL repository" />
-        <button class="btn filled" :disabled="repoBusy || !repoUrl.trim()"><Icon name="sync" />{{ repoBusy ? "Memuat…" : "Muat" }}</button>
-      </form>
-      <ul v-if="repo" class="list">
-        <li v-for="r in repo" :key="r.id" class="item">
+        <li v-for="r in available" :key="r.id" class="item">
           <div class="item-row">
             <img v-if="r.icon_url || r.iconUrl" :src="r.icon_url || r.iconUrl" class="ic" alt="" loading="lazy" />
             <span v-else class="ic ph"><Icon name="extension" /></span>
@@ -200,13 +245,13 @@ onMounted(() => {
               <strong>{{ r.display_name || r.displayName || r.name || r.id }} <small>{{ r.version }}</small></strong>
               <span class="desc">{{ r.description }}</span>
             </div>
-            <button v-if="!byId.get(r.id)" class="btn tonal sm" :disabled="busy === r.id" @click="install(r)"><Icon name="download" />{{ busy === r.id ? "Memasang…" : "Pasang" }}</button>
-            <button v-else-if="newer(r.version, byId.get(r.id)!.version)" class="btn filled sm" :disabled="busy === r.id" @click="install(r)"><Icon name="sync" />{{ busy === r.id ? "Memperbarui…" : "Perbarui" }}</button>
-            <span v-else class="ok"><Icon name="done" :size="20" />Terpasang</span>
+            <button class="btn tonal sm" :disabled="busy === r.id" @click="install(r)"><Icon name="download" />{{ busy === r.id ? "Memasang…" : "Pasang" }}</button>
           </div>
         </li>
       </ul>
+      <p v-else class="hint">{{ kind === "video" ? "Belum ada ekstensi video. Tempel URL manifest di atas untuk menambah katalog ke menu Video." : "Belum ada ekstensi musik. Muat repository di atas, atau pasang dari file." }}</p>
     </section>
+
   </div>
 </template>
 
@@ -279,5 +324,14 @@ onMounted(() => {
 .check input { width: 18px; height: 18px; margin-top: 2px; accent-color: var(--primary); }
 .repo-form { display: flex; gap: 8px; }
 .repo-form input { flex: 1; min-width: 0; }
+.kinds { display: flex; gap: 4px; padding: 4px; border-radius: 28px; background: var(--surface-container-low); align-self: flex-start; }
+.kinds button {
+  height: 48px; padding: 0 20px 0 16px; border-radius: 24px; display: inline-flex; align-items: center; gap: 8px;
+  font-size: 15px; font-weight: 600; color: var(--on-surface-variant); transition: background 0.2s, color 0.2s;
+}
+.kinds button:hover { background: var(--surface-container-highest); }
+.kinds button.on { background: var(--secondary-container); color: var(--on-secondary-container); }
+.kinds .n { min-width: 22px; height: 22px; padding: 0 6px; border-radius: 11px; display: inline-grid; place-items: center; font-size: 12px; background: var(--surface-container-highest); }
+.kinds button.on .n { background: var(--on-secondary-container); color: var(--secondary-container); }
 @media (max-width: 600px) { .form { padding-left: 16px; } }
 </style>

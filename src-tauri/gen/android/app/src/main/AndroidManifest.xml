@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- reading the songs in the shared Music folder: Android 13+ asks per media type, older versions for all storage -->
+    <!-- reading the songs and videos in the shared folders: Android 13+ asks per media type, older versions for all storage -->
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <!-- MediaService: keeps playing in the background, with the song on the lock screen -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

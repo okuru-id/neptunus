@@ -9,6 +9,7 @@ mod player;
 mod s3;
 mod spotify;
 mod tray;
+mod video;
 use db::{Db, Playlist, Track};
 use tauri::{Manager, State};
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -438,6 +439,10 @@ pub fn run() {
             s3::s3_sync,
             s3::s3_download,
             s3::s3_list,
+            video::video_list,
+            video::video_url,
+            video::video_open_external,
+            video::video_subtitle,
             list_folders,
             remove_folder,
             local::local_list,
@@ -464,6 +469,7 @@ pub fn run() {
             ext::ext_list,
             ext::ext_install_file,
             ext::ext_install_url,
+            ext::ext_install_stremio,
             ext::ext_repo,
             ext::ext_remove,
             ext::ext_set_enabled,

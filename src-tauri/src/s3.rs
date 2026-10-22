@@ -275,6 +275,32 @@ pub fn sidecar(path: &str) -> Option<Option<String>> {
     Some(got.and_then(|o| String::from_utf8(o.bytes().to_vec()).ok()))
 }
 
+/// Video objects under the configured prefix as (`s3://bucket/key`, size); empty when S3 isn't connected.
+pub fn videos(app: &AppHandle, exts: &[&str]) -> Result<Vec<(String, u64)>, String> {
+    let cfg = s3_get_config(app.clone())?;
+    if cfg.bucket.is_empty() || cfg.disconnected {
+        return Ok(Vec::new());
+    }
+    let bucket = open_bucket(&cfg)?;
+    let is_video = |k: &str| Path::new(k).extension().and_then(|x| x.to_str()).is_some_and(|x| exts.contains(&x.to_lowercase().as_str()));
+    Ok(bucket
+        .list(cfg.prefix.clone(), None)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .flat_map(|r| r.contents)
+        .filter(|o| is_video(&o.key))
+        .map(|o| (track_path(&cfg.bucket, &o.key), o.size))
+        .collect())
+}
+
+/// A time-limited GET URL for an `s3://bucket/key` path, so the webview streams it directly
+/// (range requests) without ever seeing the credentials.
+pub fn presigned(app: &AppHandle, path: &str) -> Result<String, String> {
+    let (_, key) = path.strip_prefix(SCHEME).and_then(|p| p.split_once('/')).ok_or("bukan path S3")?;
+    let (_, bucket) = saved_bucket(app)?;
+    bucket.presign_get(key, 6 * 3600, None).map_err(|e| e.to_string())
+}
+
 /// Indexes audio files under the configured prefix (tags are read with range requests, nothing is
 /// downloaded) and returns the full library.
 #[tauri::command]

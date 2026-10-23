@@ -5,7 +5,7 @@
 //! Only one video downloads at a time: a new one (or closing the player) stops the previous one.
 //! What came down stays on disk with a `.meta` beside it (length, type, chunks done), so the same
 //! video opened again (an accidental close, or days later) carries on from there; `serve::prune`
-//! deletes it after a week unplayed.
+//! deletes it after a while unplayed (a week by default, Settings › Lokal).
 
 use std::fs::File;
 use std::io::Read;

@@ -9,6 +9,7 @@ import CoverArt from "./lib/CoverArt.vue";
 import { covers } from "./lib/covers";
 import Icon from "./lib/Icon.vue";
 import ConfirmDialog, { confirm } from "./lib/ConfirmDialog.vue";
+import Dropdown from "./lib/Dropdown.vue";
 import FolderPicker, { chooseFolder } from "./lib/FolderPicker.vue";
 import FileManager from "./lib/FileManager.vue";
 import Extensions from "./lib/Extensions.vue";
@@ -303,6 +304,31 @@ const settingsTab = ref<SettingsTab>(SETTINGS_TABS.some((t) => t.id === page.set
 watch([view, group, plId, settingsTab], ([view, group, plId, settingsTab]) => {
   try { sessionStorage.setItem(PAGE_KEY, JSON.stringify({ view, group, plId, settingsTab })); } catch {}
 });
+// Settings › Lokal: the disk cache online films play from (Rust `video_cache_*`, `serve::prune`)
+const CACHE_DAYS = [1, 3, 7, 14, 30].map((d) => ({ value: d, label: `${d} hari` }));
+const cacheSize = ref<number | null>(null);
+const cacheDays = ref(7);
+const bytes = (n: number) => (n >= 2 ** 30 ? `${(n / 2 ** 30).toFixed(1)} GB` : `${Math.round(n / 2 ** 20)} MB`);
+async function loadCache() {
+  cacheSize.value = await invoke<number>("video_cache_size").catch(() => 0);
+  cacheDays.value = Number(await invoke<string | null>("setting_get", { key: "video_cache_days" }).catch(() => null)) || 7;
+}
+function setCacheDays(d: number) {
+  cacheDays.value = d;
+  invoke("setting_set", { key: "video_cache_days", value: String(d) }).catch((e) => notify(String(e)));
+}
+async function clearCache() {
+  const ok = await confirm({
+    title: "Hapus cache film?",
+    message: "Buffer film online yang tersimpan dihapus. Film yang diputar lagi akan dimuat dari awal.",
+    confirm: "Hapus", icon: "trash", danger: true,
+  });
+  if (!ok) return;
+  await invoke("video_cache_clear").catch((e) => notify(String(e)));
+  await loadCache();
+}
+watch(() => view.value === "s3" && settingsTab.value === "local", (on) => on && loadCache(), { immediate: true });
+
 function openSettings(tab: SettingsTab) {
   settingsTab.value = tab;
   setView("s3");
@@ -978,6 +1004,20 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
               </span>
             </div>
           </section>
+          <section class="panel conn">
+            <div class="conn-head">
+              <span class="conn-mark" :style="{ clipPath: 'url(#shape-cookie9)' }"><Icon name="movie" :size="28" /></span>
+              <div class="conn-id">
+                <strong>Cache film</strong>
+                <span>{{ cacheSize === null ? "Menghitung…" : `${bytes(cacheSize)} dipakai untuk buffer film online` }}</span>
+              </div>
+              <button class="btn tonal" :disabled="!cacheSize" @click="clearCache"><Icon name="trash" />Hapus cache</button>
+            </div>
+            <div class="look-row">
+              <div class="look-text"><strong>Simpan selama</strong><span>Film yang tidak diputar lebih lama dari ini dihapus otomatis. Total cache paling banyak 10 GB.</span></div>
+              <Dropdown class="cache-days" label="Simpan selama" :model-value="cacheDays" :options="CACHE_DAYS" @update:model-value="setCacheDays" />
+            </div>
+          </section>
           <FileManager v-if="curFolder" ref="localFiles" :key="curFolder" kind="local" :root="`${curFolder.replace(/\/+$/, '')}/`" :label="baseName(curFolder)"
             @library="setLibrary" />
         </template>
@@ -1526,6 +1566,7 @@ li:hover .row-act, .row-act:focus-visible, .row-menu.open .row-act, .row-act.ope
 .look-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
 .look-text { flex: 1; min-width: 180px; display: flex; flex-direction: column; gap: 2px; font-size: 13px; color: var(--on-surface-variant); }
 .look-text strong { font-size: 15px; font-weight: 700; color: var(--on-surface); }
+.cache-days { width: min(100%, 220px); }
 .seg { display: inline-flex; border: 1px solid var(--outline); border-radius: 20px; overflow: hidden; }
 .seg button { display: inline-flex; align-items: center; gap: 6px; height: 40px; padding: 0 14px; font: inherit; font-size: 14px; font-weight: 600; color: var(--on-surface); background: transparent; }
 .seg button + button { border-left: 1px solid var(--outline); }

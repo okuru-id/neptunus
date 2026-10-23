@@ -49,10 +49,43 @@ pub async fn video_list(app: AppHandle, db: State<'_, Db>) -> Result<Vec<Video>,
 
 mod fill;
 
+/// The file name a remote video is kept under in the cache folder (without `.part`).
+fn cache_key(name: &str) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(name.as_bytes()).iter().take(16).map(|b| format!("{b:02x}")).collect()
+}
+
+fn cache_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(app.path().app_cache_dir().map_err(|e| e.to_string())?.join("video"))
+}
+
+/// Bytes the video disk cache takes.
+#[tauri::command]
+pub fn video_cache_size(app: AppHandle) -> Result<u64, String> {
+    Ok(std::fs::read_dir(cache_dir(&app)?).into_iter().flatten().flatten().filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum())
+}
+
+/// Empties the video disk cache (Settings › Lokal), stopping the last video's download first.
+#[tauri::command]
+pub fn video_cache_clear(app: AppHandle) -> Result<(), String> {
+    serve::stop();
+    for e in std::fs::read_dir(cache_dir(&app)?).into_iter().flatten().flatten() {
+        let _ = std::fs::remove_file(e.path());
+    }
+    Ok(())
+}
+
+/// Which of the remote video `urls` have something in the disk cache.
+#[tauri::command]
+pub fn video_cached(app: AppHandle, urls: Vec<String>) -> Result<Vec<String>, String> {
+    let dir = cache_dir(&app)?;
+    Ok(urls.into_iter().filter(|u| dir.join(format!("{}.part", cache_key(u))).exists()).collect())
+}
+
 /// A URL the webview can stream: presigned for S3, the loopback server for local files on desktop.
 /// `None` for local files on phones: the UI uses `convertFileSrc` (the asset protocol) there.
 /// Remote videos go through the loopback server too, which downloads them in full and keeps them
-/// on disk for a week (`fill`).
+/// on disk for the days set in Settings › Lokal, a week by default (`fill`).
 #[tauri::command]
 pub async fn video_url(app: AppHandle, path: String) -> Result<Option<String>, String> {
     let remote = path.starts_with("http://") || path.starts_with("https://");
@@ -68,9 +101,11 @@ pub async fn video_url(app: AppHandle, path: String) -> Result<Option<String>, S
         return Ok(None);
     };
     if !url.split(['?', '#']).next().unwrap_or("").to_lowercase().ends_with(".m3u8") && !url.contains(char::is_whitespace) {
-        let dir = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("video");
+        let dir = cache_dir(&app)?;
         // kept under the S3 path, not the presigned URL, which changes every time
-        return serve::fill(url, &path, &dir).map(Some);
+        // Settings › Lokal: days a video stays in the cache after it was last played
+        let days = app.state::<Db>().setting("video_cache_days").ok().flatten().and_then(|d| d.parse().ok()).unwrap_or(7);
+        return serve::fill(url, &path, &dir, days).map(Some);
     }
     Ok(Some(url))
 }
@@ -118,6 +153,13 @@ mod serve {
     /// The remote video being downloaded, by a number that changes with each one.
     pub static FILL: Mutex<Option<(u64, std::sync::Arc<super::fill::Fill>)>> = Mutex::new(None);
 
+    /// Stops downloading the last video, so its files can go.
+    pub fn stop() {
+        if let Some((_, f)) = FILL.lock().unwrap().take() {
+            f.close();
+        }
+    }
+
     pub fn url(path: &str) -> Result<String, String> {
         let (port, token) = server()?;
         ALLOWED.lock().unwrap().get_or_insert_with(HashSet::new).insert(path.to_owned());
@@ -125,24 +167,24 @@ mod serve {
     }
 
     /// Starts (or resumes) downloading `url` into `dir`, stopping the previous video's download.
-    pub fn fill(url: String, name: &str, dir: &std::path::Path) -> Result<String, String> {
+    pub fn fill(url: String, name: &str, dir: &std::path::Path, days: u64) -> Result<String, String> {
         let (port, token) = server()?;
         let mut cur = FILL.lock().unwrap();
         let id = cur.take().map_or(0, |(id, f)| { f.close(); id + 1 });
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         // one file per video, so playing it again finds what came down before
-        let key: String = { use sha2::Digest; sha2::Sha256::digest(name.as_bytes()).iter().take(16).map(|b| format!("{b:02x}")).collect() };
+        let key = super::cache_key(name);
         let path = dir.join(format!("{key}.part"));
         let _ = std::fs::File::options().append(true).open(path.with_extension("meta")).and_then(|f| f.set_modified(std::time::SystemTime::now()));
         let (d, keep) = (dir.to_owned(), path.clone());
-        std::thread::spawn(move || prune(&d, &keep));
+        std::thread::spawn(move || prune(&d, &keep, days));
         *cur = Some((id, super::fill::Fill::start(url, path)));
         Ok(format!("http://127.0.0.1:{port}/{token}/~fill/{id}"))
     }
 
-    /// Deletes the videos not played for a week, then the oldest while they take more than 10 GB.
-    fn prune(dir: &std::path::Path, keep: &std::path::Path) {
-        const WEEK: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
+    /// Deletes the videos not played for `days`, then the oldest while they take more than 10 GB.
+    fn prune(dir: &std::path::Path, keep: &std::path::Path, days: u64) {
+        let max_age = std::time::Duration::from_secs(days * 24 * 3600);
         const CAP: u64 = 10 << 30;
         let mut all: Vec<_> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path())
             .filter(|p| p.extension().is_some_and(|x| x == "part") && p != keep)
@@ -151,7 +193,7 @@ mod serve {
         all.sort_by_key(|a| a.0);
         let mut total: u64 = all.iter().map(|a| a.1).sum::<u64>() + keep.metadata().map_or(0, |m| m.len());
         for (used, size, p) in all {
-            if total > CAP || used.elapsed().unwrap_or_default() > WEEK {
+            if total > CAP || used.elapsed().unwrap_or_default() > max_age {
                 let _ = std::fs::remove_file(p.with_extension("meta"));
                 let _ = std::fs::remove_file(&p);
                 total -= size;

@@ -6,6 +6,7 @@ import CatalogRow from "./CatalogRow.vue";
 import Dropdown from "./Dropdown.vue";
 import { extName, type ExtInfo } from "./ext";
 import { featureOn, loadFeatures } from "./videoprefs";
+import { cached, remember } from "./vcache";
 import {
   allStreams, subtitleQuery, CINEMETA, meta, rowCatalogs, searchCatalog, sourceInfo, streamScore, videoSources,
   type Episode, type Meta, type SourceInfo, type SourceStream, type StreamGroup, type SubtitleQuery,
@@ -223,6 +224,7 @@ function play(s: SourceStream) {
   const ep = episode.value;
   const title = ep ? `${m.name} · S${ep.season ?? 1}E${ep.episode ?? ""}${ep.name && !/^S\d/.test(ep.name) ? ` — ${ep.name}` : ""}` : m.name;
   const all = sources.value.filter((e) => featureOn(e.id, "subtitles")).map((e) => ({ id: e.id, name: extName(e), info: ready(e.id) }));
+  remember(ep ? [m.id, ep.id] : [m.id], s.url!);
   emit("play", { path: s.url!, title, sub: subtitleQuery(all, m.type, ep?.id ?? m.id, s) });
 }
 
@@ -264,13 +266,14 @@ function close() {
       </div>
       <div v-if="seasonEps.length" class="eps" role="listbox" aria-label="Episode">
         <button v-for="ep in seasonEps" :key="ep.id" class="ep" role="option" :aria-selected="episode?.id === ep.id"
-          :class="{ on: episode?.id === ep.id }" @click="pickEpisode(ep)">
+          :class="{ on: episode?.id === ep.id, cached: cached.ids.has(ep.id) }" @click="pickEpisode(ep)">
           <div class="ethumb">
             <img v-if="ep.thumbnail && !badThumb.has(ep.id)" :src="ep.thumbnail" loading="lazy" alt="" @error="badThumb.add(ep.id)" />
             <span v-else class="edefault" :style="detail.background || detail.poster ? { backgroundImage: `url(&quot;${detail.background || detail.poster}&quot;)` } : undefined">
               <Icon name="movie" :size="30" />
             </span>
             <span class="enum">E{{ ep.episode ?? "?" }}</span>
+            <span v-if="cached.ids.has(ep.id)" class="saved" title="Sudah ada di cache"><Icon name="download" :size="14" /></span>
             <span v-if="episode?.id === ep.id" class="eplay"><Icon name="play" :size="26" /></span>
           </div>
           <strong>{{ ep.name || `Episode ${ep.episode ?? ""}` }}</strong>
@@ -295,7 +298,7 @@ function close() {
       </div>
       <p v-if="tab && !tabList.length" class="none">{{ tab.note }}</p>
       <div v-if="tabList.length" :key="pickTab" class="list">
-        <button v-for="(s, i) in tabList" :key="i" class="pick src" @click="play(s)">
+        <button v-for="(s, i) in tabList" :key="i" class="pick src" :class="{ cached: cached.urls.has(s.url ?? '') }" :title="cached.urls.has(s.url ?? '') ? 'Sudah ada di cache' : undefined" @click="play(s)">
           <span class="no">{{ i + 1 }}</span>
           <span class="q" :class="{ hd: describe(s).quality === '4K' || describe(s).quality === '1080p' }">{{ describe(s).quality || "SD" }}</span>
           <span class="info">
@@ -433,9 +436,15 @@ h3 { margin: 4px 0 0; font-size: 16px; font-weight: 700; }
 .ethumb img { width: 100%; height: 100%; object-fit: cover; }
 .ep:hover .ethumb { border-radius: 24px; transform: scale(1.03); }
 .ep.on .ethumb { box-shadow: 0 0 0 3px var(--primary); }
+.ep.cached:not(.on) .ethumb { box-shadow: 0 0 0 3px var(--tertiary); }
+.src.cached { box-shadow: inset 0 0 0 2px var(--tertiary); }
 .enum {
   position: absolute; left: 8px; bottom: 8px; padding: 2px 8px; border-radius: 8px; font-size: 12px; font-weight: 700;
   background: rgb(0 0 0 / 0.65); color: #fff;
+}
+.saved {
+  position: absolute; top: 8px; left: 8px; width: 24px; height: 24px; border-radius: 12px; display: grid; place-items: center;
+  background: var(--tertiary-container); color: var(--on-tertiary-container);
 }
 .eplay { position: absolute; inset: 0; display: grid; place-items: center; background: rgb(0 0 0 / 0.35); color: #fff; }
 .ep strong { font-size: 14px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

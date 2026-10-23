@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import Icon from "./Icon.vue";
 import VideoPlayer from "./VideoPlayer.vue";
 import VideoCatalogs from "./VideoCatalogs.vue";
+import { refreshCached } from "./vcache";
 import type { ExtInfo } from "./ext";
 import type { SubtitleQuery } from "./videoext";
 
@@ -45,6 +46,9 @@ const shown = computed(() => {
 watch(inTab, (l) => emit("count", l.length), { immediate: true });
 watch(() => tab.value === "ext" && inDetail.value, (on) => emit("detail", on), { immediate: true });
 watch(() => !!open.value, (on) => emit("watching", on));
+// the cache may have let go of old videos: check again on load and after each one
+onMounted(refreshCached);
+watch(open, (v) => !v && refreshCached());
 onUnmounted(() => emit("watching", false));
 const size = (b?: number) =>
   b == null ? "" : b >= 1 << 30 ? `${(b / (1 << 30)).toFixed(1)} GB` : `${Math.round(b / (1 << 20))} MB`;

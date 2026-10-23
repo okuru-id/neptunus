@@ -2,6 +2,7 @@
 import { onMounted, ref, watch } from "vue";
 import Icon from "./Icon.vue";
 import { catalog, type Meta } from "./videoext";
+import { cached } from "./vcache";
 
 // One catalog as a horizontal strip of posters. Loads right away: the answer usually comes from the
 // app database, so waiting for the row to scroll into view only made rows blink in while scrolling.
@@ -43,10 +44,11 @@ const scroll = (dir: number) => strip.value?.scrollBy({ left: dir * strip.value.
     <p v-if="error" class="note">Tidak bisa dimuat ({{ error }}). <button class="retry" @click="load(true)">Coba lagi</button></p>
     <div v-else ref="strip" class="strip">
       <template v-if="metas">
-        <button v-for="m in metas" :key="m.id" class="card" @click="emit('open', m)">
+        <button v-for="m in metas" :key="m.id" class="card" :class="{ cached: cached.ids.has(m.id) }" @click="emit('open', m)">
           <div class="poster" :class="{ wide: m.posterShape === 'landscape' }">
             <img v-if="m.poster" :src="m.poster" loading="lazy" alt="" />
             <Icon v-else name="movie" :size="32" />
+            <span v-if="cached.ids.has(m.id)" class="saved" title="Sudah ada di cache"><Icon name="download" :size="14" /></span>
           </div>
           <strong>{{ m.name }}</strong>
           <span>{{ m.releaseInfo || m.year || (m.type === "series" ? "Serial" : "") }}</span>
@@ -81,6 +83,12 @@ h3 { flex: 1; margin: 0; font-size: 18px; font-weight: 700; }
   transition: border-radius 0.4s var(--spring), transform 0.45s var(--spring);
 }
 .poster.wide { aspect-ratio: 16 / 9; }
+/* a stream of it is in the disk cache (vcache.ts) */
+.card.cached .poster { position: relative; outline: 3px solid var(--tertiary); outline-offset: -3px; }
+.saved {
+  position: absolute; top: 8px; left: 8px; width: 24px; height: 24px; border-radius: 12px; display: grid; place-items: center;
+  background: var(--tertiary-container); color: var(--on-tertiary-container);
+}
 .card:has(.wide) { width: 240px; }
 .card:hover .poster { border-radius: 28px; transform: scale(1.03); }
 .poster img { width: 100%; height: 100%; object-fit: cover; }

@@ -18,6 +18,7 @@ let hls: Hls | undefined;
 const buffering = ref(true);
 let lastSave = 0;
 let lastFill = 0;
+let filled = 0; // seconds the app has downloaded from the playhead on (`video_buffered`)
 let resolvedUrl = "";
 
 function savePos(force = false) {
@@ -54,16 +55,44 @@ function sync() {
   if (!v) return;
   if (!dragging) time.value = v.currentTime;
   duration.value = isFinite(v.duration) ? v.duration : 0;
+  // the webview's own buffer, or what the app downloaded when that reaches further (kept between checks,
+  // or every timeupdate would cut the bar back to the webview's few seconds)
+  let own = 0;
   for (let i = 0; i < v.buffered.length; i++)
-    if (v.buffered.start(i) <= v.currentTime + 0.5) buffered.value = v.buffered.end(i);
+    if (v.buffered.start(i) <= v.currentTime + 0.5) own = v.buffered.end(i);
+  buffered.value = Math.max(own, filled);
   // on phones the webview's player only buffers a little ahead; the app downloads the rest itself
   if (resolvedUrl.includes("/~fill/") && duration.value && Date.now() - lastFill > 1000) {
     lastFill = Date.now();
     const d = duration.value;
     invoke<number | null>("video_buffered", { at: v.currentTime / d })
-      .then((f) => { if (f != null) buffered.value = Math.max(buffered.value, f * d); })
+      .then((f) => { filled = f == null ? 0 : f * d; buffered.value = Math.max(buffered.value, filled); })
       .catch(() => {});
   }
+}
+// touch: a tap on the picture shows the controls (another hides them) instead of pausing; the mouse still pauses
+let touch = false;
+let wasIdle = false;
+function down(e: PointerEvent) {
+  touch = e.pointerType !== "mouse";
+  wasIdle = idle.value;
+  wake();
+}
+function tap() {
+  if (!touch) return toggle();
+  if (wasIdle || !playing.value) return;
+  clearTimeout(idleTimer);
+  idle.value = true;
+}
+// sound but no picture: the video codec (often HEVC/AV1 10-bit) can't be decoded here while the audio can
+let pictureTimer: ReturnType<typeof setTimeout> | undefined;
+function checkPicture() {
+  clearTimeout(pictureTimer);
+  pictureTimer = setTimeout(() => {
+    const v = video.value;
+    if (v && !v.paused && v.currentTime > 1 && !v.videoWidth && !error.value)
+      error.value = "Gambar video ini tidak bisa ditampilkan di perangkat ini (codec tidak didukung), hanya suaranya. Coba sumber lain, misalnya yang H.264/x264.";
+  }, 3000);
 }
 function wake() {
   idle.value = false;
@@ -316,7 +345,7 @@ onMounted(async () => {
     v.addEventListener("loadedmetadata", readAudios);
     (v as any).audioTracks?.addEventListener?.("addtrack", readAudios);
     const fail = (why: string) => {
-      error.value = `Format video ini tidak didukung di perangkat ini. Coba putar di VLC. [${why}]`;
+      error.value = `Format video ini tidak didukung di perangkat ini. Coba sumber lain, misalnya yang H.264/x264. [${why}]`;
       buffering.value = false;
     };
     // the system player first: GStreamer (Linux), WebKit (Apple) and Android play HLS themselves and,
@@ -351,6 +380,7 @@ onUnmounted(() => {
   document.removeEventListener("fullscreenchange", onFull);
   clearTimeout(idleTimer);
   clearTimeout(previewTimer);
+  clearTimeout(pictureTimer);
   cancelAnimationFrame(raf);
   if (saveTimer) flushPrefs();
   savePos(true);
@@ -361,12 +391,12 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div ref="box" class="vplayer" :class="{ idle, full }" role="dialog" :aria-label="title" @pointermove="wake" @pointerdown="wake">
-    <video ref="video" autoplay playsinline preload="auto" @click="toggle" @dblclick="toggleFull"
+  <div ref="box" class="vplayer" :class="{ idle, full }" role="dialog" :aria-label="title" @pointermove="wake" @pointerdown="down">
+    <video ref="video" autoplay playsinline preload="auto" @click="tap" @dblclick="toggleFull"
       @webkitbeginfullscreen="nativeSubs(true)" @webkitendfullscreen="nativeSubs(false)"
       @timeupdate="sync(); savePos()" @progress="sync" @durationchange="sync" @pause="playing = false; idle = false; savePos(true)" @play="playing = true; wake()"
       @ended="savePos(true)" @volumechange="volume = video!.volume; muted = video!.muted"
-      @waiting="buffering = true" @loadstart="buffering = true" @playing="buffering = false" @canplay="buffering = false" @seeked="buffering = false"></video>
+      @waiting="buffering = true" @loadstart="buffering = true" @playing="buffering = false; checkPicture()" @canplay="buffering = false" @seeked="buffering = false"></video>
     <div v-if="buffering && !error" class="spin" aria-label="Memuat"></div>
     <p v-if="cueText" class="cue" :class="{ preview }" :style="cueStyle">{{ cueText }}</p>
     <p v-if="error" class="err">{{ error }}</p>

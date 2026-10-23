@@ -82,8 +82,8 @@ pub fn video_cached(app: AppHandle, urls: Vec<String>) -> Result<Vec<String>, St
     Ok(urls.into_iter().filter(|u| dir.join(format!("{}.part", cache_key(u))).exists()).collect())
 }
 
-/// A URL the webview can stream: presigned for S3, the loopback server for local files on desktop.
-/// `None` for local files on phones: the UI uses `convertFileSrc` (the asset protocol) there.
+/// A URL the webview can stream: presigned for S3, the loopback server for local files (desktop and
+/// iOS). `None` for local files on Android: the UI uses `convertFileSrc` (the asset protocol) there.
 /// Remote videos go through the loopback server too, which downloads them in full and keeps them
 /// on disk for the days set in Settings › Lokal, a week by default (`fill`).
 #[tauri::command]
@@ -95,9 +95,10 @@ pub async fn video_url(app: AppHandle, path: String) -> Result<Option<String>, S
     } else if remote {
         path.clone()
     } else {
-        #[cfg(desktop)]
+        // iOS too: WKWebView's player can't read video through the asset protocol's custom scheme
+        #[cfg(not(target_os = "android"))]
         return serve::url(&path).map(Some);
-        #[cfg(mobile)]
+        #[cfg(target_os = "android")]
         return Ok(None);
     };
     if !url.split(['?', '#']).next().unwrap_or("").to_lowercase().ends_with(".m3u8") && !url.contains(char::is_whitespace) {
@@ -137,10 +138,10 @@ pub fn video_stop(url: String) {
     }
 }
 
-/// WebKitGTK can't play media from a custom scheme (`asset://`), so desktop serves local videos over
+/// WebKitGTK and iOS WKWebView can't play media from a custom scheme (`asset://`), so local videos go over
 /// `http://127.0.0.1` with Range support. Only files handed out by `url` are served, under a random
 /// per-run token. It also serves the remote video being downloaded (`fill`).
-#[cfg_attr(mobile, allow(dead_code))]
+#[cfg_attr(target_os = "android", allow(dead_code))]
 mod serve {
     use std::collections::HashSet;
     use std::fs::File;

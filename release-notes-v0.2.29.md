@@ -12,6 +12,7 @@ You can now see and manage the film cache, cached films stand out in the catalog
 
 - 📱 **Tapping a playing film.** On phones and tablets, a tap no longer pauses the film: it shows the player controls, and another tap hides them. Pause with the ⏯ button. With a mouse, a click still pauses.
 - 📱 **Buffer bar on phones.** The buffer bar no longer flickers between short and long while a film plays.
+- 🍎 **Local videos on iOS.** `.mp4` files in your library didn't play on iPhone and iPad. They now play through the same local server as on the desktop, seeking included.
 - 🍎 **iOS folders after a reinstall.** Reinstalling or updating the app on iOS moves its storage, so library folders had to be removed and added again. Folders, songs, playlists and downloads now follow along on their own.
 - ✅ **Verification label.** After finishing an extension verification on a phone, Settings › Ekstensi now shows **Terverifikasi** and **Verifikasi ulang** right away.
 - 💬 **Unsupported formats** now suggest trying another source instead of VLC.

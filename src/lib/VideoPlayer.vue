@@ -56,7 +56,7 @@ function sync() {
   duration.value = isFinite(v.duration) ? v.duration : 0;
   for (let i = 0; i < v.buffered.length; i++)
     if (v.buffered.start(i) <= v.currentTime + 0.5) buffered.value = v.buffered.end(i);
-  // on iOS the system player only buffers a few minutes; the app downloads the rest itself
+  // on phones the webview's player only buffers a little ahead; the app downloads the rest itself
   if (resolvedUrl.includes("/~fill/") && duration.value && Date.now() - lastFill > 1000) {
     lastFill = Date.now();
     const d = duration.value;

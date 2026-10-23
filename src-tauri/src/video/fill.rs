@@ -1,7 +1,7 @@
 //! A remote video downloaded in full to a cache file while it plays, served to the player by the
-//! loopback server. On iOS the webview's player (AVPlayer) decides how far ahead it reads and stops
-//! a few minutes past the play position; going through this, the whole file comes down anyway and
-//! the player reads it from disk. Only one video at a time: a new one (or closing the player) drops
+//! loopback server. On phones the webview's player decides how far ahead it reads and stops soon
+//! after the play position (a few minutes for iOS's AVPlayer, under half a minute for Android's
+//! Chromium); going through this, the whole file comes down anyway and the player reads it from disk. Only one video at a time: a new one (or closing the player) drops
 //! the previous download and its file.
 
 use std::fs::File;

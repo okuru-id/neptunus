@@ -47,12 +47,12 @@ pub async fn video_list(app: AppHandle, db: State<'_, Db>) -> Result<Vec<Video>,
     .await
 }
 
-#[cfg(target_os = "ios")]
+#[cfg(mobile)]
 mod fill;
 
 /// A URL the webview can stream: presigned for S3, the loopback server for local files on desktop.
 /// `None` for local files on phones: the UI uses `convertFileSrc` (the asset protocol) there.
-/// On iOS remote videos go through the loopback server too, which downloads them in full (`fill`).
+/// On phones remote videos go through the loopback server too, which downloads them in full (`fill`).
 #[tauri::command]
 pub async fn video_url(app: AppHandle, path: String) -> Result<Option<String>, String> {
     let remote = path.starts_with("http://") || path.starts_with("https://");
@@ -67,7 +67,7 @@ pub async fn video_url(app: AppHandle, path: String) -> Result<Option<String>, S
         #[cfg(mobile)]
         return Ok(None);
     };
-    #[cfg(target_os = "ios")]
+    #[cfg(mobile)]
     if !url.split(['?', '#']).next().unwrap_or("").to_lowercase().ends_with(".m3u8") && !url.contains(char::is_whitespace) {
         let dir = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("video");
         return serve::fill(url, &dir).map(Some);
@@ -77,7 +77,6 @@ pub async fn video_url(app: AppHandle, path: String) -> Result<Option<String>, S
 }
 
 /// The content type the loopback server sends for a video, by its extension.
-#[cfg(any(desktop, target_os = "ios"))]
 fn mime(path: &str) -> &'static str {
     match path.split(['?', '#']).next().unwrap_or("").rsplit('.').next().map(str::to_lowercase).as_deref() {
         Some("webm") => "video/webm",
@@ -91,9 +90,9 @@ fn mime(path: &str) -> &'static str {
 /// `None` when it isn't being downloaded here.
 #[tauri::command]
 pub fn video_buffered(at: f64) -> Option<f64> {
-    #[cfg(target_os = "ios")]
+    #[cfg(mobile)]
     return serve::FILL.lock().unwrap().as_ref()?.1.buffered(at);
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(not(mobile))]
     { let _ = at; None }
 }
 
@@ -101,22 +100,21 @@ pub fn video_buffered(at: f64) -> Option<f64> {
 /// started since, so only that one's.
 #[tauri::command]
 pub fn video_stop(url: String) {
-    #[cfg(target_os = "ios")]
+    #[cfg(mobile)]
     {
         let mut cur = serve::FILL.lock().unwrap();
         if cur.as_ref().is_some_and(|(id, _)| url.ends_with(&format!("/~fill/{id}"))) {
             cur.take().unwrap().1.close();
         }
     }
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(not(mobile))]
     let _ = url;
 }
 
 /// WebKitGTK can't play media from a custom scheme (`asset://`), so desktop serves local videos over
 /// `http://127.0.0.1` with Range support. Only files handed out by `url` are served, under a random
-/// per-run token. On iOS it serves the remote video being downloaded (`fill`) instead.
-#[cfg(any(desktop, target_os = "ios"))]
-#[cfg_attr(target_os = "ios", allow(dead_code))]
+/// per-run token. On phones it serves the remote video being downloaded (`fill`) instead.
+#[cfg_attr(mobile, allow(dead_code))]
 mod serve {
     use std::collections::HashSet;
     use std::fs::File;
@@ -127,7 +125,7 @@ mod serve {
     static SERVER: OnceLock<(u16, String)> = OnceLock::new();
     static ALLOWED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
     /// The remote video being downloaded, by a number that changes with each one.
-    #[cfg(target_os = "ios")]
+    #[cfg(mobile)]
     pub static FILL: Mutex<Option<(u64, std::sync::Arc<super::fill::Fill>)>> = Mutex::new(None);
 
     pub fn url(path: &str) -> Result<String, String> {
@@ -137,7 +135,7 @@ mod serve {
     }
 
     /// Starts downloading `url` into `dir`, dropping the previous video's download.
-    #[cfg(target_os = "ios")]
+    #[cfg(mobile)]
     pub fn fill(url: String, dir: &std::path::Path) -> Result<String, String> {
         let (port, token) = server()?;
         let mut cur = FILL.lock().unwrap();
@@ -222,7 +220,7 @@ mod serve {
                 }
             }
         }
-        #[cfg(target_os = "ios")]
+        #[cfg(mobile)]
         if let Some(id) = target.strip_prefix(&format!("/{token}/~fill/")) {
             let f = FILL.lock().unwrap().as_ref().filter(|(n, _)| id == n.to_string()).map(|(_, f)| f.clone());
             return match f {
@@ -272,7 +270,7 @@ mod serve {
 
     /// Serves the video being downloaded, waiting for the parts not there yet; sends the player to
     /// the source itself when it can't be downloaded here (HLS, unknown length, unreachable).
-    #[cfg(target_os = "ios")]
+    #[cfg(mobile)]
     fn send_fill(mut stream: TcpStream, f: &super::fill::Fill, method: &str, range: Option<String>) -> std::io::Result<()> {
         let Some((len, mime)) = f.head() else {
             return write!(stream, "HTTP/1.1 302 Found\r\nLocation: {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", f.url);

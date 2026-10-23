@@ -183,13 +183,50 @@ async fn update_install(app: tauri::AppHandle) -> R<String> {
             let path = download_release(&app, &url, &name, "update")?;
             if name.ends_with(".AppImage") {
                 app.opener().reveal_item_in_dir(&path).map_err(|e| e.to_string())?;
-            } else {
+            } else if !install_in_terminal(&path) {
                 app.opener().open_path(path.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())?;
             }
             Ok(path.to_string_lossy().into_owned())
         }
     })
     .await
+}
+
+/// A .deb/.rpm goes to `sudo apt/dnf install` in a terminal (the password asked there, like any
+/// install) instead of the software center that opening the file starts. False when there is no
+/// terminal to run it in, so the caller opens the file instead.
+#[cfg(desktop)]
+fn install_in_terminal(path: &std::path::Path) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let has = |p: &str| std::path::Path::new(p).exists();
+        let cmd = if path.extension().is_some_and(|e| e == "deb") {
+            "sudo apt install -y"
+        } else if has("/usr/bin/dnf") {
+            "sudo dnf install -y"
+        } else if has("/usr/bin/zypper") {
+            "sudo zypper install -y --allow-unsigned-rpm"
+        } else {
+            "sudo rpm -U"
+        };
+        let script = format!("{cmd} \"$1\"; echo; printf 'Tekan Enter untuk menutup.'; read _");
+        let terms: [(&str, &[&str]); 8] = [
+            ("ptyxis", &["--"]),
+            ("gnome-terminal", &["--"]),
+            ("konsole", &["-e"]),
+            ("xfce4-terminal", &["-x"]),
+            ("kitty", &[]),
+            ("alacritty", &["-e"]),
+            ("x-terminal-emulator", &["-e"]),
+            ("xterm", &["-e"]),
+        ];
+        // a missing terminal fails to spawn, so the first one that starts is used
+        return terms.iter().any(|(t, flag)| {
+            std::process::Command::new(t).args(*flag).args(["sh", "-c", &script, "sh"]).arg(path).spawn().is_ok()
+        });
+    }
+    #[allow(unreachable_code)]
+    { let _ = path; false }
 }
 
 #[derive(serde::Serialize)]

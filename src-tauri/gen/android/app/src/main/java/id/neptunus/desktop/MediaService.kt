@@ -1,5 +1,6 @@
 package id.neptunus.desktop
 
+import android.app.Activity
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -7,6 +8,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
 import android.media.MediaMetadata
@@ -17,6 +19,9 @@ import android.os.Handler
 import android.os.Looper
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 
 // Keeps the app alive while music plays in the background and shows the playing song with
 // controls on the lock screen and in the notification shade. The UI reports the song through
@@ -75,6 +80,19 @@ class MediaService : Service() {
     fun state(s: Int, secs: Double) = ours {
       state = s; position = secs
       changed(view.context)
+    }
+
+    // the video player's fullscreen: the WebView's own requestFullscreen does nothing here, so hide
+    // the system bars and turn to landscape ourselves
+    @JavascriptInterface
+    fun fullscreen(on: Boolean) = ours {
+      val a = view.context as? Activity ?: return@ours
+      val bars = WindowCompat.getInsetsController(a.window, a.window.decorView)
+      if (on) {
+        bars.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        bars.hide(WindowInsetsCompat.Type.systemBars())
+      } else bars.show(WindowInsetsCompat.Type.systemBars())
+      a.requestedOrientation = if (on) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     }
   }
 

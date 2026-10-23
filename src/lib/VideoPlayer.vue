@@ -102,7 +102,15 @@ function setVolume(e: Event) {
   v.muted = v.volume === 0;
 }
 const toggleMute = () => { const v = video.value!; v.muted = !v.muted; if (!v.muted && !v.volume) v.volume = 0.5; };
-const toggleFull = () => (document.fullscreenElement ? document.exitFullscreen() : box.value?.requestFullscreen())?.catch(() => {});
+// Android's WebView ignores requestFullscreen, so the app's bridge hides the bars and rotates instead.
+// iOS's WKWebView has element fullscreen turned off: the system video player goes fullscreen there.
+const droid = (window as any).NeptunusAndroid as { fullscreen?(on: boolean): void } | undefined;
+function toggleFull() {
+  const v = video.value as (HTMLVideoElement & { webkitEnterFullscreen?(): void }) | undefined;
+  if (droid?.fullscreen) droid.fullscreen((full.value = !full.value));
+  else if (!document.fullscreenEnabled && v?.webkitEnterFullscreen) v.webkitEnterFullscreen();
+  else (document.fullscreenElement ? document.exitFullscreen() : box.value?.requestFullscreen())?.catch(() => {});
+}
 const onFull = () => (full.value = !!document.fullscreenElement);
 
 // --- subtitles from the subtitle addons, rendered by us above the bar ---
@@ -163,6 +171,18 @@ function parseVtt(vtt: string) {
     const start = secs(a), end = secs(b);
     return text && start < end ? [{ start, end, text }] : [];
   });
+}
+// iOS's fullscreen is the system player, which can't show our overlay: hand it the cues (with the
+// delay applied) as a text track while it is up
+let nativeTrack: TextTrack | undefined;
+function nativeSubs(on: boolean) {
+  const v = video.value;
+  if (!v || (!on && !nativeTrack)) return;
+  const t = (nativeTrack ??= v.addTextTrack("subtitles", "Subtitle"));
+  t.mode = "hidden";
+  for (const c of Array.from(t.cues ?? [])) t.removeCue(c);
+  if (on) for (const c of cues) t.addCue(new VTTCue(c.start + subDelay.value, c.end + subDelay.value, c.text));
+  t.mode = on && cues.length ? "showing" : "disabled";
 }
 function tick() {
   const t = (video.value?.currentTime ?? 0) - subDelay.value;
@@ -328,12 +348,14 @@ onUnmounted(() => {
   if (saveTimer) flushPrefs();
   savePos(true);
   hls?.destroy();
+  if (full.value) droid?.fullscreen?.(false);
 });
 </script>
 
 <template>
-  <div ref="box" class="vplayer" :class="{ idle }" role="dialog" :aria-label="title" @pointermove="wake" @pointerdown="wake">
+  <div ref="box" class="vplayer" :class="{ idle, full }" role="dialog" :aria-label="title" @pointermove="wake" @pointerdown="wake">
     <video ref="video" autoplay playsinline preload="auto" @click="toggle" @dblclick="toggleFull"
+      @webkitbeginfullscreen="nativeSubs(true)" @webkitendfullscreen="nativeSubs(false)"
       @timeupdate="sync(); savePos()" @progress="sync" @durationchange="sync" @pause="playing = false; idle = false; savePos(true)" @play="playing = true; wake()"
       @ended="savePos(true)" @volumechange="volume = video!.volume; muted = video!.muted"
       @waiting="buffering = true" @loadstart="buffering = true" @playing="buffering = false" @canplay="buffering = false" @seeked="buffering = false"></video>
@@ -433,7 +455,7 @@ onUnmounted(() => {
   position: fixed; inset: var(--titlebar) 0 0; z-index: 30; background: #000; color: #fff;
   display: flex; align-items: center; justify-content: center;
 }
-.vplayer:fullscreen { inset: 0; }
+.vplayer:fullscreen, .vplayer.full { inset: 0; }
 .vplayer.idle { cursor: none; }
 /* pinned to the box: a grid row sized by the video itself let tall frames spill under the window edge */
 video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }

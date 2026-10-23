@@ -376,6 +376,8 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  // iOS: the video took the audio session, and the music output it stopped has to be opened again
+  if (!droid && document.documentElement.classList.contains("mobile")) invoke("audio_after_video").catch(() => {});
   window.removeEventListener("keydown", onKey);
   document.removeEventListener("fullscreenchange", onFull);
   clearTimeout(idleTimer);

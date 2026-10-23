@@ -1,18 +1,26 @@
-use rodio::{ChannelCount, Decoder, Player, Sample, SampleRate, Source, mixer::Mixer};
+use rodio::{ChannelCount, Decoder, Player, Sample, SampleRate, Source, mixer::{Mixer, MixerSource}};
 use serde::Serialize;
 use tauri::Manager;
 use std::{
     fs::File,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicI32, AtomicU64, Ordering::Relaxed},
+        atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering::Relaxed},
+        mpsc::{Sender, channel},
     },
     time::Duration,
 };
 
-/// The device sink is not `Send`, so it lives on its own parked thread; only the mixer is shared.
+/// The players feed the app's own mixer, which the device output pulls through a `Relay`, so the output
+/// can be reopened without touching them. The device sink is not `Send`: it lives on its own thread.
 pub struct AudioState {
     mixer: Mixer,
+    output: Arc<Mutex<MixerSource>>,
+    /// dropping it closes the device output
+    device: Mutex<Option<Sender<()>>>,
+    /// iOS: a video took the audio session and the output it stopped never starts again, so the next
+    /// play or resume opens a new one (`audio_after_video`)
+    reopen: AtomicBool,
     player: Mutex<Option<Player>>,
     eq: Arc<[AtomicI32; 2 * BANDS]>,
     /// bumped by every `play`, so a song that took long to open doesn't start over a newer pick
@@ -30,21 +38,91 @@ pub struct PlayerStatus {
 
 impl AudioState {
     pub fn new() -> Result<Self, String> {
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || match rodio::DeviceSinkBuilder::open_default_sink() {
-            Ok(sink) => {
-                let _ = tx.send(Ok(sink.mixer().clone()));
-                loop {
-                    std::thread::park();
-                }
-            }
-            Err(e) => {
-                let _ = tx.send(Err(e.to_string()));
-            }
-        });
-        let mixer = rx.recv().map_err(|e| e.to_string())??;
-        Ok(Self { mixer, player: Mutex::new(None), play_id: AtomicU64::new(0), eq: Arc::new(std::array::from_fn(|i| AtomicI32::new(if i < BANDS { 0 } else { FREQS[i - BANDS] as i32 }))) })
+        let (tx, rx) = channel();
+        // the app's mixer takes the device's channels and rate, so nothing is converted on the way
+        let device = open_output(move |out, channels, rate| {
+            let (mixer, output) = rodio::mixer::mixer(channels, rate);
+            let output = Arc::new(Mutex::new(output));
+            out.add(Relay::new(output.clone()));
+            let _ = tx.send((mixer, output));
+        })?;
+        let (mixer, output) = rx.recv().map_err(|e| e.to_string())?;
+        Ok(Self {
+            mixer,
+            output,
+            device: Mutex::new(Some(device)),
+            reopen: AtomicBool::new(false),
+            player: Mutex::new(None),
+            play_id: AtomicU64::new(0),
+            eq: Arc::new(std::array::from_fn(|i| AtomicI32::new(if i < BANDS { 0 } else { FREQS[i - BANDS] as i32 }))),
+        })
     }
+
+    /// Opens a new device output in place of the old one, when `audio_after_video` asked for it.
+    fn reopen_if_asked(&self) {
+        if !self.reopen.swap(false, Relaxed) {
+            return;
+        }
+        #[cfg(target_os = "ios")]
+        crate::audio_session();
+        let mut device = self.device.lock().unwrap();
+        device.take(); // the old output goes first, so only one pulls from the mixer
+        let output = self.output.clone();
+        *device = open_output(move |out, _, _| out.add(Relay::new(output))).ok();
+    }
+}
+
+/// Opens the default output on its own thread. `feed` adds what it plays to its mixer, given the
+/// device's channels and rate; dropping the returned sender closes it.
+fn open_output(feed: impl FnOnce(&Mixer, ChannelCount, SampleRate) + Send + 'static) -> Result<Sender<()>, String> {
+    let (tx, rx) = channel();
+    std::thread::spawn(move || match rodio::DeviceSinkBuilder::open_default_sink() {
+        Ok(mut sink) => {
+            sink.log_on_drop(false);
+            feed(sink.mixer(), sink.config().channel_count(), sink.config().sample_rate());
+            let (close, closed) = channel::<()>();
+            let _ = tx.send(Ok(close));
+            let _ = closed.recv();
+        }
+        Err(e) => {
+            let _ = tx.send(Err(e.to_string()));
+        }
+    });
+    rx.recv().map_err(|e| e.to_string())?
+}
+
+/// The app's mixer as the device output's input: silence while nothing plays, so the output never drops it.
+struct Relay {
+    mixer: Arc<Mutex<MixerSource>>,
+    channels: ChannelCount,
+    rate: SampleRate,
+}
+
+impl Relay {
+    fn new(mixer: Arc<Mutex<MixerSource>>) -> Self {
+        let (channels, rate) = { let m = mixer.lock().unwrap(); (m.channels(), m.sample_rate()) };
+        Self { mixer, channels, rate }
+    }
+}
+
+impl Iterator for Relay {
+    type Item = Sample;
+    fn next(&mut self) -> Option<Sample> {
+        Some(self.mixer.lock().unwrap().next().unwrap_or(0.0))
+    }
+}
+
+impl Source for Relay {
+    fn current_span_len(&self) -> Option<usize> { None }
+    fn channels(&self) -> ChannelCount { self.channels }
+    fn sample_rate(&self) -> SampleRate { self.rate }
+    fn total_duration(&self) -> Option<Duration> { None }
+}
+
+/// iOS: a video played, and the music output it stopped has to be reopened on the next play or resume.
+#[tauri::command]
+pub fn audio_after_video(state: tauri::State<AudioState>) {
+    state.reopen.store(true, Relaxed);
 }
 
 impl AudioState {
@@ -84,6 +162,7 @@ pub async fn play(app: tauri::AppHandle, path: String, volume: f32) -> Result<bo
     if state.play_id.load(Relaxed) != id {
         return Ok(false);
     }
+    state.reopen_if_asked();
     let player = Player::connect_new(&state.mixer);
     player.set_volume(volume as _);
     player.append(source.fade_in(FADE));
@@ -114,6 +193,9 @@ pub async fn queue_next(app: tauri::AppHandle, path: String) -> Result<(), Strin
 
 #[tauri::command]
 pub fn set_paused(state: tauri::State<AudioState>, paused: bool) {
+    if !paused {
+        state.reopen_if_asked();
+    }
     if let Some(p) = state.player.lock().unwrap().as_ref() {
         if paused { p.pause() } else { p.play() }
     }

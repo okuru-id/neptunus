@@ -337,6 +337,20 @@ fn ios_signing() -> Option<(String, String)> {
     Some((value("ExpirationDate", "date")?, value("TeamName", "string").unwrap_or_default()))
 }
 
+/// iOS mutes the default (solo ambient) session when the app leaves the foreground, and a video in the
+/// webview may leave it changed, so the music sets it again (`player::AudioState::reopen_if_asked`).
+#[cfg(target_os = "ios")]
+pub fn audio_session() {
+    use objc2_avf_audio::{AVAudioSession, AVAudioSessionCategoryPlayback};
+    unsafe {
+        let session = AVAudioSession::sharedInstance();
+        if let Some(playback) = AVAudioSessionCategoryPlayback {
+            let _ = session.setCategory_error(playback);
+        }
+        let _ = session.setActive_error(true);
+    }
+}
+
 #[tauri::command]
 async fn scan_folder(db: State<'_, Db>, path: String) -> R<Vec<Track>> {
     db.add_folder(&path).map_err(e)?;
@@ -650,16 +664,8 @@ pub fn run() {
             #[cfg(target_os = "ios")]
             let _ = db.rehome(&dir.to_string_lossy());
             app.manage(db);
-            // iOS mutes the default (solo ambient) session when the app leaves the foreground.
             #[cfg(target_os = "ios")]
-            unsafe {
-                use objc2_avf_audio::{AVAudioSession, AVAudioSessionCategoryPlayback};
-                let session = AVAudioSession::sharedInstance();
-                if let Some(playback) = AVAudioSessionCategoryPlayback {
-                    let _ = session.setCategory_error(playback);
-                }
-                let _ = session.setActive_error(true);
-            }
+            audio_session();
             app.manage(media::init(app.handle()));
             // Drives the player poll in the UI: webview timers get throttled while the window is
             // hidden (Android in the background, tray), which would stall the move to the next song.
@@ -750,6 +756,7 @@ pub fn run() {
             check_update,
             player::play,
             player::set_paused,
+            player::audio_after_video,
             player::queue_next,
             player::seek,
             player::set_volume,

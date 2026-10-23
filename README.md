@@ -114,7 +114,7 @@ Open the APK on the phone (allow installs from that source when asked), or from 
 adb install -r Neptunus_*_arm64.apk
 ```
 
-Updates install over the previous version. On first launch, allow access to music and videos so the library can read your folders.
+Updates install over the previous version: **Unduh & pasang** in the app downloads the new APK and opens the Android installer (the first time, allow Neptunus to install apps). On first launch, allow access to music and videos so the library can read your folders.
 
 ### iOS
 

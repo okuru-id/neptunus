@@ -9,9 +9,27 @@ on:
     tags: ["v*"]
 
 jobs:
-  build:
+  # The draft release comes first, so every job uploads to it as soon as its build is done.
+  release:
     permissions:
-      contents: write # create the draft release
+      contents: write
+    runs-on: ubuntu-latest
+    outputs:
+      id: ${{ steps.draft.outputs.id }}
+    steps:
+      - id: draft
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
+            --title "Neptunus $GITHUB_REF_NAME" --notes "See the assets below to download and install Neptunus."
+          echo "id=$(gh release view "$GITHUB_REF_NAME" --json databaseId --jq .databaseId)" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: release
+    permissions:
+      contents: write # upload to the draft release
     strategy:
       fail-fast: false
       matrix:
@@ -68,10 +86,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
         with:
           args: ${{ matrix.args }}
-          tagName: ${{ github.ref_name }}
-          releaseName: Neptunus ${{ github.ref_name }}
-          releaseBody: See the assets below to download and install Neptunus.
-          releaseDraft: true
+          releaseId: ${{ needs.release.outputs.id }}
 
       # Also keep the installers as a workflow artifact, so a failed release step doesn't lose the build.
       - name: Upload installers as artifact
@@ -91,6 +106,7 @@ jobs:
   # One universal IPA for iPhone and iPad, built without code signing (no Apple Developer secrets needed).
   # Sign it on install with your own Apple ID through AltStore or Sideloadly; a free Apple ID re-signs every 7 days.
   ios:
+    needs: release
     permissions:
       contents: write
     runs-on: macos-latest
@@ -129,7 +145,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
-          for i in 1 2 3 4 5 6; do gh release view "$GITHUB_REF_NAME" && break; sleep 20; done
           gh release upload "$GITHUB_REF_NAME" Neptunus_*_unsigned.ipa --clobber
 
   # With your own Apple Developer certificate the IPA is also signed and published with a manifest.plist, so
@@ -191,6 +206,7 @@ jobs:
   # ANDROID_KEYSTORE_PASSWORD when set, so updates install over the previous version; otherwise with a throwaway key
   # (still installable, but each release then needs the old app uninstalled first).
   android:
+    needs: release
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -256,5 +272,4 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
-          for i in 1 2 3 4 5 6; do gh release view "$GITHUB_REF_NAME" && break; sleep 20; done
           gh release upload "$GITHUB_REF_NAME" Neptunus_*_arm64.apk --clobber

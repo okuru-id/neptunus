@@ -14,11 +14,14 @@ import android.graphics.drawable.Icon
 import android.media.MediaMetadata
 import android.media.session.MediaSession
 import android.media.session.PlaybackState
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
+import androidx.core.content.FileProvider
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -80,6 +83,25 @@ class MediaService : Service() {
     fun state(s: Int, secs: Double) = ours {
       state = s; position = secs
       changed(view.context)
+    }
+
+    // an update downloaded into the cache (`android_apk`) goes to the system installer; without the
+    // "install unknown apps" permission the settings page for it opens instead and this returns false
+    @JavascriptInterface
+    fun installApk(path: String): Boolean {
+      val ctx = view.context
+      val allowed = Build.VERSION.SDK_INT < 26 || ctx.packageManager.canRequestPackageInstalls()
+      ours {
+        val file = java.io.File(path).canonicalFile
+        if (!file.path.startsWith(ctx.cacheDir.canonicalPath + "/") || !file.name.endsWith(".apk")) return@ours
+        val intent = if (allowed) {
+          Intent(Intent.ACTION_VIEW)
+            .setDataAndType(FileProvider.getUriForFile(ctx, ctx.packageName + ".fileprovider", file), "application/vnd.android.package-archive")
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        } else Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + ctx.packageName))
+        ctx.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+      }
+      return allowed
     }
 
     // the video player's fullscreen: the WebView's own requestFullscreen does nothing here, so hide

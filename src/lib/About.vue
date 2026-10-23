@@ -5,7 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { onMounted, onUnmounted, reactive, ref } from "vue";
 import Icon from "./Icon.vue";
-import { installUpdate, updater } from "./updater";
+import { installUpdate, openApk, updater } from "./updater";
 import license from "../../LICENSE?raw";
 
 // Settings › Tentang: app version, a manual update check (same GitHub lookup as the startup notice) and links.
@@ -46,7 +46,7 @@ async function toggleReleases() {
 async function download(name: string, url: string) {
   dl[url] = { pct: 0 };
   try {
-    dl[url].done = await invoke<string>("release_download", { url, name });
+    dl[url].done = openApk(await invoke<string>("release_download", { url, name }));
   } catch (e) {
     dl[url].error = String(e);
   }
@@ -107,7 +107,7 @@ const LINKS = [
         <template v-else-if="state.kind === 'new'">
           <span v-if="updater.busy">Mengunduh installer… {{ updater.pct ? `${updater.pct}%` : "" }}</span>
           <span v-else-if="updater.error">{{ updater.error }}</span>
-          <span v-else-if="updater.done">{{ updater.done === "ota" ? "Ketuk Pasang di dialog iOS; pembaruan berjalan di layar Utama." : mobile ? "Dibuka di browser untuk diunduh." : `Tersimpan di ${updater.done}, pemasangan dibuka.` }}</span>
+          <span v-else-if="updater.done">{{ updater.done === "ota" ? "Ketuk Pasang di dialog iOS; pembaruan berjalan di layar Utama." : updater.done === "apk" ? "Ketuk Perbarui di dialog Android." : updater.done === "apk-permission" ? "Izinkan Neptunus memasang aplikasi, lalu ketuk Unduh & pasang lagi." : mobile ? "Dibuka di browser untuk diunduh." : `Tersimpan di ${updater.done}, pemasangan dibuka.` }}</span>
           <span v-else>{{ mobile ? "Unduh installer langsung." : "Unduh installer dan pasang langsung dari sini." }}</span>
           <span v-if="updater.busy" class="bar" :style="{ '--pct': `${updater.pct}%` }"></span>
         </template>

@@ -124,15 +124,15 @@ fn release_asset() -> R<(String, String)> {
         .ok_or_else(|| "Installer untuk sistem ini belum ada di rilis terbaru.".into())
 }
 
-/// Downloads a release file into Downloads, reporting `{ key, pct }` as `release-download` events.
-#[cfg(desktop)]
-fn download_release(app: &tauri::AppHandle, url: &str, name: &str, key: &str) -> R<std::path::PathBuf> {
+/// Downloads a release file into `dir` (Downloads on desktop), reporting `{ key, pct }` as
+/// `release-download` events.
+#[cfg(not(target_os = "ios"))]
+fn download_release(app: &tauri::AppHandle, url: &str, name: &str, key: &str, dir: &std::path::Path) -> R<std::path::PathBuf> {
     use std::io::{Read, Write};
     // only this project's release files, and a plain file name to save them under
     if !url.starts_with("https://github.com/okuru-id/neptunus/releases/download/") || name.contains(['/', '\\']) || name.starts_with('.') {
         return Err("Alamat file rilis tidak valid.".into());
     }
-    let dir = app.path().download_dir().map_err(|e| e.to_string())?;
     let path = dir.join(name);
     let part = dir.join(format!("{name}.part"));
     let res = attohttpc::get(url).header("User-Agent", "neptunus").send().and_then(|r| r.error_for_status())
@@ -156,7 +156,7 @@ fn download_release(app: &tauri::AppHandle, url: &str, name: &str, key: &str) ->
     }
     drop(file);
     std::fs::rename(&part, &path).map_err(|e| e.to_string())?;
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", desktop))]
     if name.ends_with(".AppImage") {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
@@ -165,11 +165,13 @@ fn download_release(app: &tauri::AppHandle, url: &str, name: &str, key: &str) ->
 }
 
 /// Gets the new version's installer without a trip to GitHub. Desktop: downloaded into Downloads
-/// and opened, so the system installer takes over (an AppImage is shown instead: it just replaces
-/// the old file). Phones: the APK/IPA link goes to the browser, which downloads it and hands it to
-/// the installer (Android) or the Files app, for SideStore to sign (iOS).
+/// and installed: a .deb/.rpm in a terminal, other installers opened (an AppImage is shown instead:
+/// it just replaces the old file). Android: the APK into the app's cache, returned as `apk:<path>`
+/// for the UI to hand to the system installer (`NeptunusAndroid.installApk`). iOS: over the air when
+/// the release is signed, else the IPA link goes to the browser.
 #[tauri::command]
 async fn update_install(app: tauri::AppHandle) -> R<String> {
+    #[cfg(not(target_os = "android"))]
     use tauri_plugin_opener::OpenerExt;
     blocking(move || {
         // iOS: a release signed with the project's certificate has a manifest.plist, and iOS installs it
@@ -183,14 +185,17 @@ async fn update_install(app: tauri::AppHandle) -> R<String> {
             return Ok("ota".into());
         }
         let (name, url) = release_asset()?;
-        #[cfg(mobile)]
+        #[cfg(target_os = "ios")]
         {
             app.opener().open_url(&url, None::<&str>).map_err(|e| e.to_string())?;
             Ok(name)
         }
+        #[cfg(target_os = "android")]
+        return android_apk(&app, &url, &name, "update");
         #[cfg(desktop)]
         {
-            let path = download_release(&app, &url, &name, "update")?;
+            let dir = app.path().download_dir().map_err(|e| e.to_string())?;
+            let path = download_release(&app, &url, &name, "update", &dir)?;
             if name.ends_with(".AppImage") {
                 app.opener().reveal_item_in_dir(&path).map_err(|e| e.to_string())?;
             } else if !install_in_terminal(&path) {
@@ -202,6 +207,24 @@ async fn update_install(app: tauri::AppHandle) -> R<String> {
     .await
 }
 
+/// An APK into the app's cache (shared with the installer through the FileProvider), kept from an
+/// earlier try so tapping again after allowing installs doesn't download it twice.
+#[cfg(target_os = "android")]
+fn android_apk(app: &tauri::AppHandle, url: &str, name: &str, key: &str) -> R<String> {
+    let dir = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("updates");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    for old in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+        if old.file_name() != name {
+            let _ = std::fs::remove_file(old.path());
+        }
+    }
+    let path = match dir.join(name) {
+        p if p.exists() => p,
+        _ => download_release(app, url, name, key, &dir)?,
+    };
+    Ok(format!("apk:{}", path.to_string_lossy()))
+}
+
 /// A .deb/.rpm goes to `sudo apt/dnf install` in a terminal (the password asked there, like any
 /// install) instead of the software center that opening the file starts. False when there is no
 /// terminal to run it in, so the caller opens the file instead.
@@ -209,6 +232,10 @@ async fn update_install(app: tauri::AppHandle) -> R<String> {
 fn install_in_terminal(path: &std::path::Path) -> bool {
     #[cfg(target_os = "linux")]
     {
+        // only packages: an AppImage or anything else is just shown
+        if !path.extension().is_some_and(|e| e == "deb" || e == "rpm") {
+            return false;
+        }
         let has = |p: &str| std::path::Path::new(p).exists();
         let cmd = if path.extension().is_some_and(|e| e == "deb") {
             "sudo apt install -y"
@@ -264,11 +291,16 @@ async fn release_list() -> R<Vec<Release>> {
     .await
 }
 
-/// One release file into Downloads, then shown in the file manager. Phones hand the link to the browser.
+/// One release file into Downloads: a .deb/.rpm then installs in a terminal, anything else is shown in
+/// the file manager. Android installs an APK like `update_install`; iOS hands the link to the browser.
 #[tauri::command]
 async fn release_download(app: tauri::AppHandle, url: String, name: String) -> R<String> {
     use tauri_plugin_opener::OpenerExt;
     blocking(move || {
+        #[cfg(target_os = "android")]
+        if name.ends_with(".apk") {
+            return android_apk(&app, &url, &name, &url);
+        }
         #[cfg(mobile)]
         {
             app.opener().open_url(&url, None::<&str>).map_err(|e| e.to_string())?;
@@ -276,8 +308,11 @@ async fn release_download(app: tauri::AppHandle, url: String, name: String) -> R
         }
         #[cfg(desktop)]
         {
-            let path = download_release(&app, &url, &name, &url)?;
-            let _ = app.opener().reveal_item_in_dir(&path);
+            let dir = app.path().download_dir().map_err(|e| e.to_string())?;
+            let path = download_release(&app, &url, &name, &url, &dir)?;
+            if !install_in_terminal(&path) {
+                let _ = app.opener().reveal_item_in_dir(&path);
+            }
             Ok(path.to_string_lossy().into_owned())
         }
     })

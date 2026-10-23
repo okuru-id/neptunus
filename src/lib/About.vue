@@ -107,7 +107,7 @@ const LINKS = [
         <template v-else-if="state.kind === 'new'">
           <span v-if="updater.busy">Mengunduh installer… {{ updater.pct ? `${updater.pct}%` : "" }}</span>
           <span v-else-if="updater.error">{{ updater.error }}</span>
-          <span v-else-if="updater.done">{{ mobile ? "Dibuka di browser untuk diunduh." : `Tersimpan di ${updater.done}, pemasangan dibuka.` }}</span>
+          <span v-else-if="updater.done">{{ updater.done === "ota" ? "Ketuk Pasang di dialog iOS; pembaruan berjalan di layar Utama." : mobile ? "Dibuka di browser untuk diunduh." : `Tersimpan di ${updater.done}, pemasangan dibuka.` }}</span>
           <span v-else>{{ mobile ? "Unduh installer langsung." : "Unduh installer dan pasang langsung dari sini." }}</span>
           <span v-if="updater.busy" class="bar" :style="{ '--pct': `${updater.pct}%` }"></span>
         </template>

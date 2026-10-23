@@ -1519,7 +1519,7 @@ li:hover .row-act, .row-act:focus-visible, .row-menu.open .row-act, .row-act.ope
 
 /* ---------- S3 panel ---------- */
 .cloud { display: flex; flex-direction: column; gap: 16px; }
-.panel.conn { max-width: none; }
+.panel.conn, .panel.look { max-width: none; }
 .look-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
 .look-text { flex: 1; min-width: 180px; display: flex; flex-direction: column; gap: 2px; font-size: 13px; color: var(--on-surface-variant); }
 .look-text strong { font-size: 15px; font-weight: 700; color: var(--on-surface); }

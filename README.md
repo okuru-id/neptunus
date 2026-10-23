@@ -40,7 +40,7 @@ Local files, your own S3 bucket and streaming extensions, wrapped in a Material 
 | **Playback** | Gapless queue, shuffle, repeat, equalizer. Native decoding of MP3, FLAC, AAC/M4A, OGG, Opus and WAV (rodio + symphonia). |
 | **Synced lyrics** | From a sidecar `.lrc`, the embedded tag or [LRCLIB](https://lrclib.net), cached after the first download. |
 | **Cloud** | Stream from any S3-compatible bucket without downloading; tags, covers and `.lrc` are read with range requests. |
-| **Extensions** | SpotiFLAC-compatible extensions add online catalogs, downloads and lyrics. Install from a repository URL or a package file. |
+| **Extensions** | [Mornye](https://mornye.com)/SpotiFLAC-compatible extensions (`.sflx`) add online catalogs, downloads and lyrics. The Mornye registry is loaded by default; any other repository URL or a package file works too. |
 | **System integration** | MPRIS (Linux), SMTC (Windows), Now Playing (macOS, iOS lock screen), Android media notification, system tray. Keeps playing in the background on mobile. |
 
 ### 🎬 Video
@@ -167,6 +167,16 @@ This needs a paid [Apple Developer Program](https://developer.apple.com/programs
    ideviceinstaller install Neptunus_signed.ipa
    ```
 
+5. **Updates without a cable.** Add the certificate to the repository's Actions secrets once:
+
+   ```bash
+   base64 -w0 ~/ios-cert/neptunus.p12 | gh secret set IOS_P12
+   gh secret set IOS_P12_PASSWORD
+   base64 -w0 ~/ios-cert/Neptunus_Dev.mobileprovision | gh secret set IOS_PROFILE
+   ```
+
+   From then on every release also has a signed `Neptunus_<version>.ipa` and a `manifest.plist`, and **Unduh & pasang** in the app installs the update over the air (iOS asks to confirm, then the app updates on the home screen). Only devices in the profile can install it; after adding a device, download the profile again and update `IOS_PROFILE`.
+
 Unlock the iPhone and tap **Trust** the first time it is connected. The certificate and profile last a year. Back up `neptunus.key` and `neptunus.p12`; losing them means making a new certificate. Only sign with a certificate you own: misusing an enterprise certificate gets it revoked for everyone.
 
 </details>
@@ -198,7 +208,7 @@ Issues and pull requests are welcome. If Neptunus is useful to you, a ⭐ helps 
 ## Credits
 
 - [PixelPlayer](https://github.com/PixelPlayerHQ/PixelPlayer) by Theo Vilardo, the Material 3 Expressive music player for Android that inspired the design. If you're on Android, go give it a star.
-- [SpotiFLAC](https://spotiflac.com/extension), whose extension format the music extensions follow.
+- [Mornye](https://mornye.com) (formerly [SpotiFLAC](https://spotiflac.com/extension)), whose extension format and [extension registry](https://github.com/mornyeapp/Mornye-Extension) the music extensions follow.
 - [LRCLIB](https://lrclib.net) for the free lyrics API.
 - [Stremio](https://www.stremio.com) for the open addon protocol.
 

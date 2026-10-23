@@ -1,4 +1,4 @@
-//! Extensions in the SpotiFLAC format (https://spotiflac.zarz.moe/docs): a zip (`.spotiflac-ext`/`.sflx`)
+//! Extensions in the Mornye format (https://mornye.com/docs; Mornye is the successor of SpotiFLAC): a zip (`.sflx`/`.spotiflac-ext`)
 //! with `manifest.json` + `index.js`, run in QuickJS. Each loaded extension owns one thread with its own
 //! JS context; calls are queued to it. The sandbox API lives in `ext_prelude.js`.
 //!
@@ -511,6 +511,117 @@ impl Host {
         }
     }
 
+    /// `file.downloadSegments` (downloadSegments@1): the parts of a segmented stream (DASH, HLS), each a
+    /// URL or `{url, headers}`, fetched one after another into one file. A part that fails is fetched
+    /// again from its start a few times.
+    fn segments<'js>(&self, list: &str, path: &str, headers: &str, cb: Option<Function<'js>>) -> String {
+        let mut kind = "download_error";
+        let mut run = || -> R<String> {
+            let list: Vec<Value> = serde_json::from_str(list).map_err(|e| e.to_string())?;
+            let dest = self.path(path)?;
+            if let Some(d) = dest.parent() {
+                std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+            }
+            let base: Map<String, Value> = serde_json::from_str(headers).unwrap_or_default();
+            *self.deadline.borrow_mut() = Instant::now() + DOWNLOAD_TIMEOUT;
+            let part = dest.with_extension(match dest.extension() {
+                Some(x) => format!("part.{}", x.to_string_lossy()),
+                None => "part".into(),
+            });
+            let mut out = std::fs::File::create(&part).map_err(|e| e.to_string())?;
+            let (count, mut got, mut buf, mut last) = (list.len(), 0u64, vec![0u8; 64 * 1024], Instant::now());
+            for (i, seg) in list.iter().enumerate() {
+                let url = seg.as_str().or_else(|| seg["url"].as_str()).ok_or("segment without a URL")?;
+                let mut hs = base.clone();
+                hs.extend(seg["headers"].as_object().cloned().unwrap_or_default());
+                let (start, mut tries) = (got, 0);
+                loop {
+                    let err = match self.http(self.timeout, false, url, "GET", "", &hs) {
+                        Ok(res) if res.is_success() => {
+                            let mut body = res.split().2;
+                            loop {
+                                match body.read(&mut buf) {
+                                    Ok(0) => break None,
+                                    Ok(n) => {
+                                        out.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+                                        got += n as u64;
+                                    }
+                                    Err(e) => break Some(e.to_string()),
+                                }
+                                if last.elapsed() > Duration::from_millis(250) {
+                                    last = Instant::now();
+                                    if let Some(cb) = &cb {
+                                        let _: rquickjs::Result<()> = cb.call((got as f64, 0.0, i as f64, count as f64));
+                                    }
+                                    if !self.report(i as f64 * 100.0 / count as f64) {
+                                        drop(out);
+                                        let _ = std::fs::remove_file(&part);
+                                        kind = "cancelled";
+                                        return Err(CANCELLED_MSG.into());
+                                    }
+                                }
+                            }
+                        }
+                        Ok(res) => {
+                            let code = res.status().as_u16();
+                            if matches!(code, 401 | 403 | 410) {
+                                kind = "expired_stream"; // signed segment URLs that ran out
+                            }
+                            Some(format!("HTTP error {code}"))
+                        }
+                        Err(e) if e == CANCELLED_MSG => { kind = "cancelled"; return Err(e) }
+                        Err(e) => Some(e),
+                    };
+                    let Some(e) = err else { break };
+                    tries += 1;
+                    if tries > 3 || kind == "expired_stream" {
+                        drop(out);
+                        let _ = std::fs::remove_file(&part);
+                        return Err(format!("segment {} of {count}: {e}", i + 1));
+                    }
+                    out.set_len(start).and_then(|_| std::io::Seek::seek(&mut out, std::io::SeekFrom::Start(start))).map_err(|e| e.to_string())?;
+                    got = start;
+                }
+            }
+            if let Some(cb) = &cb {
+                let _: rquickjs::Result<()> = cb.call((got as f64, got as f64, count as f64, count as f64));
+            }
+            drop(out);
+            std::fs::rename(&part, &dest).map_err(|e| e.to_string())?;
+            Ok(dest.to_string_lossy().into_owned())
+        };
+        match run() {
+            Ok(p) => json!({ "success": true, "path": p }).to_string(),
+            Err(e) => json!({ "success": false, "error": e, "error_type": kind }).to_string(),
+        }
+    }
+
+    /// `ffmpeg.convert`: remuxes (`codec: "copy"`, the default) or re-encodes the audio of `src` into
+    /// `dst` with the ffmpeg on the PATH. Phones have none, so it fails there.
+    fn ffmpeg(&self, src: &str, dst: &str, opts: &str) -> String {
+        let run = || -> R<String> {
+            let (src, dst) = (self.path(src)?, self.path(dst)?);
+            let o: Value = serde_json::from_str(opts).unwrap_or_default();
+            let codec = o["codec"].as_str().filter(|c| !c.is_empty()).unwrap_or("copy");
+            if !codec.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                return Err(format!("invalid codec {codec}"));
+            }
+            let ok = std::process::Command::new("ffmpeg")
+                .args(["-v", "error", "-y", "-i"]).arg(&src).args(["-vn", "-c:a", codec]).arg(&dst)
+                .status()
+                .map_err(|_| "ffmpeg tidak ditemukan. Pasang ffmpeg untuk unduhan ini.".to_owned())?;
+            if !ok.success() {
+                let _ = std::fs::remove_file(&dst);
+                return Err("ffmpeg gagal mengonversi file".into());
+            }
+            Ok(dst.to_string_lossy().into_owned())
+        };
+        match run() {
+            Ok(p) => json!({ "success": true, "path": p }).to_string(),
+            Err(e) => json!({ "success": false, "error": e, "error_type": "conversion_error" }).to_string(),
+        }
+    }
+
     /// Passes download progress on (negative: unknown); false once the download is cancelled.
     fn report(&self, pct: f64) -> bool {
         self.progress.borrow().as_ref().is_none_or(|p| p(pct.min(100.0)))
@@ -697,6 +808,12 @@ impl Vm {
             set("download", Function::new(ctx.clone(), move |url: String, path: String, headers: String, cb: rquickjs::function::Opt<rquickjs::Value<'_>>| {
                 host.download(&url, &path, &headers, cb.0.and_then(|v| v.into_function()))
             }))?;
+            let host = vm.host.clone();
+            set("segments", Function::new(ctx.clone(), move |list: String, path: String, headers: String, cb: rquickjs::function::Opt<rquickjs::Value<'_>>| {
+                host.segments(&list, &path, &headers, cb.0.and_then(|v| v.into_function()))
+            }))?;
+            let host = vm.host.clone();
+            set("ffmpeg", Function::new(ctx.clone(), move |src: String, dst: String, opts: String| host.ffmpeg(&src, &dst, &opts)))?;
             let host = vm.host.clone();
             set("file", Function::new(ctx.clone(), move |op: String, path: String, data: String| host.file(&op, &path, &data).unwrap_or_default()))?;
             let host = vm.host.clone();
@@ -1275,6 +1392,31 @@ mod transform_tests {
         let res: Value = serde_json::from_str(&host.transform("in.bin", "out.bin", &opts.to_string(), None)).unwrap();
         assert_eq!(res["success"], true, "{res}");
         assert_eq!(std::fs::read(dir.join("files/out.bin")).unwrap(), plain);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod segments_tests {
+    use super::*;
+
+    /// Real network: `cargo test joins_segments -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn joins_segments() {
+        let dir = std::env::temp_dir().join(format!("neptunus-segments-{}", std::process::id()));
+        let host = Host::new("t".into(), &json!({ "permissions": { "network": ["test-streams.mux.dev"] } }), dir.clone());
+        let base = "https://test-streams.mux.dev/x36xhzz/url_2/";
+        let list = attohttpc::get(format!("{base}193039199_mp4_h264_aac_ld_7.m3u8")).send().unwrap().text().unwrap();
+        let urls: Vec<String> = list.lines().filter(|l| !l.starts_with('#') && !l.is_empty()).take(3).map(|l| format!("{base}{l}")).collect();
+        let want: Vec<u8> = urls.iter().flat_map(|u| attohttpc::get(u).send().unwrap().bytes().unwrap()).collect();
+        // one plain URL, one object with headers, one plain URL
+        let segs = json!([urls[0], { "url": urls[1], "headers": { "Accept": "*/*" } }, urls[2]]);
+        let res: Value = serde_json::from_str(&host.segments(&segs.to_string(), "out.ts", "{}", None)).unwrap();
+        assert_eq!(res["success"], true, "{res}");
+        assert_eq!(std::fs::read(dir.join("files/out.ts")).unwrap(), want);
+        let res: Value = serde_json::from_str(&host.ffmpeg("out.ts", "out.m4a", r#"{"codec":"copy"}"#)).unwrap();
+        println!("ffmpeg: {res}");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

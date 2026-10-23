@@ -14,6 +14,8 @@ import { pasted, verify, verifyError, waiting } from "./verify";
 const emit = defineEmits<{ changed: [ExtInfo[]] }>();
 
 const REPO_KEY = "neptunus.extRepo";
+// Mornye (the successor of SpotiFLAC) keeps the extension registry; loaded when none was picked
+const DEFAULT_REPO = "https://github.com/mornyeapp/Mornye-Extension";
 const KIND_KEY = "neptunus.extKind";
 const installed = ref<ExtInfo[]>([]);
 const repoUrl = ref("");
@@ -201,8 +203,7 @@ async function action(e: ExtInfo, fn: string) {
 
 onMounted(() => {
   reload();
-  const saved = localStorage.getItem(REPO_KEY);
-  if (saved) loadRepo(saved);
+  loadRepo(localStorage.getItem(REPO_KEY) || DEFAULT_REPO);
 });
 </script>
 
@@ -223,7 +224,7 @@ onMounted(() => {
         <div class="id">
           <strong>{{ kind === "video" ? "Ekstensi video" : "Ekstensi musik" }}</strong>
           <span v-if="kind === 'video'">Katalog film dan serial untuk menu Video, dari URL manifest addon (format Stremio).</span>
-          <span v-else>Sumber katalog, unduhan dan lirik lagu. Format ekstensi SpotiFLAC (.spotiflac-ext).</span>
+          <span v-else>Sumber katalog, unduhan dan lirik lagu. Format ekstensi Mornye / SpotiFLAC (.sflx, .spotiflac-ext).</span>
         </div>
         <button v-if="kind === 'music'" class="btn tonal" :disabled="busy === 'file'" @click="installFile"><Icon name="upload" />Pasang dari file</button>
       </div>
@@ -235,7 +236,7 @@ onMounted(() => {
       </Transition>
 
       <form v-if="kind === 'music'" class="repo-form" @submit.prevent="loadRepo()">
-        <input v-model="repoUrl" placeholder="URL repository ekstensi SpotiFLAC (repo GitHub atau …/registry.json)" aria-label="URL repository" />
+        <input v-model="repoUrl" placeholder="URL repository ekstensi Mornye / SpotiFLAC (repo GitHub atau …/registry.json)" aria-label="URL repository" />
         <button class="btn filled" :disabled="repoBusy || !repoUrl.trim()"><Icon name="sync" />{{ repoBusy ? "Memuat…" : "Muat" }}</button>
       </form>
       <form v-else class="repo-form" @submit.prevent="installStremio">

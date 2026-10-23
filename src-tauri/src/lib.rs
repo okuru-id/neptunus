@@ -172,6 +172,16 @@ fn download_release(app: &tauri::AppHandle, url: &str, name: &str, key: &str) ->
 async fn update_install(app: tauri::AppHandle) -> R<String> {
     use tauri_plugin_opener::OpenerExt;
     blocking(move || {
+        // iOS: a release signed with the project's certificate has a manifest.plist, and iOS installs it
+        // over the old app itself (`itms-services`, Ad Hoc / Development); returns "ota" for the UI
+        #[cfg(target_os = "ios")]
+        if let Some(m) = github("releases/latest")?["assets"].as_array().into_iter().flatten()
+            .find(|a| a["name"] == "manifest.plist").and_then(|a| a["browser_download_url"].as_str())
+        {
+            let url = format!("itms-services://?action=download-manifest&url={m}");
+            app.opener().open_url(&url, None::<&str>).map_err(|e| e.to_string())?;
+            return Ok("ota".into());
+        }
         let (name, url) = release_asset()?;
         #[cfg(mobile)]
         {

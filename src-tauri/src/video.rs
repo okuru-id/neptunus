@@ -47,32 +47,31 @@ pub async fn video_list(app: AppHandle, db: State<'_, Db>) -> Result<Vec<Video>,
     .await
 }
 
-#[cfg(mobile)]
 mod fill;
 
 /// A URL the webview can stream: presigned for S3, the loopback server for local files on desktop.
 /// `None` for local files on phones: the UI uses `convertFileSrc` (the asset protocol) there.
-/// On phones remote videos go through the loopback server too, which downloads them in full (`fill`).
+/// Remote videos go through the loopback server too, which downloads them in full and keeps them
+/// on disk for a week (`fill`).
 #[tauri::command]
 pub async fn video_url(app: AppHandle, path: String) -> Result<Option<String>, String> {
     let remote = path.starts_with("http://") || path.starts_with("https://");
     let url = if path.starts_with("s3://") {
-        let app = app.clone();
+        let (app, path) = (app.clone(), path.clone());
         crate::blocking(move || crate::s3::presigned(&app, &path)).await?
     } else if remote {
-        path
+        path.clone()
     } else {
         #[cfg(desktop)]
         return serve::url(&path).map(Some);
         #[cfg(mobile)]
         return Ok(None);
     };
-    #[cfg(mobile)]
     if !url.split(['?', '#']).next().unwrap_or("").to_lowercase().ends_with(".m3u8") && !url.contains(char::is_whitespace) {
         let dir = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("video");
-        return serve::fill(url, &dir).map(Some);
+        // kept under the S3 path, not the presigned URL, which changes every time
+        return serve::fill(url, &path, &dir).map(Some);
     }
-    let _ = app;
     Ok(Some(url))
 }
 
@@ -90,30 +89,22 @@ fn mime(path: &str) -> &'static str {
 /// `None` when it isn't being downloaded here.
 #[tauri::command]
 pub fn video_buffered(at: f64) -> Option<f64> {
-    #[cfg(mobile)]
-    return serve::FILL.lock().unwrap().as_ref()?.1.buffered(at);
-    #[cfg(not(mobile))]
-    { let _ = at; None }
+    serve::FILL.lock().unwrap().as_ref()?.1.buffered(at)
 }
 
-/// The player of `url` closed: stops its download and deletes what it wrote. Another video may have
+/// The player of `url` closed: stops its download (what came down is kept). Another video may have
 /// started since, so only that one's.
 #[tauri::command]
 pub fn video_stop(url: String) {
-    #[cfg(mobile)]
-    {
-        let mut cur = serve::FILL.lock().unwrap();
-        if cur.as_ref().is_some_and(|(id, _)| url.ends_with(&format!("/~fill/{id}"))) {
-            cur.take().unwrap().1.close();
-        }
+    let mut cur = serve::FILL.lock().unwrap();
+    if cur.as_ref().is_some_and(|(id, _)| url.ends_with(&format!("/~fill/{id}"))) {
+        cur.take().unwrap().1.close();
     }
-    #[cfg(not(mobile))]
-    let _ = url;
 }
 
 /// WebKitGTK can't play media from a custom scheme (`asset://`), so desktop serves local videos over
 /// `http://127.0.0.1` with Range support. Only files handed out by `url` are served, under a random
-/// per-run token. On phones it serves the remote video being downloaded (`fill`) instead.
+/// per-run token. It also serves the remote video being downloaded (`fill`).
 #[cfg_attr(mobile, allow(dead_code))]
 mod serve {
     use std::collections::HashSet;
@@ -125,7 +116,6 @@ mod serve {
     static SERVER: OnceLock<(u16, String)> = OnceLock::new();
     static ALLOWED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
     /// The remote video being downloaded, by a number that changes with each one.
-    #[cfg(mobile)]
     pub static FILL: Mutex<Option<(u64, std::sync::Arc<super::fill::Fill>)>> = Mutex::new(None);
 
     pub fn url(path: &str) -> Result<String, String> {
@@ -134,25 +124,39 @@ mod serve {
         Ok(format!("http://127.0.0.1:{port}/{token}/{}", encode(path)))
     }
 
-    /// Starts downloading `url` into `dir`, dropping the previous video's download.
-    #[cfg(mobile)]
-    pub fn fill(url: String, dir: &std::path::Path) -> Result<String, String> {
+    /// Starts (or resumes) downloading `url` into `dir`, stopping the previous video's download.
+    pub fn fill(url: String, name: &str, dir: &std::path::Path) -> Result<String, String> {
         let (port, token) = server()?;
         let mut cur = FILL.lock().unwrap();
-        let id = match cur.take() {
-            Some((id, f)) => {
-                f.close();
-                id + 1
-            }
-            None => {
-                // leftovers from the last run
-                let _ = std::fs::remove_dir_all(dir);
-                0
-            }
-        };
+        let id = cur.take().map_or(0, |(id, f)| { f.close(); id + 1 });
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        *cur = Some((id, super::fill::Fill::start(url, dir.join(format!("{id}.part")))));
+        // one file per video, so playing it again finds what came down before
+        let key: String = { use sha2::Digest; sha2::Sha256::digest(name.as_bytes()).iter().take(16).map(|b| format!("{b:02x}")).collect() };
+        let path = dir.join(format!("{key}.part"));
+        let _ = std::fs::File::options().append(true).open(path.with_extension("meta")).and_then(|f| f.set_modified(std::time::SystemTime::now()));
+        let (d, keep) = (dir.to_owned(), path.clone());
+        std::thread::spawn(move || prune(&d, &keep));
+        *cur = Some((id, super::fill::Fill::start(url, path)));
         Ok(format!("http://127.0.0.1:{port}/{token}/~fill/{id}"))
+    }
+
+    /// Deletes the videos not played for a week, then the oldest while they take more than 10 GB.
+    fn prune(dir: &std::path::Path, keep: &std::path::Path) {
+        const WEEK: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
+        const CAP: u64 = 10 << 30;
+        let mut all: Vec<_> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "part") && p != keep)
+            .map(|p| (super::fill::used(&p).unwrap_or(std::time::UNIX_EPOCH), p.metadata().map_or(0, |m| m.len()), p))
+            .collect();
+        all.sort_by_key(|a| a.0);
+        let mut total: u64 = all.iter().map(|a| a.1).sum::<u64>() + keep.metadata().map_or(0, |m| m.len());
+        for (used, size, p) in all {
+            if total > CAP || used.elapsed().unwrap_or_default() > WEEK {
+                let _ = std::fs::remove_file(p.with_extension("meta"));
+                let _ = std::fs::remove_file(&p);
+                total -= size;
+            }
+        }
     }
 
     fn server() -> Result<(u16, String), String> {
@@ -220,7 +224,6 @@ mod serve {
                 }
             }
         }
-        #[cfg(mobile)]
         if let Some(id) = target.strip_prefix(&format!("/{token}/~fill/")) {
             let f = FILL.lock().unwrap().as_ref().filter(|(n, _)| id == n.to_string()).map(|(_, f)| f.clone());
             return match f {
@@ -270,7 +273,6 @@ mod serve {
 
     /// Serves the video being downloaded, waiting for the parts not there yet; sends the player to
     /// the source itself when it can't be downloaded here (HLS, unknown length, unreachable).
-    #[cfg(mobile)]
     fn send_fill(mut stream: TcpStream, f: &super::fill::Fill, method: &str, range: Option<String>) -> std::io::Result<()> {
         let Some((len, mime)) = f.head() else {
             return write!(stream, "HTTP/1.1 302 Found\r\nLocation: {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", f.url);

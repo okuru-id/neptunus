@@ -164,7 +164,14 @@ impl Host {
         );
         let res = self.send(&url, "GET", "", &Map::new())?;
         if !res.is_success() {
-            return Err(format!("signed-session bootstrap returned HTTP {}", res.status().as_u16()));
+            let code = res.status().as_u16();
+            // the gateway is down or busy: nothing to verify until it is back (no "verif" in the text,
+            // or the UI would point at the verification row)
+            if code == 429 || code >= 500 {
+                let wait = res.headers().get("retry-after").and_then(|v| v.to_str().ok()).map(|s| format!(" (coba lagi dalam {s} detik)")).unwrap_or_default();
+                return Err(format!("Gateway unduhan sedang tidak tersedia (HTTP {code}). Coba lagi beberapa saat lagi{wait}."));
+            }
+            return Err(format!("signed-session bootstrap returned HTTP {code}"));
         }
         let body = self.json(res)?;
         if self.adopt(&mut rec, &body) {
@@ -530,7 +537,15 @@ pub async fn ext_session_poll(app: AppHandle, text: Option<String>) -> R<Option<
     crate::blocking(move || {
         let exts = app.state::<Exts>();
         let file = inbox().unwrap_or_default();
-        let Some(text) = text.or_else(|| std::fs::read_to_string(&file).ok()) else { return Ok(None) };
+        let Some(text) = text.or_else(|| std::fs::read_to_string(&file).ok()) else {
+            // the verification window closed without a grant (closed by hand, or the page failed):
+            // stop waiting rather than spin until the timeout
+            #[cfg(desktop)]
+            if PENDING.lock().unwrap().is_none() && app.get_webview_window("ext-verify").is_none() {
+                return Err("Verifikasi dibatalkan: jendelanya ditutup sebelum selesai.".into());
+            }
+            return Ok(None);
+        };
         let _ = std::fs::remove_file(&file);
         let Some((grant, state)) = parse_callback(&text) else { return Ok(None) };
         let ours = |rec: &Rec| {

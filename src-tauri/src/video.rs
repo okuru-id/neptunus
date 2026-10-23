@@ -47,23 +47,76 @@ pub async fn video_list(app: AppHandle, db: State<'_, Db>) -> Result<Vec<Video>,
     .await
 }
 
+#[cfg(target_os = "ios")]
+mod fill;
+
 /// A URL the webview can stream: presigned for S3, the loopback server for local files on desktop.
-/// `None` on phones: the UI uses `convertFileSrc` (the asset protocol) there.
+/// `None` for local files on phones: the UI uses `convertFileSrc` (the asset protocol) there.
+/// On iOS remote videos go through the loopback server too, which downloads them in full (`fill`).
 #[tauri::command]
 pub async fn video_url(app: AppHandle, path: String) -> Result<Option<String>, String> {
-    if path.starts_with("s3://") {
-        return crate::blocking(move || crate::s3::presigned(&app, &path)).await.map(Some);
+    let remote = path.starts_with("http://") || path.starts_with("https://");
+    let url = if path.starts_with("s3://") {
+        let app = app.clone();
+        crate::blocking(move || crate::s3::presigned(&app, &path)).await?
+    } else if remote {
+        path
+    } else {
+        #[cfg(desktop)]
+        return serve::url(&path).map(Some);
+        #[cfg(mobile)]
+        return Ok(None);
+    };
+    #[cfg(target_os = "ios")]
+    if !url.split(['?', '#']).next().unwrap_or("").to_lowercase().ends_with(".m3u8") && !url.contains(char::is_whitespace) {
+        let dir = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("video");
+        return serve::fill(url, &dir).map(Some);
     }
-    #[cfg(desktop)]
-    return serve::url(&path).map(Some);
-    #[cfg(mobile)]
-    Ok(None)
+    let _ = app;
+    Ok(Some(url))
+}
+
+/// The content type the loopback server sends for a video, by its extension.
+#[cfg(any(desktop, target_os = "ios"))]
+fn mime(path: &str) -> &'static str {
+    match path.split(['?', '#']).next().unwrap_or("").rsplit('.').next().map(str::to_lowercase).as_deref() {
+        Some("webm") => "video/webm",
+        Some("mkv") => "video/x-matroska",
+        Some("mov") => "video/quicktime",
+        _ => "video/mp4",
+    }
+}
+
+/// How far the playing video is downloaded ahead of `at` (a fraction of it), as a fraction of it.
+/// `None` when it isn't being downloaded here.
+#[tauri::command]
+pub fn video_buffered(at: f64) -> Option<f64> {
+    #[cfg(target_os = "ios")]
+    return serve::FILL.lock().unwrap().as_ref()?.1.buffered(at);
+    #[cfg(not(target_os = "ios"))]
+    { let _ = at; None }
+}
+
+/// The player of `url` closed: stops its download and deletes what it wrote. Another video may have
+/// started since, so only that one's.
+#[tauri::command]
+pub fn video_stop(url: String) {
+    #[cfg(target_os = "ios")]
+    {
+        let mut cur = serve::FILL.lock().unwrap();
+        if cur.as_ref().is_some_and(|(id, _)| url.ends_with(&format!("/~fill/{id}"))) {
+            cur.take().unwrap().1.close();
+        }
+    }
+    #[cfg(not(target_os = "ios"))]
+    let _ = url;
 }
 
 /// WebKitGTK can't play media from a custom scheme (`asset://`), so desktop serves local videos over
 /// `http://127.0.0.1` with Range support. Only files handed out by `url` are served, under a random
-/// per-run token.
-#[cfg(desktop)]
+/// per-run token. On iOS it serves the remote video being downloaded (`fill`) instead.
+#[cfg(any(desktop, target_os = "ios"))]
+#[cfg_attr(target_os = "ios", allow(dead_code))]
 mod serve {
     use std::collections::HashSet;
     use std::fs::File;
@@ -73,9 +126,39 @@ mod serve {
 
     static SERVER: OnceLock<(u16, String)> = OnceLock::new();
     static ALLOWED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+    /// The remote video being downloaded, by a number that changes with each one.
+    #[cfg(target_os = "ios")]
+    pub static FILL: Mutex<Option<(u64, std::sync::Arc<super::fill::Fill>)>> = Mutex::new(None);
 
     pub fn url(path: &str) -> Result<String, String> {
-        let (port, token) = match SERVER.get() {
+        let (port, token) = server()?;
+        ALLOWED.lock().unwrap().get_or_insert_with(HashSet::new).insert(path.to_owned());
+        Ok(format!("http://127.0.0.1:{port}/{token}/{}", encode(path)))
+    }
+
+    /// Starts downloading `url` into `dir`, dropping the previous video's download.
+    #[cfg(target_os = "ios")]
+    pub fn fill(url: String, dir: &std::path::Path) -> Result<String, String> {
+        let (port, token) = server()?;
+        let mut cur = FILL.lock().unwrap();
+        let id = match cur.take() {
+            Some((id, f)) => {
+                f.close();
+                id + 1
+            }
+            None => {
+                // leftovers from the last run
+                let _ = std::fs::remove_dir_all(dir);
+                0
+            }
+        };
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        *cur = Some((id, super::fill::Fill::start(url, dir.join(format!("{id}.part")))));
+        Ok(format!("http://127.0.0.1:{port}/{token}/~fill/{id}"))
+    }
+
+    fn server() -> Result<(u16, String), String> {
+        Ok(match SERVER.get() {
             Some(s) => s.clone(),
             None => {
                 let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
@@ -90,9 +173,7 @@ mod serve {
                 });
                 SERVER.get_or_init(|| (port, token)).clone()
             }
-        };
-        ALLOWED.lock().unwrap().get_or_insert_with(HashSet::new).insert(path.to_owned());
-        Ok(format!("http://127.0.0.1:{port}/{token}/{}", encode(path)))
+        })
     }
 
     fn token() -> String {
@@ -123,15 +204,6 @@ mod serve {
         String::from_utf8(out).ok()
     }
 
-    fn mime(path: &str) -> &'static str {
-        match path.rsplit('.').next().map(str::to_lowercase).as_deref() {
-            Some("webm") => "video/webm",
-            Some("mkv") => "video/x-matroska",
-            Some("mov") => "video/quicktime",
-            _ => "video/mp4",
-        }
-    }
-
     fn handle(mut stream: TcpStream, token: &str) -> std::io::Result<()> {
         let mut reader = BufReader::new(stream.try_clone()?);
         let mut line = String::new();
@@ -150,6 +222,14 @@ mod serve {
                 }
             }
         }
+        #[cfg(target_os = "ios")]
+        if let Some(id) = target.strip_prefix(&format!("/{token}/~fill/")) {
+            let f = FILL.lock().unwrap().as_ref().filter(|(n, _)| id == n.to_string()).map(|(_, f)| f.clone());
+            return match f {
+                Some(f) if method == "GET" || method == "HEAD" => send_fill(stream, &f, method, range),
+                _ => stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
+            };
+        }
         let path = target
             .strip_prefix('/')
             .and_then(|t| t.split_once('/'))
@@ -161,6 +241,16 @@ mod serve {
         };
         let mut file = File::open(&path)?;
         let len = file.metadata()?.len();
+        let (start, end) = head(&mut stream, range, len, super::mime(&path))?;
+        if method == "GET" {
+            file.seek(SeekFrom::Start(start))?;
+            std::io::copy(&mut file.take(end + 1 - start), &mut stream)?;
+        }
+        Ok(())
+    }
+
+    /// Writes the response head for `range` of a `len`-byte file; the byte range to send follows.
+    fn head(stream: &mut TcpStream, range: Option<String>, len: u64, mime: &str) -> std::io::Result<(u64, u64)> {
         let (start, end, partial) = range
             .and_then(|r| {
                 let (a, b) = r.split_once('-')?;
@@ -173,13 +263,29 @@ mod serve {
             stream,
             "HTTP/1.1 {}\r\nContent-Type: {}\r\nAccept-Ranges: bytes\r\nContent-Length: {}\r\n{}Connection: close\r\n\r\n",
             if partial { "206 Partial Content" } else { "200 OK" },
-            mime(&path),
+            mime,
             end + 1 - start,
             if partial { format!("Content-Range: bytes {start}-{end}/{len}\r\n") } else { String::new() },
         )?;
+        Ok((start, end))
+    }
+
+    /// Serves the video being downloaded, waiting for the parts not there yet; sends the player to
+    /// the source itself when it can't be downloaded here (HLS, unknown length, unreachable).
+    #[cfg(target_os = "ios")]
+    fn send_fill(mut stream: TcpStream, f: &super::fill::Fill, method: &str, range: Option<String>) -> std::io::Result<()> {
+        let Some((len, mime)) = f.head() else {
+            return write!(stream, "HTTP/1.1 302 Found\r\nLocation: {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", f.url);
+        };
+        let (start, end) = head(&mut stream, range, len, &mime)?;
         if method == "GET" {
-            file.seek(SeekFrom::Start(start))?;
-            std::io::copy(&mut file.take(end + 1 - start), &mut stream)?;
+            let file = f.file()?;
+            let mut off = start;
+            while off <= end {
+                let buf = f.read(&file, off, (end + 1 - off).min(256 << 10))?;
+                stream.write_all(&buf)?;
+                off += buf.len() as u64;
+            }
         }
         Ok(())
     }

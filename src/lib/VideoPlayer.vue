@@ -17,6 +17,7 @@ const posKey = `video-pos:${props.path}`;
 let hls: Hls | undefined;
 const buffering = ref(true);
 let lastSave = 0;
+let lastFill = 0;
 let resolvedUrl = "";
 
 function savePos(force = false) {
@@ -55,6 +56,14 @@ function sync() {
   duration.value = isFinite(v.duration) ? v.duration : 0;
   for (let i = 0; i < v.buffered.length; i++)
     if (v.buffered.start(i) <= v.currentTime + 0.5) buffered.value = v.buffered.end(i);
+  // on iOS the system player only buffers a few minutes; the app downloads the rest itself
+  if (resolvedUrl.includes("/~fill/") && duration.value && Date.now() - lastFill > 1000) {
+    lastFill = Date.now();
+    const d = duration.value;
+    invoke<number | null>("video_buffered", { at: v.currentTime / d })
+      .then((f) => { if (f != null) buffered.value = Math.max(buffered.value, f * d); })
+      .catch(() => {});
+  }
 }
 function wake() {
   idle.value = false;
@@ -298,9 +307,7 @@ onMounted(async () => {
   loadPrefs();
   loadSubs();
   try {
-    const url = props.path.startsWith("http")
-      ? props.path
-      : (await invoke<string | null>("video_url", { path: props.path })) ?? convertFileSrc(props.path);
+    const url = (await invoke<string | null>("video_url", { path: props.path })) ?? convertFileSrc(props.path);
     resolvedUrl = url;
     const v = video.value!;
     let start: number | null = null;
@@ -348,6 +355,7 @@ onUnmounted(() => {
   if (saveTimer) flushPrefs();
   savePos(true);
   hls?.destroy();
+  invoke("video_stop", { url: resolvedUrl }).catch(() => {});
   if (full.value) droid?.fullscreen?.(false);
 });
 </script>

@@ -648,6 +648,8 @@ pub fn run() {
             s3::s3_list,
             video::video_list,
             video::video_url,
+            video::video_buffered,
+            video::video_stop,
             video::video_subtitle,
             setting_get,
             update_install,

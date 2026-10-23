@@ -7,7 +7,7 @@ import { confirm } from "./ConfirmDialog.vue";
 import { extName, has, newer, unsupported, type ExtInfo, type RepoExt } from "./ext";
 import { rowCatalogs, sourceInfo, type SourceInfo } from "./videoext";
 import { FEATURES, featureOn, loadFeatures, setFeature } from "./videoprefs";
-import { pasted, verify, verifyError, waiting } from "./verify";
+import { pasted, verified, verify, verifyError, waiting } from "./verify";
 
 // Settings › Ekstensi: install from a repository (registry.json) or a package file, then
 // enable, configure or remove. Emits `changed` whenever the installed set changes.
@@ -76,6 +76,7 @@ async function loadSessions(list: ExtInfo[]) {
   }
 }
 watch(installed, loadSessions);
+watch(verified, () => loadSessions(installed.value));
 async function startVerify(e: ExtInfo) {
   delete verifyFailed[e.id];
   try {

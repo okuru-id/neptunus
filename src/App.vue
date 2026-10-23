@@ -19,7 +19,7 @@ import VideoLibrary from "./lib/VideoLibrary.vue";
 import { installUpdate, updater } from "./lib/updater";
 import SongMenu from "./lib/SongMenu.vue";
 import { downloadError, extName, has, unsupported, type ExtInfo } from "./lib/ext";
-import { asked, needsVerify, withVerify } from "./lib/verify";
+import { asked, needsVerify, verified, withVerify } from "./lib/verify";
 import { activity, catalogDl } from "./lib/activity";
 import { loadQuality, longQuality, qualities, shortQuality } from "./lib/quality";
 import TitleBar from "./lib/TitleBar.vue";
@@ -822,7 +822,7 @@ onMounted(async () => {
   // phones: the verification page replaced the app, and the grant it left behind is finished here
   if (document.documentElement.classList.contains("mobile"))
     invoke<string | null>("ext_session_poll", { text: null }).then(
-      (id) => id && notify("Verifikasi selesai, silakan unduh ulang lagunya.", "done"),
+      (id) => id && (verified.value++, notify("Verifikasi selesai, silakan unduh ulang lagunya.", "done")),
       (e) => notify(String(e)),
     );
   subs.push(

@@ -7,6 +7,8 @@ export const waiting = ref<string | null>(null); // extension whose verification
 // the callback link pasted by hand when the browser cannot hand it back to the app
 export const pasted = ref("");
 export const verifyError = ref("");
+/** Counts verifications finished outside `verify` (phones: when the app loads again), so the settings refresh. */
+export const verified = ref(0);
 /** The last download that needed a verification: its extension, and a counter so each one is seen. */
 export const asked = ref<{ id: string; n: number } | null>(null);
 

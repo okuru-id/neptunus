@@ -296,6 +296,7 @@ function close() {
       <p v-if="tab && !tabList.length" class="none">{{ tab.note }}</p>
       <div v-if="tabList.length" :key="pickTab" class="list">
         <button v-for="(s, i) in tabList" :key="i" class="pick src" @click="play(s)">
+          <span class="no">{{ i + 1 }}</span>
           <span class="q" :class="{ hd: describe(s).quality === '4K' || describe(s).quality === '1080p' }">{{ describe(s).quality || "SD" }}</span>
           <span class="info">
             <strong>{{ describe(s).head }}</strong>
@@ -356,6 +357,7 @@ h3 { margin: 4px 0 0; font-size: 16px; font-weight: 700; }
 .pick strong { flex: none; font-size: 14px; font-weight: 700; min-width: 40px; }
 .pick > span { flex: 1; min-width: 0; font-size: 14px; color: var(--on-surface-variant); overflow: hidden; text-overflow: ellipsis; }
 .src { padding: 10px 10px 10px 12px; gap: 12px; }
+.src .no { flex: none; min-width: 2ch; text-align: right; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; opacity: 0.7; }
 .src .q {
   flex: none; min-width: 52px; height: 28px; padding: 0 8px; border-radius: 8px; display: grid; place-items: center;
   font-size: 12px; font-weight: 800; letter-spacing: 0.02em; background: var(--surface-container-highest); color: var(--on-surface-variant);

@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import Icon from "./Icon.vue";
 import { subtitles, type Subtitle, type SubtitleQuery } from "./videoext";
+import type Hls from "hls.js";
 
 const props = defineProps<{ path: string; title: string; sub?: SubtitleQuery }>();
 const emit = defineEmits<{ close: [] }>();
@@ -13,7 +14,7 @@ const video = ref<HTMLVideoElement>();
 const error = ref("");
 // where each video was left, so it picks up from there next time
 const posKey = `video-pos:${props.path}`;
-let hls: { destroy(): void } | undefined;
+let hls: Hls | undefined;
 const buffering = ref(true);
 let lastSave = 0;
 let resolvedUrl = "";
@@ -125,6 +126,25 @@ const subList = computed(() => {
       return { s, label: `${langName(s.lang)}${n > 1 ? ` ${n}` : ""} - ${s.source}` };
     });
 });
+
+// --- audio tracks (dubbing): hls.js's list for HLS it plays, else the system player's ---
+const audios = ref<string[]>([]);
+const audioOn = ref(0);
+const panelName = computed(() => (audios.value.length > 1 ? (props.sub?.sources.length ? "Audio & subtitle" : "Audio") : "Subtitle"));
+function readAudios() {
+  const list: { label?: string; name?: string; language?: string; lang?: string; enabled?: boolean }[] =
+    hls ? hls.audioTracks : Array.from((video.value as any)?.audioTracks ?? []);
+  audios.value = list.map((t, i) => {
+    const name = t.label || t.name || (t.language || t.lang ? langName(t.language || t.lang) : `Audio ${i + 1}`);
+    return list.some((o, j) => j !== i && (o.label || o.name) === (t.label || t.name) && (o.language || o.lang) === (t.language || t.lang)) ? `${name} ${i + 1}` : name;
+  });
+  audioOn.value = hls ? hls.audioTrack : Math.max(0, list.findIndex((t) => t.enabled));
+}
+function pickAudio(i: number) {
+  if (hls) hls.audioTrack = i;
+  else Array.from((video.value as any).audioTracks as { enabled: boolean }[]).forEach((t, j) => (t.enabled = j === i));
+  audioOn.value = i;
+}
 
 // cues are kept and matched against the clock by us, so a delay is just an offset
 let cues: { start: number; end: number; text: string }[] = [];
@@ -245,7 +265,7 @@ function onKey(e: KeyboardEvent) {
   else if (e.key === "ArrowRight") skip(10);
   else if (e.key === "f") toggleFull();
   else if (e.key === "m") toggleMute();
-  else if (e.key === "c" && props.sub?.sources.length) menu.value = !menu.value;
+  else if (e.key === "c" && (props.sub?.sources.length || audios.value.length > 1)) menu.value = !menu.value;
   else if ((e.key === "g" || e.key === "h") && subPick.value) nudge(e.key === "g" ? -0.1 : 0.1); // VLC's keys
   else return;
   wake();
@@ -266,6 +286,8 @@ onMounted(async () => {
     let start: number | null = null;
     try { start = Number(localStorage.getItem(posKey)) || null; } catch {}
     if (start) v.addEventListener("loadedmetadata", () => { v.currentTime = start; }, { once: true });
+    v.addEventListener("loadedmetadata", readAudios);
+    (v as any).audioTracks?.addEventListener?.("addtrack", readAudios);
     const fail = (why: string) => {
       error.value = `Format video ini tidak didukung di perangkat ini. Coba putar di VLC. [${why}]`;
       buffering.value = false;
@@ -280,6 +302,8 @@ onMounted(async () => {
         if (Hls.isSupported()) {
           const h = new Hls({ maxBufferLength: 60, maxMaxBufferLength: 180, backBufferLength: 30, startPosition: start ?? -1 });
           hls = h;
+          h.on(Hls.Events.AUDIO_TRACKS_UPDATED, readAudios);
+          h.on(Hls.Events.AUDIO_TRACK_SWITCHED, readAudios);
           h.on(Hls.Events.ERROR, (_, d) => d.fatal && fail(`sistem ${native} · hls.js ${d.details}${d.response?.code ? ` ${d.response.code}` : ""}`));
           h.loadSource(url);
           h.attachMedia(v);
@@ -319,12 +343,18 @@ onUnmounted(() => {
 
     <!-- subtitle panel: over the right of the video; a click anywhere else closes it -->
     <div v-if="menu" class="scrim" @pointerdown.stop="menu = false"></div>
-    <aside v-if="menu" class="panel" role="dialog" aria-label="Subtitle" @pointerdown.stop>
+    <aside v-if="menu" class="panel" role="dialog" :aria-label="panelName" @pointerdown.stop>
       <header>
-        <strong>Subtitle</strong>
+        <strong>{{ panelName }}</strong>
         <button title="Tutup (Esc)" @click="menu = false"><Icon name="close" :size="22" /></button>
       </header>
       <!-- top: the language list scrolls on its own; bottom: delay and style stay in reach -->
+      <section v-if="audios.length > 1" class="audios">
+        <h4>Audio</h4>
+        <button v-for="(a, i) in audios" :key="i" class="opt" :class="{ on: audioOn === i }" role="menuitemradio" :aria-checked="audioOn === i"
+          :title="a" @click="pickAudio(i)"><Icon name="done" :size="18" /><span class="mlabel">{{ a }}</span></button>
+      </section>
+      <template v-if="sub?.sources.length">
       <section class="langs">
           <h4>Bahasa</h4>
           <button class="opt" :class="{ on: !subPick }" role="menuitemradio" :aria-checked="!subPick" @click="pickSub(null)"><Icon name="done" :size="18" />Mati</button>
@@ -362,6 +392,7 @@ onUnmounted(() => {
             <div class="chips"><button v-for="b in BGS" :key="b.v" :class="{ on: subStyle.bg === b.v }" @click="subStyle.bg = b.v; showPreview()">{{ b.l }}</button></div></div>
         </section>
       </div>
+      </template>
     </aside>
 
     <div class="bar top">
@@ -389,7 +420,7 @@ onUnmounted(() => {
         </div>
         <span class="time">{{ fmt(time) }} / {{ fmt(duration) }}</span>
         <span class="grow"></span>
-        <button v-if="sub?.sources.length" class="cc" :class="{ on: subPick }" :title="subs === null ? 'Mencari subtitle…' : 'Subtitle (c)'"
+        <button v-if="sub?.sources.length || audios.length > 1" class="cc" :class="{ on: subPick }" :title="`${panelName} (c)`"
           @click="menu = !menu"><Icon name="subtitles" :size="26" /></button>
         <button :title="full ? 'Keluar layar penuh (f)' : 'Layar penuh (f)'" @click="toggleFull"><Icon :name="full ? 'fullscreenExit' : 'fullscreen'" :size="30" /></button>
       </div>
@@ -481,6 +512,7 @@ input::-moz-range-thumb { width: 12px; height: 12px; border: 0; border-radius: 5
 .panel header button { width: 40px; height: 40px; border-radius: 20px; display: grid; place-items: center; color: inherit; }
 .panel header button:hover { background: rgb(255 255 255 / 0.12); }
 .panel section { padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+.audios { flex: none; max-height: 35%; overflow-y: auto; scrollbar-width: thin; }
 .langs { flex: 1; min-height: 120px; overflow-y: auto; scrollbar-width: thin; }
 .settings { flex: none; border-top: 1px solid rgb(255 255 255 / 0.12); background: rgb(0 0 0 / 0.25); padding-bottom: 6px; }
 .settings section + section { border-top: 1px solid rgb(255 255 255 / 0.08); }

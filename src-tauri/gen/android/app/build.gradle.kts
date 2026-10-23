@@ -18,7 +18,8 @@ android {
     compileSdk = 37
     namespace = "id.neptunus.desktop"
     defaultConfig {
-        manifestPlaceholders["usesCleartextTraffic"] = "false"
+        // addon streams are often plain http (a local server, a debrid link); release builds blocked them
+        manifestPlaceholders["usesCleartextTraffic"] = "true"
         applicationId = "id.neptunus.desktop"
         minSdk = 26
         targetSdk = 37

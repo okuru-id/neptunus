@@ -1070,6 +1070,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
         <ul v-else-if="showingList" class="songs">
           <li v-for="(t, i) in shown" :key="t.path" :class="{ active: now?.path === t.path }">
             <button class="row" @click="playAt(shown, i)">
+              <span v-if="view === 'playlists'" class="no">{{ i + 1 }}</span>
               <span class="art-wrap">
                 <CoverArt :path="t.path" />
                 <span v-if="now?.path === t.path" class="art-overlay">
@@ -1119,8 +1120,9 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
             <span class="dur">{{ fmt(t.duration_secs) }}</span>
           </li>
           <template v-if="view === 'playlists'">
-            <li v-for="p in plPending" :key="`p${p.id}`" class="pending">
+            <li v-for="(p, j) in plPending" :key="`p${p.id}`" class="pending">
               <div class="row">
+                <span class="no">{{ shown.length + j + 1 }}</span>
                 <span class="art-wrap"><span class="pend-art"><Icon name="note" :size="24" /></span></span>
                 <span class="meta">
                   <strong>{{ p.title }}</strong>
@@ -1391,6 +1393,8 @@ h1 {
 .songs li.active { background: var(--secondary-container); color: var(--on-secondary-container); }
 .row { flex: 1; min-width: 0; display: flex; align-items: center; gap: 16px; padding: 8px 12px; text-align: left; border-radius: 16px; cursor: default; }
 .art-wrap { position: relative; flex: none; }
+.row .no { flex: none; min-width: 2ch; margin-right: -4px; text-align: right; font-size: 14px; color: var(--on-surface-variant); font-variant-numeric: tabular-nums; }
+li.active .row .no { color: inherit; }
 .art-overlay { position: absolute; inset: 0; display: grid; place-items: center; border-radius: 12px; background: rgb(0 0 0 / 0.45); color: #fff; }
 .meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
 .meta strong { font-size: 16px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

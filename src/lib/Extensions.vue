@@ -7,6 +7,7 @@ import { confirm } from "./ConfirmDialog.vue";
 import { extName, has, newer, unsupported, type ExtInfo, type RepoExt } from "./ext";
 import { rowCatalogs, sourceInfo, type SourceInfo } from "./videoext";
 import { FEATURES, featureOn, loadFeatures, setFeature } from "./videoprefs";
+import { pasted, verify, verifyError, waiting } from "./verify";
 
 // Settings › Ekstensi: install from a repository (registry.json) or a package file, then
 // enable, configure or remove. Emits `changed` whenever the installed set changes.
@@ -59,6 +60,33 @@ const offers = (e: ExtInfo) => {
   const i = vinfo[e.id];
   if (!i) return FEATURES; // not known yet: show them all
   return FEATURES.filter((f) => f.id === "catalog" ? rowCatalogs(i).length : f.id === "streams" ? i.streams !== false : i.subtitles);
+};
+
+// signed sessions (some SpotiFLAC download extensions): whether the gateway's browser check still holds,
+// with a button to do it (again). Downloads don't open the page themselves; they point here.
+type Session = { verified: boolean; expires_at?: string | null };
+const sessions = reactive<Record<string, Session>>({});
+const verifyFailed = reactive<Record<string, string>>({});
+const mobile = document.documentElement.classList.contains("mobile");
+async function loadSessions(list: ExtInfo[]) {
+  for (const e of list.filter((e) => e.signedSession)) {
+    sessions[e.id] = await invoke<Session>("ext_session_status", { id: e.id }).catch(() => ({ verified: false }));
+  }
+}
+watch(installed, loadSessions);
+async function startVerify(e: ExtInfo) {
+  delete verifyFailed[e.id];
+  try {
+    // on phones the page replaces the app, which finishes the verification when it comes back
+    if (!(await verify(e.id)) && verifyError.value) verifyFailed[e.id] = verifyError.value;
+  } catch (err) {
+    verifyFailed[e.id] = String(err);
+  }
+  await loadSessions([e]);
+}
+const until = (s?: string | null) => {
+  const d = s ? new Date(s) : null;
+  return d && !isNaN(+d) ? d.toLocaleString("id-ID", { dateStyle: "medium", timeStyle: "short" }) : "";
 };
 
 function setKind(k: Kind) {
@@ -227,10 +255,30 @@ onMounted(() => {
                 <span v-if="unsupported(e).length" class="tag warn" :title="unsupported(e).join(', ')">Butuh fitur yang belum didukung</span>
               </span>
             </div>
-            <button v-if="update(e)" class="btn filled sm" :disabled="busy === e.id" @click="install(update(e)!)"><Icon name="sync" />{{ busy === e.id ? "Memperbarui…" : "Perbarui" }}</button>
-            <button v-if="e.settings?.length" class="icon-btn" :class="{ on: openId === e.id }" title="Pengaturan" @click="edit(e)"><Icon name="settings" /></button>
-            <button class="icon-btn" title="Hapus" @click="remove(e)"><Icon name="trash" /></button>
-            <button class="switch" role="switch" :aria-checked="e.enabled" :title="e.enabled ? 'Nonaktifkan' : 'Aktifkan'" @click="toggle(e)"><span></span></button>
+            <div class="acts">
+              <button v-if="update(e)" class="btn filled sm" :disabled="busy === e.id" @click="install(update(e)!)"><Icon name="sync" />{{ busy === e.id ? "Memperbarui…" : "Perbarui" }}</button>
+              <button v-if="e.settings?.length" class="icon-btn" :class="{ on: openId === e.id }" title="Pengaturan" @click="edit(e)"><Icon name="settings" /></button>
+              <button class="icon-btn" title="Hapus" @click="remove(e)"><Icon name="trash" /></button>
+              <button class="switch" role="switch" :aria-checked="e.enabled" :title="e.enabled ? 'Nonaktifkan' : 'Aktifkan'" @click="toggle(e)"><span></span></button>
+            </div>
+          </div>
+          <div v-if="e.signedSession && e.enabled" class="verif" :class="{ ok: sessions[e.id]?.verified }">
+            <Icon :name="sessions[e.id]?.verified ? 'verified' : 'error'" :size="18" />
+            <span class="v-text">
+              <template v-if="waiting === e.id">Menunggu verifikasi selesai…</template>
+              <template v-else-if="verifyFailed[e.id]">{{ verifyFailed[e.id] }}</template>
+              <template v-else-if="!sessions[e.id]">Memeriksa sesi…</template>
+              <template v-else-if="sessions[e.id].verified">Terverifikasi{{ until(sessions[e.id].expires_at) ? ` sampai ${until(sessions[e.id].expires_at)}` : "" }}</template>
+              <template v-else>Perlu verifikasi sebelum bisa mengunduh</template>
+            </span>
+            <button class="btn sm" :class="sessions[e.id]?.verified ? 'tonal' : 'filled'" :disabled="!!waiting" @click="startVerify(e)">
+              {{ sessions[e.id]?.verified ? "Verifikasi ulang" : "Verifikasi" }}
+            </button>
+            <div v-if="waiting === e.id && !mobile" class="paste">
+              Selesaikan verifikasi di jendela yang terbuka. Kalau jendela tidak menutup sendiri, tempel tautan
+              <code>spotiflac://session-grant?…</code> di sini:
+              <input v-model="pasted" placeholder="spotiflac://session-grant?grant=…&state=…" spellcheck="false" />
+            </div>
           </div>
           <div v-if="kind === 'video' && e.enabled && offers(e).length" class="feats" role="group" aria-label="Fitur yang dipakai">
             <button v-for="f in offers(e)" :key="f.id" type="button" role="switch" :aria-checked="featureOn(e.id, f.id)"
@@ -269,7 +317,9 @@ onMounted(() => {
               <strong>{{ r.display_name || r.displayName || r.name || r.id }} <small>{{ r.version }}</small></strong>
               <span class="desc">{{ r.description }}</span>
             </div>
-            <button class="btn tonal sm" :disabled="busy === r.id" @click="install(r)"><Icon name="download" />{{ busy === r.id ? "Memasang…" : "Pasang" }}</button>
+            <div class="acts">
+              <button class="btn tonal sm" :disabled="busy === r.id" @click="install(r)"><Icon name="download" />{{ busy === r.id ? "Memasang…" : "Pasang" }}</button>
+            </div>
           </div>
         </li>
       </ul>
@@ -364,5 +414,21 @@ onMounted(() => {
 .kinds button.on { background: var(--secondary-container); color: var(--on-secondary-container); }
 .kinds .n { min-width: 22px; height: 22px; padding: 0 6px; border-radius: 11px; display: inline-grid; place-items: center; font-size: 12px; background: var(--surface-container-highest); }
 .kinds button.on .n { background: var(--on-secondary-container); color: var(--secondary-container); }
-@media (max-width: 600px) { .form { padding-left: 16px; } }
+.acts { display: flex; align-items: center; gap: 8px; flex: none; }
+.verif { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; margin: 0 12px 10px; padding: 8px 8px 8px 12px; border-radius: 14px; background: var(--surface-container-high); font-size: 13px; color: var(--on-surface-variant); }
+.verif > .icon { color: var(--error); }
+.verif.ok > .icon { color: var(--primary); }
+.v-text { flex: 1; min-width: 140px; }
+.paste { flex-basis: 100%; display: flex; flex-direction: column; gap: 8px; line-height: 1.5; }
+.paste input { height: 40px; padding: 0 12px; border: 1px solid var(--outline-variant); border-radius: 12px; background: var(--surface-container-lowest); color: var(--on-surface); font: inherit; }
+@media (max-width: 600px) {
+  .form { padding-left: 16px; }
+  /* phones: the name gets the whole row, the buttons go on a row of their own below it */
+  .panel { padding: 16px 8px; border-radius: 24px; gap: 16px; }
+  .item-row { flex-wrap: wrap; row-gap: 2px; gap: 10px; padding: 8px; min-height: 0; }
+  .ic { width: 40px; height: 40px; }
+  .meta { flex-basis: calc(100% - 50px); }
+  .acts { flex-basis: 100%; justify-content: flex-end; }
+  .verif { margin: 0 8px 8px; }
+}
 </style>

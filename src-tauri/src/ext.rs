@@ -137,7 +137,8 @@ impl Exts {
         }
         let (reply, answer) = mpsc::channel();
         let job = Job { method: method.to_owned(), args: args.to_string(), progress, root, reply };
-        let parallel = matches!(method, "download" | "checkAvailability");
+        // finishing a verification can't wait behind a download that may run for minutes
+        let parallel = matches!(method, "download" | "checkAvailability" | "completeGrant");
         let mut workers = self.workers.lock().unwrap();
         let slots = workers.entry(id.to_owned()).or_default();
         let pick = match parallel {
@@ -443,7 +444,12 @@ impl Host {
             }
             let headers: Map<String, Value> = serde_json::from_str(headers).unwrap_or_default();
             *self.deadline.borrow_mut() = Instant::now() + DOWNLOAD_TIMEOUT;
-            let part = dest.with_extension("part");
+            // "x.part.flac", not "x.part": Android only lets files with a media extension into shared
+            // folders like Music, and refuses anything else with "Operation not permitted"
+            let part = dest.with_extension(match dest.extension() {
+                Some(x) => format!("part.{}", x.to_string_lossy()),
+                None => "part".into(),
+            });
             let mut out = std::fs::File::create(&part).map_err(|e| e.to_string())?;
             let (mut got, mut total, mut buf, mut last) = (0u64, 0u64, vec![0u8; 64 * 1024], Instant::now());
             // a dropped connection resumes with a Range request where the server allows it
@@ -1036,11 +1042,6 @@ fn fetch_inner(app: &AppHandle, id: &str, track: &Value, quality: Option<String>
         let exts = app.state::<Exts>();
         let manifest = exts.manifest(&id)?;
         let db = app.state::<crate::db::Db>();
-        let dir = match db.folders().ok().and_then(|f| f.into_iter().next()) {
-            Some(d) => PathBuf::from(d),
-            None => crate::download_dir(&app)?,
-        };
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let text = |k: &str| track[k].as_str().unwrap_or_default().to_owned();
         let clean = |s: &str| -> String {
             let s: String = s.chars().map(|c| if r#"\/:*?"<>|"#.contains(c) || c.is_control() { '_' } else { c }).collect();
@@ -1049,8 +1050,27 @@ fn fetch_inner(app: &AppHandle, id: &str, track: &Value, quality: Option<String>
         // <library>/<main artist>/<artist - title>.flac
         let artists = text("artists");
         let main = clean(artists.split([',', '&', ';']).next().unwrap_or_default());
-        let folder = dir.join(if main.is_empty() { "Unknown Artist" } else { &main });
-        std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+        let main = if main.is_empty() { "Unknown Artist".to_owned() } else { main };
+        let writable = |dir: &Path| -> std::io::Result<PathBuf> {
+            let folder = dir.join(&main);
+            std::fs::create_dir_all(&folder)?;
+            let probe = folder.join(".neptunus-probe.flac");
+            std::fs::File::create(&probe)?;
+            let _ = std::fs::remove_file(&probe);
+            Ok(folder)
+        };
+        // The first library folder, unless it can't be written to: a shared folder Android keeps
+        // read-only, or on iOS one from before the app was reinstalled (its container path changes).
+        // Then the app's own download folder.
+        let library = db.folders().ok().and_then(|f| f.into_iter().next()).map(PathBuf::from);
+        let (dir, folder) = match library.and_then(|d| writable(&d).ok().map(|f| (d, f))) {
+            Some(found) => found,
+            None => {
+                let d = crate::download_dir(&app)?;
+                let f = writable(&d).map_err(|e| format!("{}: {e}", d.display()))?;
+                (d, f)
+            }
+        };
         let quality = quality
             .or_else(|| manifest["qualityOptions"][0]["id"].as_str().map(str::to_owned))
             .unwrap_or_else(|| "LOSSLESS".into());

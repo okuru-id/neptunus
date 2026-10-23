@@ -5,8 +5,8 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import Icon from "./Icon.vue";
 import SongMenu from "./SongMenu.vue";
 import { extName, has, unsupported, type ExtInfo } from "./ext";
-import { pasted, verifyError, waiting, withVerify } from "./verify";
-import { activity } from "./activity";
+import { withVerify } from "./verify";
+import { activity, catalogDl } from "./activity";
 
 // Katalog from metadata-provider extensions: home feed, search, album/playlist/artist pages,
 // and downloading tracks into the library with a download-provider extension.
@@ -180,7 +180,8 @@ async function start(t: Item, id: string, quality: string | null) {
   activity[id] = "";
   const run = () => invoke<Track>("ext_download", { id, key, quality, track: { ...t, provider_id: t.provider_id || cur.value?.id } });
   try {
-    const track = await withVerify(id, run, () => (dl[key] = 0));
+    catalogDl[key] = { title: t.name, ext: id, pct: 0 };
+    const track = await withVerify(id, run);
     dl[key] = "done";
     done.set(key, track);
     localStorage.setItem(DONE_KEY, JSON.stringify([...done]));
@@ -188,6 +189,8 @@ async function start(t: Item, id: string, quality: string | null) {
   } catch (e) {
     dl[key] = String(e);
     emit("failed", t.name, id, e);
+  } finally {
+    delete catalogDl[key];
   }
 }
 let unlisten: UnlistenFn | undefined;
@@ -225,12 +228,7 @@ const others = computed(() => results.value?.filter((i) => kind(i) !== "track") 
       </div>
     </div>
 
-    <p v-if="error || verifyError" class="note err">{{ error || verifyError }}</p>
-    <div v-if="waiting" class="note verify">
-      Selesaikan verifikasi di jendela yang terbuka; unduhan lanjut otomatis. Kalau jendela tidak menutup sendiri, tempel tautan
-      <code>spotiflac://session-grant?…</code> di sini:
-      <input v-model="pasted" placeholder="spotiflac://session-grant?grant=…&state=…" spellcheck="false" />
-    </div>
+    <p v-if="error" class="note err">{{ error }}</p>
     <p v-if="!downloader && cur" class="note">
       <template v-if="blocked.length">{{ blocked.join(", ") }} butuh fitur yang belum didukung app ini.</template>
       Pasang ekstensi unduhan seperti YouTube Music atau JioSaavn untuk menyimpan lagu dari katalog ke library.
@@ -420,6 +418,4 @@ const others = computed(() => results.value?.filter((i) => kind(i) !== "track") 
 .opt:hover { background: var(--surface-container-highest); }
 .opt img { width: 32px; height: 32px; border-radius: 8px; object-fit: cover; }
 .opt span { display: flex; flex-direction: column; min-width: 0; }
-.note.verify { display: flex; flex-direction: column; gap: 8px; }
-.note.verify input { height: 40px; padding: 0 12px; border-radius: 10px; background: var(--surface); color: var(--on-surface); box-shadow: inset 0 0 0 1px var(--outline-variant); font: inherit; }
 </style>

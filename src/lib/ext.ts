@@ -10,6 +10,8 @@ export type ExtInfo = {
   capabilities?: { homeFeed?: boolean };
   searchBehavior?: { enabled?: boolean; placeholder?: string };
   requiredRuntimeFeatures?: string[];
+  /** the gateway wants a browser verification before downloads (SpotiFLAC signed sessions) */
+  signedSession?: unknown;
 };
 // a repository entry (registry.json)
 export type RepoExt = {

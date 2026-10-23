@@ -63,10 +63,7 @@ watch(() => state.opts, async (o) => o && (await nextTick(), cancelBtn.value?.fo
   color: var(--on-surface);
   box-shadow: 0 24px 64px rgb(0 0 0 / 0.35), inset 0 0 0 1px color-mix(in srgb, var(--on-surface) 6%, transparent);
 }
-.dialog.danger { --accent: #ffb4ab; --on-accent: #690005; --accent-container: #93000a; --on-accent-container: #ffdad6; }
-@media (prefers-color-scheme: light) {
-  .dialog.danger { --accent: #ba1a1a; --on-accent: #fff; --accent-container: #ffdad6; --on-accent-container: #410002; }
-}
+.dialog.danger { --accent: var(--error); --on-accent: var(--on-error); --accent-container: var(--error-container); --on-accent-container: var(--on-error-container); }
 .badge {
   width: 72px; height: 72px; display: grid; place-items: center; margin-bottom: 20px;
   background: var(--accent-container); color: var(--on-accent-container);

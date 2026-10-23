@@ -27,6 +27,12 @@ import linkOff from "@material-symbols/svg-400/rounded/link_off-fill.svg?raw";
 import sync from "@material-symbols/svg-400/rounded/sync-fill.svg?raw";
 import save from "@material-symbols/svg-400/rounded/save-fill.svg?raw";
 import catalog from "@material-symbols/svg-400/rounded/explore-fill.svg?raw";
+import verified from "@material-symbols/svg-400/rounded/verified_user-fill.svg?raw";
+import lightMode from "@material-symbols/svg-400/rounded/light_mode-fill.svg?raw";
+import darkMode from "@material-symbols/svg-400/rounded/dark_mode-fill.svg?raw";
+import autoMode from "@material-symbols/svg-400/rounded/brightness_auto-fill.svg?raw";
+import palette from "@material-symbols/svg-400/rounded/palette-fill.svg?raw";
+import clearAll from "@material-symbols/svg-400/rounded/delete_sweep-fill.svg?raw";
 import moreVert from "@material-symbols/svg-400/rounded/more_vert-fill.svg?raw";
 import back from "@material-symbols/svg-400/rounded/arrow_back-fill.svg?raw";
 import collapse from "@material-symbols/svg-400/rounded/keyboard_arrow_down-fill.svg?raw";
@@ -123,6 +129,12 @@ export const icons = {
   done,
   bell,
   bellActive,
+  verified,
+  lightMode,
+  darkMode,
+  autoMode,
+  palette,
+  clearAll,
 };
 
 export type IconName = keyof typeof icons;

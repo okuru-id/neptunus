@@ -19,14 +19,14 @@ import VideoLibrary from "./lib/VideoLibrary.vue";
 import { installUpdate, updater } from "./lib/updater";
 import SongMenu from "./lib/SongMenu.vue";
 import { downloadError, extName, has, unsupported, type ExtInfo } from "./lib/ext";
-import { pasted, verifyError, waiting, withVerify } from "./lib/verify";
-import { activity } from "./lib/activity";
+import { asked, needsVerify, withVerify } from "./lib/verify";
+import { activity, catalogDl } from "./lib/activity";
 import { loadQuality, longQuality, qualities, shortQuality } from "./lib/quality";
 import TitleBar from "./lib/TitleBar.vue";
 import Notifications, { type Job, type Note } from "./lib/Notifications.vue";
 import type { IconName } from "./lib/icons";
 import WavyProgress from "./lib/WavyProgress.vue";
-import { applyTheme, DEFAULT_SEED, seedFromImage } from "./lib/theme";
+import { applyTheme, DEFAULT_SEED, seedFromImage, setThemeMode, themeMode, type ThemeMode } from "./lib/theme";
 import { ART_SHAPES, CLIP_SHAPES } from "./lib/shapes";
 
 type Track = { path: string; title: string; artist: string; album: string; duration_secs: number };
@@ -283,15 +283,21 @@ function setView(v: View) {
   if (v === "playlists" && plId.value !== null) openPlaylist(plId.value);
 }
 
-type SettingsTab = "local" | "s3" | "eq" | "ext" | "about";
+type SettingsTab = "local" | "s3" | "eq" | "look" | "ext" | "about";
 const SETTINGS_TABS: { id: SettingsTab; label: string; icon: IconName }[] = [
   { id: "local", label: "Lokal", icon: "folder" },
   { id: "s3", label: "Cloud", icon: "cloud" },
   { id: "eq", label: "Equalizer", icon: "equalizer" },
+  { id: "look", label: "Tampilan", icon: "palette" },
   { id: "ext", label: "Ekstensi", icon: "extension" },
   { id: "about", label: "Tentang", icon: "info" },
 ];
-const settingsTab = ref<SettingsTab>(page.settingsTab ?? "local");
+const THEME_MODES: { id: ThemeMode; label: string; icon: IconName }[] = [
+  { id: "system", label: "Sistem", icon: "autoMode" },
+  { id: "light", label: "Terang", icon: "lightMode" },
+  { id: "dark", label: "Gelap", icon: "darkMode" },
+];
+const settingsTab = ref<SettingsTab>(SETTINGS_TABS.some((t) => t.id === page.settingsTab) ? page.settingsTab! : "local");
 watch([view, group, plId, settingsTab], ([view, group, plId, settingsTab]) => {
   try { sessionStorage.setItem(PAGE_KEY, JSON.stringify({ view, group, plId, settingsTab })); } catch {}
 });
@@ -336,10 +342,12 @@ function addNote(kind: Note["kind"], text: string, url?: string) {
 }
 // short-lived notice at the bottom of the window (a failed download, ...), also kept in the bell
 const toast = ref("");
+const toastAction = ref<{ label: string; run: () => void } | null>(null);
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
-function notify(text: string, kind: Note["kind"] = "error") {
+function notify(text: string, kind: Note["kind"] = "error", action: { label: string; run: () => void } | null = null) {
   addNote(kind, text);
   toast.value = text;
+  toastAction.value = action;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => (toast.value = ""), 7000);
 }
@@ -355,9 +363,19 @@ function skipUpdate() {
   update.value = null;
 }
 function onDownloadFailed(song: string, ext: string, err: unknown) {
+  if (needsVerify(err)) return; // the snackbar from `asked` below says it once for all of them
   const e = exts.value.find((x) => x.id === ext);
   notify(downloadError(err, song, e ? extName(e) : ext));
 }
+// a download needed a verification (session expired or never done): point to Settings › Verifikasi,
+// once per extension for a while, since a whole playlist may run into it at once
+const askedAt: Record<string, number> = {};
+watch(asked, (a) => {
+  if (!a || Date.now() - (askedAt[a.id] ?? 0) < 30_000) return;
+  askedAt[a.id] = Date.now();
+  const e = exts.value.find((x) => x.id === a.id);
+  notify(`Sesi ${e ? extName(e) : a.id} habis atau belum diverifikasi.`, "error", { label: "Verifikasi", run: () => openSettings("ext") });
+});
 // pending playlist song -> why its last download failed
 const pfail = ref<Record<number, string>>({});
 async function downloadPending(p: Pending, ext: string, quality: string | null) {
@@ -375,7 +393,7 @@ async function downloadPending(p: Pending, ext: string, quality: string | null) 
       ? await invoke<Record<string, unknown> | null>("ext_call", { id: meta.id, method: "getTrack", args: [sid] })
           .then((t) => (t ? { ...t, provider_id: meta.id } : null)).catch(() => null)
       : null;
-    await withVerify(ext, () => invoke("pending_download", { id: p.id, ext, quality, track }), () => (pdl.value = { ...pdl.value, [p.id]: 0 }));
+    await withVerify(ext, () => invoke("pending_download", { id: p.id, ext, quality, track }));
     addNote("done", `“${p.title}” selesai diunduh.`);
     setLibrary(await invoke<Track[]>("load_library"));
     if (plId.value !== null) await openPlaylist(plId.value);
@@ -430,7 +448,8 @@ const pendingFailed = computed(() => plPending.value.filter((p) => p.id in pfail
 const jobs = computed<Job[]>(() => [
   ...downloads.value.map((d) => ({ key: `s3:${d.path}`, title: d.title, pct: d.pct })),
   ...Object.entries(redl.value).map(([path, pct]) => ({ key: `re:${path}`, title: rawLibrary.value.find((t) => t.path === path)?.title ?? path, pct })),
-  ...Object.entries(pdl.value).map(([id, pct]) => ({ key: `p:${id}`, title: pdlTitle[+id] ?? "", pct, cancel: () => invoke("ext_cancel", { key: `pending:${id}` }) })),
+  ...Object.entries(catalogDl).map(([key, d]) => ({ key: `c:${key}`, title: d.title, pct: d.pct, detail: activity[d.ext], cancel: () => invoke("ext_cancel", { key }) })),
+  ...Object.entries(pdl.value).map(([id, pct]) => ({ key: `p:${id}`, title: pdlTitle[+id] ?? "", pct, detail: activity[pdlExt[+id]], cancel: () => invoke("ext_cancel", { key: `pending:${id}` }) })),
   ...pqueue.value.map((q) => ({ key: `q:${q.p.id}`, title: q.p.title, pct: null, queued: true, cancel: () => cancelPending(q.p) })),
 ]);
 async function removePending(p: Pending) {
@@ -960,6 +979,15 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
             @library="setLibrary" />
         </template>
         <Equalizer v-else-if="settingsTab === 'eq'" />
+        <section v-else-if="settingsTab === 'look'" class="panel look">
+          <div class="look-row">
+            <div class="look-text"><strong>Tema</strong><span>Ikuti sistem, atau selalu terang atau gelap.</span></div>
+            <div class="seg" role="radiogroup" aria-label="Tema">
+              <button v-for="m in THEME_MODES" :key="m.id" role="radio" :aria-checked="themeMode === m.id" :class="{ sel: themeMode === m.id }"
+                @click="setThemeMode(m.id)"><Icon :name="m.icon" :size="18" />{{ m.label }}</button>
+            </div>
+          </div>
+        </section>
         <About v-else-if="settingsTab === 'about'" />
         <Extensions v-else-if="settingsTab === 'ext'" @changed="exts = $event" />
         <template v-else>
@@ -1013,12 +1041,6 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
             <input placeholder="Playlist baru / link Spotify" v-model="newPlaylist" aria-label="Nama playlist baru" />
           </form>
         </div>
-        <div v-if="view === 'playlists' && waiting" class="pl-note verify">
-          Selesaikan verifikasi di jendela yang terbuka; unduhan lanjut otomatis. Kalau jendela tidak menutup sendiri, tempel tautan
-          <code>spotiflac://session-grant?…</code> di sini:
-          <input v-model="pasted" placeholder="spotiflac://session-grant?grant=…&state=…" spellcheck="false" />
-        </div>
-        <p v-else-if="view === 'playlists' && verifyError" class="pl-note">{{ verifyError }}</p>
         <p v-if="view === 'playlists' && plNote" class="pl-note" role="status">
           {{ plNote }}
           <button class="icon-btn small" title="Tutup" @click="plNote = ''"><Icon name="close" :size="18" /></button>
@@ -1217,6 +1239,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
     <div v-if="toast" class="toast" :class="{ above: now }" role="alert">
       <Icon name="error" :size="20" />
       <span>{{ toast }}</span>
+      <button v-if="toastAction" class="toast-act" @click="toastAction.run(); toast = ''">{{ toastAction.label }}</button>
       <button class="icon-btn small" title="Tutup" @click="toast = ''"><Icon name="close" :size="18" /></button>
     </div>
   </Transition>
@@ -1415,6 +1438,7 @@ li.active .row .no { color: inherit; }
 .update-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 13px; color: var(--on-surface-variant); }
 .update-text strong { font-size: 15px; font-weight: 700; color: var(--on-surface); }
 .toast .icon-btn { color: inherit; }
+.toast-act { flex: none; padding: 8px 12px; border: 0; border-radius: 12px; background: none; color: var(--primary-container); font: inherit; font-weight: 700; cursor: pointer; }
 .toast-enter-active, .toast-leave-active { transition: opacity 0.2s, transform 0.3s var(--emph); }
 .toast-enter-from, .toast-leave-to { opacity: 0; transform: translate(-50%, 12px); }
 .dl .pct { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -1470,8 +1494,6 @@ li:hover .row-act, .row-act:focus-visible, .row-menu.open .row-act, .row-act.ope
 .chip.sel > button:first-child { padding-right: 4px; }
 .chip-x { width: 32px; height: 32px; margin-right: 4px; border-radius: 16px; display: grid; place-items: center; }
 .chip.new { gap: 6px; padding: 0 6px 0 12px; border-style: dashed; }
-.pl-note.verify { display: block; line-height: 1.6; }
-.pl-note.verify input { display: block; width: 100%; margin-top: 6px; padding: 8px 12px; border-radius: 12px; border: 1px solid var(--outline-variant); background: var(--surface-container); }
 .pl-note { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; font-size: 14px; color: var(--on-surface-variant); }
 .songs li.pending .row, .songs li.pending .dur { opacity: 0.75; }
 .songs li.pending .row { cursor: default; }
@@ -1498,6 +1520,13 @@ li:hover .row-act, .row-act:focus-visible, .row-menu.open .row-act, .row-act.ope
 /* ---------- S3 panel ---------- */
 .cloud { display: flex; flex-direction: column; gap: 16px; }
 .panel.conn { max-width: none; }
+.look-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.look-text { flex: 1; min-width: 180px; display: flex; flex-direction: column; gap: 2px; font-size: 13px; color: var(--on-surface-variant); }
+.look-text strong { font-size: 15px; font-weight: 700; color: var(--on-surface); }
+.seg { display: inline-flex; border: 1px solid var(--outline); border-radius: 20px; overflow: hidden; }
+.seg button { display: inline-flex; align-items: center; gap: 6px; height: 40px; padding: 0 14px; font: inherit; font-size: 14px; font-weight: 600; color: var(--on-surface); background: transparent; }
+.seg button + button { border-left: 1px solid var(--outline); }
+.seg button.sel { background: var(--secondary-container); color: var(--on-secondary-container); }
 .conn-head { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
 .conn-mark { width: 56px; height: 56px; display: grid; place-items: center; flex: none; background: var(--primary-container); color: var(--on-primary-container); }
 .conn-id { flex: 1; min-width: 200px; display: flex; flex-direction: column; gap: 2px; }

@@ -143,6 +143,5 @@ onUnmounted(close);
 .menu :slotted(button:hover:not(:disabled)) { background: color-mix(in srgb, var(--on-surface) 8%, transparent); }
 .menu :slotted(button:disabled) { opacity: 0.5; }
 .menu hr { width: 100%; margin: 6px 0; border: 0; border-top: 1px solid var(--outline-variant); }
-.menu .danger { color: #ffb4ab; }
-@media (prefers-color-scheme: light) { .menu .danger { color: #ba1a1a; } }
+.menu .danger { color: var(--error); }
 </style>

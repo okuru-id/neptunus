@@ -41,7 +41,7 @@ html {
   background: rgb(0 0 0 / 0.004); --frame-radius: 16px; --sheet-gap: 0px; --sheet-radius: 20px;
   --frame-bg: var(--surface-container-lowest); /* darker frame around the rounded content sheet */
 }
-@media (prefers-color-scheme: light) { html { --frame-bg: var(--surface-container-high); } }
+html[data-theme="light"] { --frame-bg: var(--surface-container-high); }
 html.maximized, html.mac { --frame-radius: 0px; } /* macOS: the native window rounds and shadows itself */
 /* iOS/Android: full screen, the app bar sits under the status bar */
 /* the app bar is the darker frame and the content a sheet with rounded top corners, as on desktop; taps get no blue flash */

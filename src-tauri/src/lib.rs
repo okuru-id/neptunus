@@ -694,6 +694,8 @@ pub fn run() {
             ext::ext_redownload,
             ext::session::ext_session_verify,
             ext::session::ext_session_poll,
+            ext::session::ext_session_status,
+            ext::session::ext_session_start,
             check_update,
             player::play,
             player::set_paused,

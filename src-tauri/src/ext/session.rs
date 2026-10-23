@@ -135,7 +135,7 @@ impl Host {
         for k in keys {
             rec.insert(k.into(), from[k].clone());
         }
-        for k in ["auth_url", "state", "challenge_at", "grant"] {
+        for k in ["auth_url", "state", "old_states", "challenge_at", "grant"] {
             rec.remove(k);
         }
         true
@@ -186,6 +186,14 @@ impl Host {
         }
         if auth.is_empty() {
             return Err("signed-session bootstrap did not return a session or verification challenge".into());
+        }
+        // a grant for a challenge this one replaces (a download asked again while the page was open)
+        // still has to be recognised when it comes back
+        if let Some(old) = rec.get("state").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned) {
+            let mut olds: Vec<Value> = rec.get("old_states").and_then(Value::as_array).cloned().unwrap_or_default();
+            olds.push(old.into());
+            let skip = olds.len().saturating_sub(5);
+            rec.insert("old_states".into(), olds.split_off(skip).into());
         }
         rec.insert("auth_url".into(), auth.clone().into());
         rec.insert("state".into(), state.into());
@@ -368,6 +376,22 @@ fn save_grant(url: &str) {
     }
 }
 
+/// The extension whose challenge page is open.
+static PENDING: Mutex<Option<String>> = Mutex::new(None);
+
+/// The challenge page closed (grant caught, cancelled, or left with Back): the next verification
+/// opens a fresh challenge instead of this one again, which the gateway may have spent already.
+/// The state stays, so a grant from it is still recognised.
+fn end_challenge() {
+    let (Some(id), Some(app)) = (PENDING.lock().unwrap().take(), APP.get()) else { return };
+    let path = app.state::<Exts>().data.join(&id).join("session.json");
+    if let Value::Object(mut rec) = read_json(&path) {
+        rec.remove("auth_url");
+        rec.remove("challenge_at");
+        let _ = std::fs::write(&path, Value::Object(rec).to_string());
+    }
+}
+
 /// The app page the main webview left for the challenge (phones), to go back to once the grant arrives.
 #[cfg(mobile)]
 static BACK: Mutex<Option<tauri::Url>> = Mutex::new(None);
@@ -395,6 +419,7 @@ pub fn grant_catcher<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             if to.host_str() != Some("cancel") {
                 save_grant(to.as_str());
             }
+            end_challenge();
             if let Some(back) = BACK.lock().unwrap().take() {
                 let w = webview.clone();
                 std::thread::spawn(move || w.navigate(back));
@@ -409,7 +434,10 @@ pub fn grant_catcher<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             let mut back = BACK.lock().unwrap();
             match back.as_ref() {
                 // the phone's Back button returned to the app: verification over
-                Some(b) if b.origin() == load.url().origin() => *back = None,
+                Some(b) if b.origin() == load.url().origin() => {
+                    *back = None;
+                    end_challenge();
+                }
                 Some(_) => drop(webview.eval(CLOSE_BUTTON)),
                 None => {}
             }
@@ -425,6 +453,7 @@ pub async fn ext_session_verify(app: AppHandle, id: String) -> R<bool> {
     let rec = read_json(&app.state::<Exts>().data.join(&id).join("session.json"));
     let Some(url) = rec["auth_url"].as_str().and_then(|u| u.parse::<tauri::Url>().ok()).filter(|u| u.scheme() == "https") else { return Ok(false) };
     let _ = std::fs::remove_file(inbox().unwrap_or_default());
+    *PENDING.lock().unwrap() = Some(id.clone());
     #[cfg(mobile)]
     {
         let w = app.get_webview_window("main").ok_or("no main window")?;
@@ -438,7 +467,7 @@ pub async fn ext_session_verify(app: AppHandle, id: String) -> R<bool> {
             let _ = old.close();
         }
         let handle = app.clone();
-        WebviewWindowBuilder::new(&app, "ext-verify", WebviewUrl::External(url))
+        let w = WebviewWindowBuilder::new(&app, "ext-verify", WebviewUrl::External(url))
             .title("Verifikasi ekstensi")
             .inner_size(480.0, 680.0)
             .on_navigation(move |to| {
@@ -452,8 +481,47 @@ pub async fn ext_session_verify(app: AppHandle, id: String) -> R<bool> {
             })
             .build()
             .map_err(|e| e.to_string())?;
+        w.on_window_event(|e| {
+            if matches!(e, tauri::WindowEvent::Destroyed) {
+                end_challenge();
+            }
+        });
     }
     Ok(true)
+}
+
+/// Settings › Verifikasi: whether extension `id` has a usable session, and until when.
+#[tauri::command]
+pub fn ext_session_status(app: AppHandle, id: String) -> Value {
+    let rec = match read_json(&app.state::<Exts>().data.join(&id).join("session.json")) {
+        Value::Object(m) => m,
+        _ => Rec::new(),
+    };
+    json!({ "verified": usable(&rec), "expires_at": rec.get("expires_at") })
+}
+
+/// Verifies extension `id` from the settings: asks its gateway for a fresh challenge and opens it like
+/// `ext_session_verify`. `false` when the gateway handed out a session without one.
+#[tauri::command]
+pub async fn ext_session_start(app: AppHandle, id: String) -> R<bool> {
+    let (a, i) = (app.clone(), id.clone());
+    let challenge = crate::blocking(move || {
+        let exts = a.state::<Exts>();
+        let data = exts.data.join(&i);
+        std::fs::create_dir_all(&data).map_err(|e| e.to_string())?;
+        let host = Host::new(i.clone(), &exts.manifest(&i)?, data);
+        // never the page opened last time: the gateway may have spent it
+        let mut rec = host.rec();
+        rec.remove("auth_url");
+        rec.remove("challenge_at");
+        host.save(&rec)?;
+        host.bootstrap()
+    })
+    .await?;
+    match challenge {
+        Some(_) => ext_session_verify(app, id).await,
+        None => Ok(false),
+    }
 }
 
 /// Finishes a verification once the browser handed a grant back; returns the extension it was for.
@@ -465,10 +533,14 @@ pub async fn ext_session_poll(app: AppHandle, text: Option<String>) -> R<Option<
         let Some(text) = text.or_else(|| std::fs::read_to_string(&file).ok()) else { return Ok(None) };
         let _ = std::fs::remove_file(&file);
         let Some((grant, state)) = parse_callback(&text) else { return Ok(None) };
+        let ours = |rec: &Rec| {
+            rec.get("state").and_then(Value::as_str) == Some(state.as_str())
+                || rec.get("old_states").and_then(Value::as_array).is_some_and(|o| o.iter().any(|s| s.as_str() == Some(state.as_str())))
+        };
         for id in exts.ids() {
             let path = exts.data.join(&id).join("session.json");
             let mut rec = match read_json(&path) {
-                Value::Object(m) if m.get("state").and_then(Value::as_str) == Some(state.as_str()) => m,
+                Value::Object(m) if ours(&m) => m,
                 _ => continue,
             };
             rec.insert("grant".into(), grant.into());
@@ -479,7 +551,7 @@ pub async fn ext_session_poll(app: AppHandle, text: Option<String>) -> R<Option<
                 false => Err(res["error"].as_str().unwrap_or("verification failed").to_owned()),
             };
         }
-        Ok(None)
+        Err("Verifikasi ini sudah tidak berlaku. Unduh lagi untuk verifikasi ulang.".into())
     })
     .await
 }

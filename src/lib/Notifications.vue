@@ -4,7 +4,7 @@ import Icon from "./Icon.vue";
 
 // Bell in the title bar: running and queued downloads plus a history of notices (failures, finished
 // downloads, a new release). The badge counts running jobs and unread notices.
-export type Job = { key: string; title: string; pct: number | null; queued?: boolean; cancel?: () => void };
+export type Job = { key: string; title: string; pct: number | null; queued?: boolean; detail?: string; cancel?: () => void };
 export type Note = { id: number; kind: "error" | "done" | "update"; text: string; time: number; url?: string };
 const props = defineProps<{ jobs: Job[]; notes: Note[]; unread: number }>();
 const emit = defineEmits<{ read: []; clear: []; cancelAll: []; open: [url: string] }>();
@@ -49,6 +49,7 @@ const badge = () => props.jobs.length + props.unread;
                 <strong>{{ j.title }}</strong>
                 <span v-if="j.queued">Dalam antrean</span>
                 <span v-else class="bar"><i :style="{ width: `${j.pct ?? 0}%` }"></i></span>
+                <span v-if="!j.queued && j.detail" class="detail">{{ j.detail }}</span>
               </div>
               <span v-if="!j.queued && j.pct != null" class="pct">{{ Math.round(j.pct) }}%</span>
               <button v-if="j.cancel" class="x" title="Batalkan" :aria-label="`Batalkan ${j.title}`" @click="j.cancel()"><Icon name="close" :size="18" /></button>
@@ -58,7 +59,7 @@ const badge = () => props.jobs.length + props.unread;
         <section>
           <header>
             <h3>Notifikasi</h3>
-            <button v-if="notes.length" class="txt" @click="emit('clear')">Hapus semua</button>
+            <button v-if="notes.length" class="x" title="Hapus semua notifikasi" aria-label="Hapus semua notifikasi" @click="emit('clear')"><Icon name="clearAll" :size="20" /></button>
           </header>
           <ul v-if="notes.length">
             <li v-for="n in notes" :key="n.id" class="note" :class="n.kind">
@@ -108,6 +109,7 @@ li { display: flex; align-items: center; gap: 12px; padding: 8px 12px 8px 16px; 
 .note.error .ic { background: var(--error-container, #f9dedc); color: var(--on-error-container, #410e0b); }
 .note.done .ic, .note.update .ic { background: var(--primary-container); color: var(--on-primary-container); }
 .body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--on-surface-variant); }
+.detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .body strong { font-size: 14px; font-weight: 600; color: var(--on-surface); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .text { font-size: 13px; color: var(--on-surface); line-height: 1.4; overflow-wrap: anywhere; }
 .time { font-size: 11px; font-variant-numeric: tabular-nums; }

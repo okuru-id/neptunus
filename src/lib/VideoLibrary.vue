@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import Icon from "./Icon.vue";
 import VideoPlayer from "./VideoPlayer.vue";
@@ -11,7 +11,7 @@ type Video = { path: string; title: string; size?: number; sub?: SubtitleQuery }
 type Tab = "local" | "cloud" | "ext";
 
 const props = defineProps<{ query: string; exts: ExtInfo[]; home?: number }>();
-const emit = defineEmits<{ play: []; count: [n: number]; exts: [list: ExtInfo[]] }>();
+const emit = defineEmits<{ play: []; count: [n: number]; exts: [list: ExtInfo[]]; detail: [on: boolean]; watching: [on: boolean] }>();
 
 const TAB_KEY = "neptunus.videoTab";
 const TABS: { id: Tab; label: string; icon: "folder" | "cloud" | "extension" }[] = [
@@ -43,6 +43,9 @@ const shown = computed(() => {
   return inTab.value.filter((v) => !q || v.title.toLowerCase().includes(q));
 });
 watch(inTab, (l) => emit("count", l.length), { immediate: true });
+watch(() => tab.value === "ext" && inDetail.value, (on) => emit("detail", on), { immediate: true });
+watch(() => !!open.value, (on) => emit("watching", on));
+onUnmounted(() => emit("watching", false));
 const size = (b?: number) =>
   b == null ? "" : b >= 1 << 30 ? `${(b / (1 << 30)).toFixed(1)} GB` : `${Math.round(b / (1 << 20))} MB`;
 
@@ -70,7 +73,7 @@ onMounted(async () => {
     </div>
     <button v-if="tab === 'ext' && inDetail" class="back" title="Kembali ke katalog" @click="extHome++"><Icon name="back" :size="22" /></button>
     <button v-if="tab === 'ext' && !inDetail" class="reload" :disabled="refreshing" title="Ambil ulang daftar film dari semua ekstensi" @click="reload++">
-      <Icon name="refresh" :size="20" :class="{ spinning: refreshing }" /><span>{{ refreshing ? "Memuat ulang…" : "Muat ulang katalog" }}</span>
+      <Icon name="refresh" :size="20" :class="{ spinning: refreshing }" /><span class="lbl">{{ refreshing ? "Memuat ulang…" : "Muat ulang katalog" }}</span>
     </button>
   </div>
 
@@ -118,7 +121,7 @@ onMounted(async () => {
 .reload:disabled { opacity: 0.6; }
 .spinning { animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-@media (max-width: 600px) { .reload { width: 44px; padding: 0; justify-content: center; } .reload span { display: none; } }
+@media (max-width: 600px) { .reload { width: 44px; padding: 0; justify-content: center; } .reload .lbl { display: none; } }
 .tabs { display: flex; gap: 4px; padding: 4px; border-radius: 28px; background: var(--surface-container-low); width: fit-content; max-width: 100%; overflow-x: auto; scrollbar-width: none; }
 .tabs button {
   flex: none; height: 44px; padding: 0 18px 0 14px; border-radius: 22px; display: inline-flex; align-items: center; gap: 8px;

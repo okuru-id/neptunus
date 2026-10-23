@@ -463,7 +463,7 @@ onUnmounted(() => {
   position: fixed; inset: var(--titlebar) 0 0; z-index: 30; background: #000; color: #fff;
   display: flex; align-items: center; justify-content: center;
 }
-.vplayer:fullscreen, .vplayer.full { inset: 0; }
+.vplayer:fullscreen, .vplayer.full { inset: 0; z-index: 32; }
 .vplayer.idle { cursor: none; }
 /* pinned to the box: a grid row sized by the video itself let tall frames spill under the window edge */
 video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }

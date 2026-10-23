@@ -17,13 +17,18 @@ jobs:
     outputs:
       id: ${{ steps.draft.outputs.id }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - id: draft
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
         run: |
+          # Notes come from release-notes-<tag>.md, or the commits since the previous tag.
+          f="release-notes-$GITHUB_REF_NAME.md"
+          [ -f "$f" ] || git log --pretty='- %s' "$(git describe --tags --abbrev=0 HEAD^)..HEAD" > "$f"
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
-            --title "Neptunus $GITHUB_REF_NAME" --notes "See the assets below to download and install Neptunus."
+            --title "Neptunus $GITHUB_REF_NAME" --notes-file "$f"
           echo "id=$(gh release view "$GITHUB_REF_NAME" --json databaseId --jq .databaseId)" >> "$GITHUB_OUTPUT"
 
   build:

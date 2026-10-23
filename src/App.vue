@@ -64,6 +64,8 @@ const page = (() => { try { return JSON.parse(sessionStorage.getItem(PAGE_KEY) ?
 const view = ref<View>(page.view ?? "catalog");
 const query = ref("");
 const videoCount = ref(0);
+const watching = ref(false); // a film is open: settings stays hidden so the player is not unmounted
+const videoDetail = ref(false); // a film's detail page is open, so the search hides
 const group = ref<string | null>(page.group ?? null); // selected album/artist name
 const plId = ref<number | null>(page.plId ?? null);
 const plTracks = ref<Track[]>([]);
@@ -304,6 +306,7 @@ watch([view, group, plId, settingsTab], ([view, group, plId, settingsTab]) => {
 function openSettings(tab: SettingsTab) {
   settingsTab.value = tab;
   setView("s3");
+  showNow.value = false; // the now-playing/lyrics screen covers the page
 }
 const setLibrary = (t: unknown[]) => (rawLibrary.value = t as Track[]);
 
@@ -893,7 +896,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
 
   <ConfirmDialog />
   <FolderPicker />
-  <TitleBar @settings="openSettings('local')">
+  <TitleBar :no-settings="watching" @settings="openSettings('local')">
     <Notifications :jobs="jobs" :notes="notes" :unread="unread" @read="unread = 0" @clear="notes = []" @cancel-all="cancelAll" @open="openUrl" />
   </TitleBar>
 
@@ -921,7 +924,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
             <p v-if="(library.length || view === 'videos') && view !== 's3'" class="sub">{{ subtitle }}</p>
           </div>
         </div>
-        <label v-if="(library.length || (view === 'catalog' && extCatalog) || view === 'videos') && view !== 's3'" class="search">
+        <label v-if="(library.length || (view === 'catalog' && extCatalog) || view === 'videos') && view !== 's3' && !(view === 'videos' && videoDetail)" class="search">
           <Icon name="search" />
           <input :placeholder="view === 'videos' ? 'Cari video' : 'Cari lagu, artis, album'" v-model="query" />
           <button v-if="query" class="icon-btn" @click="query = ''" title="Hapus pencarian"><Icon name="close" :size="20" /></button>
@@ -944,7 +947,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
 
       <p v-if="loading" class="scanning"><span class="spinner" :style="{ clipPath: 'url(#shape-cookie12)' }"></span>Memindai folder musik…</p>
 
-      <VideoLibrary v-if="view === 'videos'" :home="videoHome" :query="query" :exts="exts" @play="current >= 0 && !paused && togglePause()" @count="videoCount = $event" @exts="exts = $event" />
+      <VideoLibrary v-if="view === 'videos'" :home="videoHome" :query="query" :exts="exts" @play="current >= 0 && !paused && togglePause()" @count="videoCount = $event" @exts="exts = $event" @detail="videoDetail = $event" @watching="watching = $event" />
       <section v-else-if="!library.length && view !== 's3' && !(view === 'catalog' && extCatalog)" class="empty">
         <div class="empty-mark" :style="{ clipPath: 'url(#shape-cookie12)' }"><Icon name="note" :size="72" /></div>
         <h2>Belum ada musik</h2>

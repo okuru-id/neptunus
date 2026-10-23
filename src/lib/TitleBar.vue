@@ -8,6 +8,7 @@ import Icon from "./Icon.vue";
 const win = getCurrentWindow();
 // macOS draws its own traffic lights; iOS/Android have no window to minimize or close
 const native = ["mac", "mobile"].some((c) => document.documentElement.classList.contains(c));
+defineProps<{ noSettings?: boolean }>();
 defineEmits<{ settings: [] }>();
 const maximized = ref(false);
 
@@ -33,7 +34,7 @@ onUnmounted(() => off?.then((f) => f()));
     </div>
     <div class="controls">
       <slot />
-      <button @click="$emit('settings')" title="Pengaturan" aria-label="Pengaturan">
+      <button :disabled="noSettings" @click="$emit('settings')" :title="noSettings ? 'Tutup film dulu untuk membuka Pengaturan' : 'Pengaturan'" aria-label="Pengaturan">
         <Icon name="settings" :size="18" />
       </button>
       <template v-if="!native">
@@ -53,7 +54,7 @@ onUnmounted(() => off?.then((f) => f()));
 
 <style scoped>
 .titlebar {
-  position: fixed; inset: 0 0 auto 0; z-index: 30; height: var(--titlebar);
+  position: fixed; inset: 0 0 auto 0; z-index: 31; height: var(--titlebar); /* 31: above the video player so the bell panel shows over it */
   display: flex; align-items: center; justify-content: space-between;
   padding: 0 8px 0 24px; user-select: none; -webkit-user-select: none;
   /* sits on the darker window frame (body background) */
@@ -68,8 +69,9 @@ onUnmounted(() => off?.then((f) => f()));
   transition: background 0.15s, color 0.15s, border-radius 0.3s var(--spring);
 }
 /* touch screens keep :hover after a tap, so only real pointers get it */
-@media (hover: hover) { .controls button:hover { background: var(--surface-container-highest); color: var(--on-surface); } }
-.controls button:active { border-radius: 8px; }
+@media (hover: hover) { .controls button:hover:not(:disabled) { background: var(--surface-container-highest); color: var(--on-surface); } }
+.controls button:active:not(:disabled) { border-radius: 8px; }
+.controls button:disabled { opacity: 0.38; cursor: default; }
 @media (hover: hover) { .controls .close:hover { background: #b3261e; color: #fff; } }
 /* a desktop window as narrow as a phone: the app name makes room for the window buttons */
 @media (max-width: 440px) { :root:not(.mobile) .name { display: none; } }

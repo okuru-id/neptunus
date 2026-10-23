@@ -33,6 +33,7 @@
     "active": true,
     "targets": "all",
     "android": { "minSdkVersion": 26 },
+    "iOS": { "frameworks": ["MediaPlayer"] },
     "linux": {
       "deb": { "depends": ["gstreamer1.0-plugins-good", "gstreamer1.0-plugins-bad", "gstreamer1.0-libav"] },
       "rpm": { "depends": ["gstreamer1-plugins-good", "gstreamer1-plugins-bad-free", "gstreamer1-libav"] }

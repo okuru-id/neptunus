@@ -59,7 +59,10 @@ impl Db {
                duration_secs INTEGER NOT NULL, pos INTEGER NOT NULL, uri TEXT NOT NULL DEFAULT '');
              CREATE TABLE IF NOT EXISTS downloads (
                path TEXT PRIMARY KEY REFERENCES tracks(path) ON DELETE CASCADE,
-               ext TEXT NOT NULL, track TEXT NOT NULL);",
+               ext TEXT NOT NULL, track TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS subtitles (url TEXT PRIMARY KEY, vtt TEXT NOT NULL, used INTEGER NOT NULL);
+             CREATE TABLE IF NOT EXISTS ext_cache (key TEXT PRIMARY KEY, value TEXT NOT NULL, saved INTEGER NOT NULL);",
         )?;
         // tables made before the Spotify uri column (fails harmlessly once it exists)
         let _ = c.execute("ALTER TABLE playlist_pending ADD COLUMN uri TEXT NOT NULL DEFAULT ''", []);
@@ -168,6 +171,52 @@ impl Db {
         self.0.lock().unwrap()
             .execute("DELETE FROM playlist_tracks WHERE playlist_id=?1 AND path=?2", params![id, path])
             .map(|_| ())
+    }
+
+    /// Small app preferences (JSON or plain text) that should live with the library, not the webview.
+    pub fn setting(&self, key: &str) -> rusqlite::Result<Option<String>> {
+        use rusqlite::OptionalExtension;
+        self.0.lock().unwrap().query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| r.get(0)).optional()
+    }
+
+    pub fn set_setting(&self, key: &str, value: Option<&str>) -> rusqlite::Result<()> {
+        let c = self.0.lock().unwrap();
+        match value {
+            Some(v) => c.execute("INSERT INTO settings VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2", params![key, v]),
+            None => c.execute("DELETE FROM settings WHERE key = ?1", [key]),
+        }
+        .map(|_| ())
+    }
+
+    /// A subtitle file fetched before, as WebVTT; touching it keeps it off the cleanup list.
+    pub fn subtitle(&self, url: &str) -> rusqlite::Result<Option<String>> {
+        use rusqlite::OptionalExtension;
+        let c = self.0.lock().unwrap();
+        c.execute("UPDATE subtitles SET used = unixepoch() WHERE url = ?1", [url])?;
+        c.query_row("SELECT vtt FROM subtitles WHERE url = ?1", [url], |r| r.get(0)).optional()
+    }
+
+    /// Keeps the 300 most recently used files (a few MB at most).
+    pub fn save_subtitle(&self, url: &str, vtt: &str) -> rusqlite::Result<()> {
+        let c = self.0.lock().unwrap();
+        c.execute("INSERT OR REPLACE INTO subtitles VALUES (?1, ?2, unixepoch())", params![url, vtt])?;
+        c.execute("DELETE FROM subtitles WHERE url NOT IN (SELECT url FROM subtitles ORDER BY used DESC LIMIT 300)", [])
+            .map(|_| ())
+    }
+
+    /// A cached extension answer and its age in seconds.
+    pub fn cached(&self, key: &str) -> rusqlite::Result<Option<(String, i64)>> {
+        use rusqlite::OptionalExtension;
+        self.0.lock().unwrap()
+            .query_row("SELECT value, unixepoch() - saved FROM ext_cache WHERE key = ?1", [key], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()
+    }
+
+    /// Stores an answer; anything untouched for a week goes.
+    pub fn cache(&self, key: &str, value: &str) -> rusqlite::Result<()> {
+        let c = self.0.lock().unwrap();
+        c.execute("INSERT OR REPLACE INTO ext_cache VALUES (?1, ?2, unixepoch())", params![key, value])?;
+        c.execute("DELETE FROM ext_cache WHERE saved < unixepoch() - 7 * 86400", []).map(|_| ())
     }
 
     pub fn folders(&self) -> rusqlite::Result<Vec<String>> {

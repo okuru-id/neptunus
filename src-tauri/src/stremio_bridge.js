@@ -12,7 +12,8 @@ registerExtension({
     const res = (m.resources || []).map((r) => (typeof r === "string" ? r : r && r.name));
     return {
       name: m.name || "Stremio",
-      catalogs: (m.catalogs || []).filter((c) => c.type === "movie" || c.type === "series"),
+      // any content type (movie, series, anime, tv…): the items inside are what get played
+      catalogs: (m.catalogs || []).filter((c) => c && c.type && c.id),
       // which ids this addon can give streams for (empty = any)
       streams: res.includes("stream"),
       subtitles: res.includes("subtitles"),

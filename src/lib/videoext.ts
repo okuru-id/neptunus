@@ -9,7 +9,7 @@ export type Episode = {
   thumbnail?: string; released?: string;
 };
 export type Meta = {
-  id: string; name: string; type: string; poster?: string; posterShape?: string;
+  id: string; name: string; type: string; poster?: string; posterShape?: string; background?: string;
   releaseInfo?: string; description?: string; year?: string; videos?: Episode[];
 };
 export type Stream = {
@@ -27,11 +27,19 @@ export const videoSources = (exts: ExtInfo[]) => exts.filter((e) => e.enabled &&
 const call = <T,>(id: string, method: string, ...args: unknown[]) =>
   invoke<T>("ext_call", { id, method, args });
 
-export const sourceInfo = (id: string) => call<SourceInfo>(id, "videoInfo");
-export const catalog = (id: string, type: string, catId: string, extra = "") =>
-  call<Meta[]>(id, "videoCatalog", type, catId, extra);
-export const meta = (id: string, type: string, mid: string) => call<Meta>(id, "videoMeta", type, mid);
-export const streams = (id: string, type: string, mid: string) => call<Stream[]>(id, "videoStreams", type, mid);
+// Answers are kept in the app database: within `ttl` seconds they come from there, and an older one
+// still does when the addon is down. `force` asks the addon again (the "Muat ulang" buttons).
+const HOUR = 3600;
+const cached = <T,>(ttl: number, force: boolean, id: string, method: string, ...args: unknown[]) =>
+  invoke<T>("ext_call_cached", { id, method, args, ttl: force ? 0 : ttl });
+
+export const sourceInfo = (id: string, force = false) => cached<SourceInfo>(24 * HOUR, force, id, "videoInfo");
+export const catalog = (id: string, type: string, catId: string, extra = "", force = false) =>
+  cached<Meta[]>(6 * HOUR, force, id, "videoCatalog", type, catId, extra);
+export const meta = (id: string, type: string, mid: string) => cached<Meta>(24 * HOUR, false, id, "videoMeta", type, mid);
+// stream links can be signed and expire, so they're only reused for a short while
+export const streams = (id: string, type: string, mid: string, force = false) =>
+  cached<Stream[]>(HOUR, force, id, "videoStreams", type, mid);
 
 /** Playback risk score, lower = more likely to play in the webview. Also sorts the picker list.
  *  "pad" files (anti-hotlink) start with junk bytes, so the webview can't demux them (error 3016).
@@ -81,11 +89,11 @@ export type StreamGroup = { id: string; name: string; list: SourceStream[]; note
 
 /** Streams for one title from every addon that serves it, one group each, so the user can play from any
  *  of them and see why an addon came back empty. */
-export function allStreams(sources: { id: string; name: string; info?: SourceInfo }[], type: string, id: string) {
+export function allStreams(sources: { id: string; name: string; info?: SourceInfo }[], type: string, id: string, force = false) {
   return Promise.all(
     sources.filter((s) => servesStreams(s.info, id)).map(async (s): Promise<StreamGroup> => {
       try {
-        const all = await streams(s.id, type, id);
+        const all = await streams(s.id, type, id, force);
         const list = all.filter((x) => x.url).map((x) => ({ ...x, source: s.id, sourceName: s.name })) as SourceStream[];
         const note = list.length ? "" : all.length ? "Hanya ada sumber torrent, belum bisa diputar di sini." : "Tidak ada sumber untuk judul ini.";
         return { id: s.id, name: s.name, list, note };
@@ -117,7 +125,7 @@ export const subtitleQuery = (sources: { id: string; name: string; info?: Source
 /** Subtitles from every subtitle addon; one failing addon doesn't hide the rest. */
 export async function subtitles(q: SubtitleQuery) {
   const lists = await Promise.all(q.sources.map((s) =>
-    call<Omit<Subtitle, "source">[]>(s.id, "videoSubtitles", q.type, q.id, q.extra)
+    cached<Omit<Subtitle, "source">[]>(24 * HOUR, false, s.id, "videoSubtitles", q.type, q.id, q.extra)
       .then((l) => l.filter((x) => x.url).map((x) => ({ ...x, source: s.name })), () => [])));
   return lists.flat() as Subtitle[];
 }

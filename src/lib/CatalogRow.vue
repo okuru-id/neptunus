@@ -1,46 +1,38 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from "vue";
+import { onMounted, ref, watch } from "vue";
 import Icon from "./Icon.vue";
 import { catalog, type Meta } from "./videoext";
 
-// One catalog as a horizontal strip of posters. Loads once it scrolls into view, so a page of
-// many catalogs only asks for the ones actually looked at.
-const props = defineProps<{ title: string; source: string; type: string; catalogId: string; extra?: string }>();
+// One catalog as a horizontal strip of posters. Loads right away: the answer usually comes from the
+// app database, so waiting for the row to scroll into view only made rows blink in while scrolling.
+const props = defineProps<{ title: string; source: string; type: string; catalogId: string; extra?: string; refresh?: number }>();
 const emit = defineEmits<{ open: [m: Meta] }>();
 
-const el = ref<HTMLElement>();
 const strip = ref<HTMLElement>();
 const metas = ref<Meta[] | null>(null);
 const error = ref("");
-let io: IntersectionObserver | undefined;
 
-async function load() {
-  metas.value = null;
+async function load(force = false) {
+  if (!force) metas.value = null; // a reload keeps the old posters up until the new list is in
   error.value = "";
   try {
-    metas.value = await catalog(props.source, props.type, props.catalogId, props.extra ?? "");
+    metas.value = await catalog(props.source, props.type, props.catalogId, props.extra ?? "", force);
   } catch (e) {
     error.value = String(e);
     metas.value = [];
   }
 }
 
-onMounted(() => {
-  io = new IntersectionObserver(([e]) => {
-    if (!e.isIntersecting) return;
-    io?.disconnect();
-    load();
-  }, { rootMargin: "200px" });
-  io.observe(el.value!);
-});
-onUnmounted(() => io?.disconnect());
+onMounted(() => load());
 watch(() => props.extra, () => metas.value !== null && load());
+// "Muat ulang": ask the addon again and refresh the database copy
+watch(() => props.refresh, () => load(true));
 
 const scroll = (dir: number) => strip.value?.scrollBy({ left: dir * strip.value.clientWidth * 0.8, behavior: "smooth" });
 </script>
 
 <template>
-  <section ref="el" class="row" v-show="metas === null || metas.length || error">
+  <section class="row" v-show="metas === null || metas.length || error">
     <header>
       <h3>{{ title }}</h3>
       <div class="nav">
@@ -48,7 +40,7 @@ const scroll = (dir: number) => strip.value?.scrollBy({ left: dir * strip.value.
         <button title="Geser kanan" class="fwd" @click="scroll(1)"><Icon name="back" :size="20" /></button>
       </div>
     </header>
-    <p v-if="error" class="note">Tidak bisa dimuat ({{ error }}). <button class="retry" @click="load">Coba lagi</button></p>
+    <p v-if="error" class="note">Tidak bisa dimuat ({{ error }}). <button class="retry" @click="load(true)">Coba lagi</button></p>
     <div v-else ref="strip" class="strip">
       <template v-if="metas">
         <button v-for="m in metas" :key="m.id" class="card" @click="emit('open', m)">

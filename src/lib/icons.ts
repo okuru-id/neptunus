@@ -41,7 +41,6 @@ import addFolder from "@material-symbols/svg-400/rounded/create_new_folder-fill.
 import add from "@material-symbols/svg-400/rounded/add-fill.svg?raw";
 import close from "@material-symbols/svg-400/rounded/close-fill.svg?raw";
 import error from "@material-symbols/svg-400/rounded/error-fill.svg?raw";
-import openInNew from "@material-symbols/svg-400/rounded/open_in_new-fill.svg?raw";
 import equalizer from "@material-symbols/svg-400/rounded/equalizer-fill.svg?raw";
 import lyrics from "@material-symbols/svg-400/rounded/lyrics-fill.svg?raw";
 import playlistAdd from "@material-symbols/svg-400/rounded/playlist_add-fill.svg?raw";
@@ -116,7 +115,6 @@ export const icons = {
   add,
   close,
   error,
-  openInNew,
   lyrics,
   equalizer,
   playlistAdd,

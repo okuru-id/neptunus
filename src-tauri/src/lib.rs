@@ -75,20 +75,184 @@ fn e(err: rusqlite::Error) -> String { err.to_string() }
 #[tauri::command]
 async fn check_update() -> R<Option<(String, String)>> {
     blocking(|| {
-        let r: serde_json::Value = attohttpc::get("https://api.github.com/repos/okuru-id/neptunus/releases/latest")
-            .header("User-Agent", "neptunus")
-            .header("Accept", "application/vnd.github+json")
-            .timeout(std::time::Duration::from_secs(10))
-            .send()
-            .and_then(|r| r.error_for_status())
-            .and_then(|r| r.json())
-            .map_err(|e| e.to_string())?;
+        let r = github("releases/latest")?;
         let tag = r["tag_name"].as_str().unwrap_or_default();
         let ver = |s: &str| -> Vec<u64> { s.trim_start_matches('v').split('.').map(|p| p.parse().unwrap_or(0)).collect() };
         Ok((ver(tag) > ver(env!("CARGO_PKG_VERSION")))
             .then(|| (tag.trim_start_matches('v').to_owned(), r["html_url"].as_str().unwrap_or_default().to_owned())))
     })
     .await
+}
+
+fn github(path: &str) -> R<serde_json::Value> {
+    attohttpc::get(format!("https://api.github.com/repos/okuru-id/neptunus/{path}"))
+        .header("User-Agent", "neptunus")
+        .header("Accept", "application/vnd.github+json")
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .and_then(|r| r.error_for_status())
+        .and_then(|r| r.json())
+        .map_err(|e| e.to_string())
+}
+
+/// The installer from the newest release that fits this system, as (file name, download URL).
+fn release_asset() -> R<(String, String)> {
+    let r = github("releases/latest")?;
+    #[cfg(target_os = "linux")]
+    let suffix = if std::env::var_os("APPIMAGE").is_some() {
+        ".AppImage"
+    } else if std::path::Path::new("/usr/bin/dpkg").exists() {
+        ".deb"
+    } else if std::path::Path::new("/usr/bin/rpm").exists() {
+        ".rpm"
+    } else {
+        ".AppImage"
+    };
+    #[cfg(target_os = "windows")]
+    let suffix = "-setup.exe";
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    let suffix = "_aarch64.dmg";
+    #[cfg(all(target_os = "macos", not(target_arch = "aarch64")))]
+    let suffix = "_x64.dmg";
+    #[cfg(target_os = "android")]
+    let suffix = ".apk";
+    #[cfg(target_os = "ios")]
+    let suffix = ".ipa";
+    r["assets"].as_array().into_iter().flatten()
+        .find(|a| a["name"].as_str().is_some_and(|n| n.ends_with(suffix)))
+        .and_then(|a| Some((a["name"].as_str()?.to_owned(), a["browser_download_url"].as_str()?.to_owned())))
+        .ok_or_else(|| "Installer untuk sistem ini belum ada di rilis terbaru.".into())
+}
+
+/// Downloads a release file into Downloads, reporting `{ key, pct }` as `release-download` events.
+#[cfg(desktop)]
+fn download_release(app: &tauri::AppHandle, url: &str, name: &str, key: &str) -> R<std::path::PathBuf> {
+    use std::io::{Read, Write};
+    // only this project's release files, and a plain file name to save them under
+    if !url.starts_with("https://github.com/okuru-id/neptunus/releases/download/") || name.contains(['/', '\\']) || name.starts_with('.') {
+        return Err("Alamat file rilis tidak valid.".into());
+    }
+    let dir = app.path().download_dir().map_err(|e| e.to_string())?;
+    let path = dir.join(name);
+    let part = dir.join(format!("{name}.part"));
+    let res = attohttpc::get(url).header("User-Agent", "neptunus").send().and_then(|r| r.error_for_status())
+        .map_err(|e| e.to_string())?;
+    let total = res.headers().get("content-length").and_then(|v| v.to_str().ok()?.parse::<u64>().ok()).unwrap_or(0);
+    let (_, _, mut body) = res.split();
+    let mut file = std::fs::File::create(&part).map_err(|e| e.to_string())?;
+    let (mut buf, mut done, mut last) = (vec![0u8; 64 * 1024], 0u64, u64::MAX);
+    loop {
+        let n = body.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        file.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+        done += n as u64;
+        let pct = if total > 0 { done * 100 / total } else { 0 };
+        if pct != last {
+            last = pct;
+            let _ = tauri::Emitter::emit(app, "release-download", serde_json::json!({ "key": key, "pct": pct }));
+        }
+    }
+    drop(file);
+    std::fs::rename(&part, &path).map_err(|e| e.to_string())?;
+    #[cfg(target_os = "linux")]
+    if name.ends_with(".AppImage") {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
+    }
+    Ok(path)
+}
+
+/// Gets the new version's installer without a trip to GitHub. Desktop: downloaded into Downloads
+/// and opened, so the system installer takes over (an AppImage is shown instead: it just replaces
+/// the old file). Phones: the APK/IPA link goes to the browser, which downloads it and hands it to
+/// the installer (Android) or the Files app, for SideStore to sign (iOS).
+#[tauri::command]
+async fn update_install(app: tauri::AppHandle) -> R<String> {
+    use tauri_plugin_opener::OpenerExt;
+    blocking(move || {
+        let (name, url) = release_asset()?;
+        #[cfg(mobile)]
+        {
+            app.opener().open_url(&url, None::<&str>).map_err(|e| e.to_string())?;
+            Ok(name)
+        }
+        #[cfg(desktop)]
+        {
+            let path = download_release(&app, &url, &name, "update")?;
+            if name.ends_with(".AppImage") {
+                app.opener().reveal_item_in_dir(&path).map_err(|e| e.to_string())?;
+            } else {
+                app.opener().open_path(path.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())?;
+            }
+            Ok(path.to_string_lossy().into_owned())
+        }
+    })
+    .await
+}
+
+#[derive(serde::Serialize)]
+struct Release {
+    tag: String,
+    date: String,
+    assets: Vec<(String, u64, String)>, // name, size, download URL
+}
+
+/// The last releases and their files, for Settings › Tentang.
+#[tauri::command]
+async fn release_list() -> R<Vec<Release>> {
+    blocking(|| {
+        let list = github("releases?per_page=10")?;
+        Ok(list.as_array().into_iter().flatten().filter(|r| r["draft"] != true).map(|r| Release {
+            tag: r["tag_name"].as_str().unwrap_or_default().to_owned(),
+            date: r["published_at"].as_str().unwrap_or_default().to_owned(),
+            assets: r["assets"].as_array().into_iter().flatten().filter_map(|a| Some((
+                a["name"].as_str()?.to_owned(),
+                a["size"].as_u64().unwrap_or(0),
+                a["browser_download_url"].as_str()?.to_owned(),
+            ))).collect(),
+        }).collect())
+    })
+    .await
+}
+
+/// One release file into Downloads, then shown in the file manager. Phones hand the link to the browser.
+#[tauri::command]
+async fn release_download(app: tauri::AppHandle, url: String, name: String) -> R<String> {
+    use tauri_plugin_opener::OpenerExt;
+    blocking(move || {
+        #[cfg(mobile)]
+        {
+            app.opener().open_url(&url, None::<&str>).map_err(|e| e.to_string())?;
+            Ok(name)
+        }
+        #[cfg(desktop)]
+        {
+            let path = download_release(&app, &url, &name, &url)?;
+            let _ = app.opener().reveal_item_in_dir(&path);
+            Ok(path.to_string_lossy().into_owned())
+        }
+    })
+    .await
+}
+
+/// iOS: when the signature this copy was installed with runs out (the provisioning profile's
+/// ExpirationDate, ISO 8601) and who signed it (TeamName). A free Apple ID's lasts 7 days.
+#[tauri::command]
+fn ios_signing() -> Option<(String, String)> {
+    if !cfg!(target_os = "ios") {
+        return None;
+    }
+    // the profile is a signed plist; its XML sits in the file as plain text
+    let bytes = std::fs::read(std::env::current_exe().ok()?.parent()?.join("embedded.mobileprovision")).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    let value = |key: &str, tag: &str| {
+        let rest = &text[text.find(&format!("<key>{key}</key>"))?..];
+        let start = rest.find(&format!("<{tag}>"))? + tag.len() + 2;
+        Some(rest[start..start + rest[start..].find(&format!("</{tag}>"))?].trim().to_owned())
+    };
+    Some((value("ExpirationDate", "date")?, value("TeamName", "string").unwrap_or_default()))
 }
 
 #[tauri::command]
@@ -106,6 +270,12 @@ async fn scan_folder(db: State<'_, Db>, path: String) -> R<Vec<Track>> {
     db.upsert(&found).map_err(e)?;
     db.all().map_err(e)
 }
+
+#[tauri::command]
+fn setting_get(db: State<Db>, key: String) -> R<Option<String>> { db.setting(&key).map_err(e) }
+
+#[tauri::command]
+fn setting_set(db: State<Db>, key: String, value: Option<String>) -> R<()> { db.set_setting(&key, value.as_deref()).map_err(e) }
 
 #[tauri::command]
 fn list_folders(db: State<Db>) -> R<Vec<String>> { db.folders().map_err(e) }
@@ -441,8 +611,13 @@ pub fn run() {
             s3::s3_list,
             video::video_list,
             video::video_url,
-            video::video_open_external,
             video::video_subtitle,
+            setting_get,
+            update_install,
+            release_list,
+            release_download,
+            ios_signing,
+            setting_set,
             list_folders,
             remove_folder,
             local::local_list,
@@ -475,6 +650,7 @@ pub fn run() {
             ext::ext_set_enabled,
             ext::ext_save_settings,
             ext::ext_call,
+            ext::ext_call_cached,
             ext::ext_download,
             ext::ext_redownload,
             ext::session::ext_session_verify,

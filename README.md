@@ -1,47 +1,88 @@
+<div align="center">
+
+<img src="public/favicon.png" width="96" alt="Neptunus logo" />
+
 # Neptunus
 
-**[neptunus.id](https://neptunus.id)**
+**One small, beautiful player for your music and your videos, on every device.**
 
-A lightweight desktop music player for Linux, Windows and macOS, built with Tauri 2, Rust and Vue 3.
+Local files, your own S3 bucket and streaming extensions, wrapped in a Material 3 Expressive UI that takes its colours from what's playing.
 
-Inspired by [**PixelPlayer**](https://github.com/PixelPlayerHQ/PixelPlayer), the beautiful Material 3 Expressive music player for Android. If you're on Android, go check it out and give it a star.
+[![Latest release](https://img.shields.io/github/v/release/okuru-id/neptunus?include_prereleases&label=release)](https://github.com/okuru-id/neptunus/releases)
+[![Downloads](https://img.shields.io/github/downloads/okuru-id/neptunus/total)](https://github.com/okuru-id/neptunus/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20Windows%20%7C%20macOS%20%7C%20Android%20%7C%20iOS-6750a4)
+![Tauri 2](https://img.shields.io/badge/Tauri-2-24c8db?logo=tauri&logoColor=white)
+![Rust](https://img.shields.io/badge/Rust-native%20audio-dea584?logo=rust&logoColor=white)
+![Vue 3](https://img.shields.io/badge/Vue-3-42b883?logo=vuedotjs&logoColor=white)
 
-> **Not affiliated.** Neptunus is an independent, from-scratch project. It shares PixelPlayer's design ideas (expressive shapes, colour from the album art) but contains none of its code or assets, and is not endorsed by its author.
+[**Download**](https://github.com/okuru-id/neptunus/releases) · [Website](https://neptunus.id) · [Features](#features) · [Build from source](#build-from-source)
+
+</div>
+
+---
+
+## Why Neptunus
+
+- **Music and video in one app.** No separate player for your films.
+- **Tiny.** It uses the system webview instead of shipping a browser, and decodes audio natively in Rust.
+- **Your files stay yours.** Play from a folder or your own S3-compatible bucket. No account, no tracking.
+- **Runs everywhere.** Linux, Windows, macOS, Android and iOS from one codebase.
+- **Extensible.** Plug in catalog, download, lyrics, video and subtitle extensions.
 
 ## Features
 
-- **Local library:** scan a folder; tags and cover art are read with lofty and kept in SQLite. Browse by song, album, artist or playlist, with search.
-- **Playback:** gapless queue, shuffle, repeat and volume. Decoding is done natively in Rust (rodio/symphonia): MP3, FLAC, AAC/M4A, OGG, Opus, WAV.
-- **Material 3 Expressive UI:** the whole interface takes its colours from the playing cover, with expressive clip shapes and spring motion.
-- **Synced lyrics:** looked up in this order: a sidecar `.lrc` file, the embedded lyrics tag, then [LRCLIB](https://lrclib.net). Lyrics fetched from LRCLIB are cached locally, so each song is only downloaded once.
-- **OS media controls:** MPRIS on Linux, SMTC on Windows, Now Playing on macOS.
-- **System tray:** the tray menu has playback controls and the cover. Double click (Linux) or click (Windows and macOS) the icon to show the window.
-- **S3 source:** stream music from an S3-compatible bucket without downloading it (tags, cover and `.lrc` files are read with range requests).
-- **Small:** uses the system webview, so there is no bundled browser runtime.
+### 🎵 Music
 
-The UI text is currently in Indonesian.
+| | |
+|---|---|
+| **Library** | Scan folders; tags and cover art are read with lofty and kept in SQLite. Browse by song, album, artist or playlist, with search. |
+| **Playback** | Gapless queue, shuffle, repeat, equalizer. Native decoding of MP3, FLAC, AAC/M4A, OGG, Opus and WAV (rodio + symphonia). |
+| **Synced lyrics** | From a sidecar `.lrc`, the embedded tag or [LRCLIB](https://lrclib.net), cached after the first download. |
+| **Cloud** | Stream from any S3-compatible bucket without downloading; tags, covers and `.lrc` are read with range requests. |
+| **Extensions** | SpotiFLAC-compatible extensions add online catalogs, downloads and lyrics. Install from a repository URL or a package file. |
+| **System integration** | MPRIS (Linux), SMTC (Windows), Now Playing (macOS, iOS lock screen), Android media notification, system tray. Keeps playing in the background on mobile. |
 
-## Build
+### 🎬 Video
 
-Requirements:
-- [Rust](https://rustup.rs) (stable)
-- Node.js 20+
-- The [Tauri prerequisites](https://tauri.app/start/prerequisites/) for your OS. On Linux this includes `libwebkit2gtk-4.1-dev` and `libasound2-dev`.
+| | |
+|---|---|
+| **Local and S3** | MP4, MKV, WebM and MOV from your folders or your bucket. |
+| **Stremio addons** | Paste any Stremio addon manifest URL. Catalogs show as scrollable rows (Cinemeta is the default), with a detail page, seasons and episodes, and a source picker that lists every addon's streams side by side. |
+| **Player** | YouTube-style controls, buffering indicator, resume where you left off, HLS streams, keyboard shortcuts, and an "Open in VLC" button for anything the system can't decode. |
+| **Subtitles** | From Stremio subtitle addons, with a side panel to pick the language, adjust the delay (`g` / `h`), and set size, colour, background and position. |
+| **Offline-friendly** | Catalogs, sources and subtitles are cached in SQLite, so pages load instantly and still work when an addon is down. |
 
-Run in development mode:
+### 🎨 Design
+
+The whole interface is recoloured from the current cover art, with expressive clip shapes and spring motion, following Material 3 Expressive. The UI text is currently in Indonesian.
+
+## Download
+
+Grab the latest build from [**Releases**](https://github.com/okuru-id/neptunus/releases):
+
+| Platform | File |
+|---|---|
+| Linux | `.deb`, `.rpm` or `.AppImage` |
+| Windows | `.msi` or `.exe` |
+| macOS | `.dmg` |
+| Android 8.0+ | `Neptunus_<version>_arm64.apk` |
+| iOS | `Neptunus_<version>_unsigned.ipa` (has to be signed, see [iOS](#ios)) |
+
+## Build from source
+
+You need [Rust](https://rustup.rs) (stable), Node.js 20+ and the [Tauri prerequisites](https://tauri.app/start/prerequisites/) for your OS.
 
 ```bash
 npm install
-npm run tauri dev
+npm run tauri dev     # run in development mode
+npm run tauri build   # build an installer for the current OS
 ```
 
-Build an installer for the current OS (`.deb`/`.AppImage`, `.msi`/`.exe` or `.dmg`):
+Installers land in `src-tauri/target/release/bundle/`.
 
-```bash
-npm run tauri build
-```
-
-### Building on Debian / Ubuntu
+<details>
+<summary><b>Debian / Ubuntu</b></summary>
 
 ```bash
 sudo apt update
@@ -51,49 +92,51 @@ npm ci
 npm run tauri build
 ```
 
-Output is in `src-tauri/target/release/bundle/` (`deb/`, `appimage/`, `rpm/`). To build only the `.deb`, run `npm run tauri build -- --bundles deb`, then install it with `sudo apt install ./Neptunus_*.deb`.
+To build only the `.deb`, run `npm run tauri build -- --bundles deb`, then install it with `sudo apt install ./Neptunus_*.deb`.
 
-Release builds are made on Ubuntu 22.04 so the binaries run on more distros (older glibc). Pushing a `v*` tag builds installers for all three OSes, plus the Android APK and iOS IPA, in CI and attaches them to a draft release.
+</details>
+
+Pushing a `v*` tag builds installers for all five platforms in CI and attaches them to a draft release. Linux builds are made on Ubuntu 22.04 so they run on older distros too.
 
 ### Linux notes
 
-- The app runs natively on Wayland by default. Set `NEPTUNUS_X11=1` to run through XWayland instead; the window can sometimes stay unclickable there.
-- Videos play through GStreamer: H.264 MP4 needs `gstreamer1.0-plugins-good`, `gstreamer1.0-plugins-bad` and `gstreamer1.0-libav` (the `.deb` pulls them in).
-- The tray icon needs a StatusNotifierItem host. On GNOME that is the AppIndicator extension, which Ubuntu ships by default.
+- Runs natively on Wayland. Set `NEPTUNUS_X11=1` to use XWayland instead.
+- Video goes through GStreamer and needs `gstreamer1.0-plugins-good`, `gstreamer1.0-plugins-bad` and `gstreamer1.0-libav` (the `.deb` pulls them in).
+- The tray icon needs a StatusNotifierItem host; on GNOME that is the AppIndicator extension, which Ubuntu ships by default.
 
-## Mobile (Android and iOS)
-
-Each release also has an Android APK (`Neptunus_<version>_arm64.apk`, Android 8.0+) and an unsigned iOS IPA (`Neptunus_<version>_unsigned.ipa`). An IPA can only be built on macOS with Xcode, so it comes from CI.
+## Mobile
 
 ### Android
 
-Download the APK on the phone and open it (allow installs from that source when asked), or from a computer with USB debugging on:
+Open the APK on the phone (allow installs from that source when asked), or from a computer with USB debugging on:
 
 ```bash
 adb install -r Neptunus_*_arm64.apk
 ```
 
-Updates install over the previous version. On first launch, allow access to music and audio so the local library can read the Music folder.
+Updates install over the previous version. On first launch, allow access to music and videos so the library can read your folders.
 
 ### iOS
 
-The IPA has to be signed before iOS will run it. Pick one way:
+iOS only runs signed apps, so the IPA has to be signed before installing.
 
-**Free Apple ID (re-sign every 7 days)**
+**Free Apple ID (re-sign every 7 days).** Use [SideStore](https://sidestore.io), [iloader](https://github.com/nab138/iloader) or [Sideloader](https://github.com/Dadoum/Sideloader): log in with an Apple ID (a separate one is a good idea), pick the IPA, and it is signed and installed for 7 days. A free Apple ID can keep at most 3 apps signed at a time, SideStore included.
 
-Use [SideStore](https://sidestore.io), [iloader](https://github.com/nab138/iloader) or [Sideloader](https://github.com/Dadoum/Sideloader): log in with your Apple ID, pick the IPA, and it is signed and installed for 7 days. Using a separate Apple ID for sideloading is a good idea. A free Apple ID can keep at most 3 apps signed at a time, SideStore included.
+<details>
+<summary><b>Keep it from expiring with SideStore</b></summary>
 
-To keep the apps from expiring, let SideStore refresh them from the phone:
-
-1. Install SideStore with iloader (it also sets up the pairing file SideStore needs), and the local VPN app SideStore asks for from the App Store (currently LocalDevVPN).
+1. Install SideStore with iloader (it also sets up the pairing file SideStore needs), plus the local VPN app SideStore asks for from the App Store (currently LocalDevVPN).
 2. Install Neptunus from SideStore (**+**, then pick the IPA).
 3. In the Shortcuts app, add an automation (for example daily at 03:00, or when the charger is connected) that runs SideStore's **Refresh All Apps**, set to run immediately.
 
-Each refresh resets the apps to 7 days. If SideStore itself expires, it can't refresh anymore: install it again from a computer with iloader.
+Each refresh resets the apps to 7 days; *My Apps* shows how many days are left. If SideStore itself expires, install it again from a computer with iloader.
 
-**Your own Apple Developer account (valid for a year)**
+</details>
 
-This needs a paid [Apple Developer Program](https://developer.apple.com/programs/) membership; a free Apple ID has no access to certificates. On Linux, make the key and certificate with `openssl`, and keep them outside the repo:
+<details>
+<summary><b>Your own Apple Developer account (valid for a year)</b></summary>
+
+This needs a paid [Apple Developer Program](https://developer.apple.com/programs/) membership. On Linux, make the key and certificate with `openssl` and keep them outside the repo.
 
 1. Make a private key and a certificate signing request:
 
@@ -104,19 +147,19 @@ This needs a paid [Apple Developer Program](https://developer.apple.com/programs
    ```
 
 2. On [developer.apple.com/account](https://developer.apple.com/account), under **Certificates, Identifiers & Profiles**:
-   - **Certificates › +** › **Apple Development**: upload `neptunus.csr` and download the certificate (`development.cer`).
+   - **Certificates › + › Apple Development**: upload `neptunus.csr` and download `development.cer`.
    - **Devices › +**: add your iPhone's UDID (`idevice_id -l` prints it).
-   - **Identifiers › + › App IDs › App**: an explicit bundle ID `id.neptunus.desktop`.
+   - **Identifiers › + › App IDs › App**: the explicit bundle ID `id.neptunus.desktop`.
    - **Profiles › + › iOS App Development**: pick that App ID, the certificate and your device, then download the `.mobileprovision`.
 
-3. Combine the certificate and key into a `.p12` (it asks for a password, used by `zsign -p` below; add `-legacy` if a Mac or Windows tool rejects the file):
+3. Combine the certificate and key into a `.p12` (add `-legacy` if a Mac or Windows tool rejects it):
 
    ```bash
    openssl x509 -inform DER -in development.cer -out development.pem
    openssl pkcs12 -export -inkey neptunus.key -in development.pem -out neptunus.p12
    ```
 
-4. Sign with [zsign](https://github.com/zhlynn/zsign) and install over USB with libimobiledevice. zsign isn't packaged for Debian/Ubuntu; build it from source (`build/linux`, then `make`) and copy `bin/zsign` to `~/.local/bin`.
+4. Sign with [zsign](https://github.com/zhlynn/zsign) (build it from source: `build/linux`, then `make`) and install over USB:
 
    ```bash
    sudo apt install libimobiledevice-utils ideviceinstaller
@@ -124,13 +167,11 @@ This needs a paid [Apple Developer Program](https://developer.apple.com/programs
    ideviceinstaller install Neptunus_signed.ipa
    ```
 
-Unlock the iPhone and tap **Trust** the first time it is connected. The certificate and profile last a year; after that, make a new profile, sign again and reinstall. To add another device, register its UDID and download the profile again. Back up `neptunus.key` and `neptunus.p12`: losing them means making a new certificate.
+Unlock the iPhone and tap **Trust** the first time it is connected. The certificate and profile last a year. Back up `neptunus.key` and `neptunus.p12`; losing them means making a new certificate. Only sign with a certificate you own: misusing an enterprise certificate gets it revoked for everyone.
 
-Only sign with a certificate you own: an enterprise certificate is for a company's internal apps, and misusing one gets it revoked for everyone using it.
+</details>
 
-SideStore shows how many days an app has left under *My Apps*.
-
-**Local library on iOS:** iOS apps can only read their own folder. Copy songs with the Files app to *On My iPhone › Neptunus*, then add that folder in Neptunus (Settings › Lokal › Tambah folder).
+**Local files on iOS:** apps can only read their own folder. Copy songs and videos with the Files app to *On My iPhone › Neptunus*, then add that folder in Neptunus (Settings › Lokal › Tambah folder).
 
 ## Tech stack
 
@@ -139,13 +180,26 @@ SideStore shows how many days an app has left under *My Apps*.
 | Shell | Tauri 2 |
 | UI | Vue 3 (`<script setup>`), TypeScript, Vite |
 | Audio | rodio + symphonia |
+| Video | System media stack (GStreamer, WebKit, WebView2) + hls.js fallback |
 | Tags / cover art | lofty |
-| Library | SQLite (rusqlite) |
-| Media controls | souvlaki |
-| Tray (Linux) | ksni |
+| Storage | SQLite (rusqlite) |
+| Extensions | QuickJS (rquickjs) sandbox |
+| Media controls | souvlaki, MediaSession, MPNowPlayingInfoCenter |
 | Cloud | rust-s3 |
+
+## Contributing
+
+Issues and pull requests are welcome. If Neptunus is useful to you, a ⭐ helps other people find it.
+
+## License
+
+[MIT](LICENSE)
 
 ## Credits
 
-- [PixelPlayer](https://github.com/PixelPlayerHQ/PixelPlayer) by Theo Vilardo, for the inspiration.
-- [LRCLIB](https://lrclib.net), for the free lyrics API.
+- [PixelPlayer](https://github.com/PixelPlayerHQ/PixelPlayer) by Theo Vilardo, the Material 3 Expressive music player for Android that inspired the design. If you're on Android, go give it a star.
+- [SpotiFLAC](https://spotiflac.com/extension), whose extension format the music extensions follow.
+- [LRCLIB](https://lrclib.net) for the free lyrics API.
+- [Stremio](https://www.stremio.com) for the open addon protocol.
+
+> **Not affiliated.** Neptunus is an independent, from-scratch project. It shares PixelPlayer's design ideas but contains none of its code or assets, and is not endorsed by its author. Neptunus ships no media and no streaming sources; you choose what to install and play.

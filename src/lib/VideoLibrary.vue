@@ -10,18 +10,28 @@ import type { SubtitleQuery } from "./videoext";
 type Video = { path: string; title: string; size?: number; sub?: SubtitleQuery };
 type Tab = "local" | "cloud" | "ext";
 
-const props = defineProps<{ query: string; exts: ExtInfo[] }>();
+const props = defineProps<{ query: string; exts: ExtInfo[]; home?: number }>();
 const emit = defineEmits<{ play: []; count: [n: number]; exts: [list: ExtInfo[]] }>();
 
 const TAB_KEY = "neptunus.videoTab";
 const TABS: { id: Tab; label: string; icon: "folder" | "cloud" | "extension" }[] = [
+  { id: "ext", label: "Ekstensi", icon: "extension" },
   { id: "local", label: "Lokal", icon: "folder" },
   { id: "cloud", label: "Cloud S3", icon: "cloud" },
-  { id: "ext", label: "Ekstensi", icon: "extension" },
 ];
 const stored = (() => { try { return localStorage.getItem(TAB_KEY); } catch { return null; } })();
-const tab = ref<Tab>(TABS.some((t) => t.id === stored) ? (stored as Tab) : "local");
+const tab = ref<Tab>(TABS.some((t) => t.id === stored) ? (stored as Tab) : "ext");
 watch(tab, (t) => { try { localStorage.setItem(TAB_KEY, t); } catch {} });
+// the Ekstensi tab clicked again, or the Video menu: the catalogs leave an open title
+const extHome = ref(0);
+const inDetail = ref(false);
+const reload = ref(0);
+const refreshing = ref(false);
+watch(() => props.home, () => { tab.value = "ext"; extHome.value++; });
+function pickTab(t: Tab) {
+  if (t === tab.value && t === "ext") extHome.value++;
+  tab.value = t;
+}
 
 const videos = ref<Video[] | null>(null);
 const error = ref("");
@@ -52,13 +62,19 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="tabs" role="tablist" aria-label="Sumber video">
-    <button v-for="t in TABS" :key="t.id" role="tab" :aria-selected="tab === t.id" :class="{ on: tab === t.id }" @click="tab = t.id">
-      <Icon :name="t.icon" :size="20" />{{ t.label }}
+  <div class="tabbar">
+    <div class="tabs" role="tablist" aria-label="Sumber video">
+      <button v-for="t in TABS" :key="t.id" role="tab" :aria-selected="tab === t.id" :class="{ on: tab === t.id }" @click="pickTab(t.id)">
+        <Icon :name="t.icon" :size="20" />{{ t.label }}
+      </button>
+    </div>
+    <button v-if="tab === 'ext' && inDetail" class="back" title="Kembali ke katalog" @click="extHome++"><Icon name="back" :size="22" /></button>
+    <button v-if="tab === 'ext' && !inDetail" class="reload" :disabled="refreshing" title="Ambil ulang daftar film dari semua ekstensi" @click="reload++">
+      <Icon name="refresh" :size="20" :class="{ spinning: refreshing }" /><span>{{ refreshing ? "Memuat ulang…" : "Muat ulang katalog" }}</span>
     </button>
   </div>
 
-  <VideoCatalogs v-if="tab === 'ext'" :exts="exts" :query="query" @play="play" @changed="emit('exts', $event)" />
+  <VideoCatalogs v-if="tab === 'ext'" :home="extHome" :exts="exts" @detail="inDetail = $event" :reload="reload" @refreshing="refreshing = $event" :query="query" @play="play" @changed="emit('exts', $event)" />
 
   <template v-else>
     <p v-if="videos === null" class="none">Mencari video…</p>
@@ -82,7 +98,28 @@ onMounted(async () => {
 
 <style scoped>
 .none { color: var(--on-surface-variant); font-size: 15px; padding: 24px 12px; }
-.tabs { display: flex; gap: 4px; padding: 4px; margin-bottom: 24px; border-radius: 28px; background: var(--surface-container-low); width: fit-content; max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+/* stays under the app header while the page scrolls; spans main's padding so nothing shows beside it */
+.tabbar {
+  position: sticky; top: var(--top-h, 0px); z-index: 3; display: flex; align-items: center; gap: 8px;
+  margin: -12px calc(-1 * var(--pad-r, 8px)) 24px calc(-1 * var(--pad-l, 16px));
+  padding: 0 var(--pad-r, 8px) 12px var(--pad-l, 16px); background: var(--surface);
+}
+.back {
+  flex: none; width: 52px; height: 52px; border-radius: 26px; display: grid; place-items: center;
+  background: var(--surface-container-low); color: var(--on-surface); transition: background 0.2s, border-radius 0.3s var(--spring);
+}
+.back:hover { background: var(--surface-container-highest); }
+.back:active { border-radius: 14px; }
+.reload {
+  flex: none; margin-left: auto; height: 44px; padding: 0 18px 0 14px; border-radius: 22px; display: inline-flex; align-items: center; gap: 8px;
+  font-size: 14px; font-weight: 600; background: var(--secondary-container); color: var(--on-secondary-container); transition: background 0.2s, opacity 0.2s;
+}
+.reload:hover:not(:disabled) { background: var(--surface-container-highest); }
+.reload:disabled { opacity: 0.6; }
+.spinning { animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (max-width: 600px) { .reload { width: 44px; padding: 0; justify-content: center; } .reload span { display: none; } }
+.tabs { display: flex; gap: 4px; padding: 4px; border-radius: 28px; background: var(--surface-container-low); width: fit-content; max-width: 100%; overflow-x: auto; scrollbar-width: none; }
 .tabs button {
   flex: none; height: 44px; padding: 0 18px 0 14px; border-radius: 22px; display: inline-flex; align-items: center; gap: 8px;
   font-size: 15px; font-weight: 600; color: var(--on-surface-variant); transition: background 0.2s, color 0.2s;

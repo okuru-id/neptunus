@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import Icon from "./Icon.vue";
 import { subtitles, type Subtitle, type SubtitleQuery } from "./videoext";
@@ -17,14 +17,6 @@ let hls: { destroy(): void } | undefined;
 const buffering = ref(true);
 let lastSave = 0;
 let resolvedUrl = "";
-
-async function openVlc() {
-  try {
-    await invoke("video_open_external", { path: resolvedUrl || props.path });
-  } catch (e: any) {
-    error.value = typeof e === "string" ? e : `VLC gagal dibuka (${e?.message ?? e}).`;
-  }
-}
 
 function savePos(force = false) {
   const v = video.value;
@@ -58,7 +50,7 @@ const pct = (n: number) => `${duration.value ? Math.min(100, (n / duration.value
 function sync() {
   const v = video.value;
   if (!v) return;
-  time.value = v.currentTime;
+  if (!dragging) time.value = v.currentTime;
   duration.value = isFinite(v.duration) ? v.duration : 0;
   for (let i = 0; i < v.buffered.length; i++)
     if (v.buffered.start(i) <= v.currentTime + 0.5) buffered.value = v.buffered.end(i);
@@ -68,9 +60,41 @@ function wake() {
   clearTimeout(idleTimer);
   idleTimer = setTimeout(() => { if (playing.value && !menu.value) idle.value = true; }, 2800);
 }
-const toggle = () => { const v = video.value!; v.paused ? v.play().catch(() => {}) : v.pause(); };
-const skip = (d: number) => { const v = video.value!; v.currentTime = Math.max(0, Math.min(v.duration || 0, v.currentTime + d)); wake(); };
-const seek = (e: Event) => { video.value!.currentTime = Number((e.target as HTMLInputElement).value); };
+// the big icon that blinks in the middle on click, like YouTube's
+const flash = ref<{ icon: "play" | "pause" | "replay10" | "forward10"; n: number } | null>(null);
+const blink = (icon: "play" | "pause" | "replay10" | "forward10") => (flash.value = { icon, n: (flash.value?.n ?? 0) + 1 });
+const toggle = () => {
+  const v = video.value!;
+  if (v.paused) { v.play().catch(() => {}); blink("play"); } else { v.pause(); blink("pause"); }
+};
+
+// seek bar: drag anywhere on it, with the time under the pointer shown above it
+const seekEl = ref<HTMLElement>();
+const hover = ref<number | null>(null);
+let dragging = false;
+const frac = (e: PointerEvent) => {
+  const r = seekEl.value!.getBoundingClientRect();
+  return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+};
+function seekDown(e: PointerEvent) {
+  dragging = true;
+  seekEl.value!.setPointerCapture(e.pointerId);
+  seekMove(e);
+}
+function seekMove(e: PointerEvent) {
+  hover.value = frac(e);
+  if (dragging && duration.value) video.value!.currentTime = time.value = hover.value * duration.value;
+  wake();
+}
+function seekKey(e: KeyboardEvent) {
+  if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.stopPropagation(); skip(e.key === "ArrowLeft" ? -5 : 5); }
+}
+const skip = (d: number) => {
+  const v = video.value!;
+  v.currentTime = Math.max(0, Math.min(v.duration || 0, v.currentTime + d));
+  blink(d < 0 ? "replay10" : "forward10");
+  wake();
+};
 function setVolume(e: Event) {
   const v = video.value!;
   v.volume = Number((e.target as HTMLInputElement).value);
@@ -81,48 +105,67 @@ const toggleFull = () => (document.fullscreenElement ? document.exitFullscreen()
 const onFull = () => (full.value = !!document.fullscreenElement);
 
 // --- subtitles from the subtitle addons, rendered by us above the bar ---
-const SUB_LANG = "neptunus.subLang";
 const subs = ref<Subtitle[] | null>(null);
 const subPick = ref<Subtitle | null>(null);
 const subLoading = ref(false);
 const cue = ref("");
 const menu = ref(false);
-let subBlob = "";
 const langName = (l?: string) => {
   if (!l) return "Lainnya";
   try { return new Intl.DisplayNames(["id"], { type: "language" }).of(l.length === 3 ? ({ ind: "id", eng: "en", may: "ms", jpn: "ja", kor: "ko", chi: "zh", zho: "zh", spa: "es", fre: "fr", fra: "fr", ger: "de", deu: "de", por: "pt", ara: "ar", tha: "th", vie: "vi", rus: "ru", ita: "it", hin: "hi" }[l] ?? l) : l) ?? l; } catch { return l; }
 };
-// one entry per language, numbered when an addon offers several files for it
+// "Indonesia - Subtitle Translator", numbered when one addon offers several files for a language
 const subList = computed(() => {
   const seen: Record<string, number> = {};
   return [...(subs.value ?? [])]
-    .sort((a, b) => langName(a.lang).localeCompare(langName(b.lang)))
-    .map((s) => { const n = (seen[s.lang ?? ""] = (seen[s.lang ?? ""] ?? 0) + 1); return { s, label: `${langName(s.lang)}${n > 1 ? ` ${n}` : ""}` }; });
+    .sort((a, b) => langName(a.lang).localeCompare(langName(b.lang)) || a.source.localeCompare(b.source))
+    .map((s) => {
+      const k = `${s.lang}|${s.source}`;
+      const n = (seen[k] = (seen[k] ?? 0) + 1);
+      return { s, label: `${langName(s.lang)}${n > 1 ? ` ${n}` : ""} - ${s.source}` };
+    });
 });
 
+// cues are kept and matched against the clock by us, so a delay is just an offset
+let cues: { start: number; end: number; text: string }[] = [];
+let raf = 0;
+const secs = (t: string) => {
+  const m = t.match(/(?:(\d+):)?(\d+):(\d+)[.,](\d+)/);
+  return m ? Number(m[1] ?? 0) * 3600 + Number(m[2]) * 60 + Number(m[3]) + Number(m[4].padEnd(3, "0").slice(0, 3)) / 1000 : NaN;
+};
+function parseVtt(vtt: string) {
+  return vtt.split(/\n{2,}/).flatMap((block) => {
+    const lines = block.split("\n");
+    const i = lines.findIndex((l) => l.includes("-->"));
+    if (i < 0) return [];
+    const [a, b] = lines[i].split("-->");
+    const text = lines.slice(i + 1).join("\n").replace(/<[^>]+>|\{\\[^}]*\}/g, "").trim();
+    const start = secs(a), end = secs(b);
+    return text && start < end ? [{ start, end, text }] : [];
+  });
+}
+function tick() {
+  const t = (video.value?.currentTime ?? 0) - subDelay.value;
+  const now = cues.filter((c) => c.start <= t && t < c.end).map((c) => c.text).join("\n");
+  if (now !== cue.value) cue.value = now;
+  raf = requestAnimationFrame(tick);
+}
+
 async function pickSub(s: Subtitle | null) {
-  menu.value = false;
   subPick.value = s;
   cue.value = "";
-  const v = video.value!;
-  v.querySelectorAll("track").forEach((t) => t.remove());
-  if (subBlob) URL.revokeObjectURL(subBlob);
-  subBlob = "";
-  try { s ? localStorage.setItem(SUB_LANG, s.lang ?? "") : localStorage.removeItem(SUB_LANG); } catch {}
+  cues = [];
+  cancelAnimationFrame(raf);
+  // the file chosen for this video, and the language to try first on the next one
+  save(`subPick:${props.path}`, s?.url ?? null);
+  save("subLang", s ? s.lang ?? "" : null);
   if (!s) return;
   subLoading.value = true;
   try {
     const vtt = await invoke<string>("video_subtitle", { url: s.url });
     if (subPick.value !== s) return;
-    subBlob = URL.createObjectURL(new Blob([vtt], { type: "text/vtt" }));
-    const t = document.createElement("track");
-    t.kind = "subtitles";
-    t.src = subBlob;
-    v.appendChild(t);
-    t.track.mode = "hidden"; // cues come to us, the webview draws nothing
-    t.track.addEventListener("cuechange", () => {
-      cue.value = [...(t.track.activeCues ?? [])].map((c) => (c as VTTCue).text.replace(/<[^>]+>/g, "")).join("\n");
-    });
+    cues = parseVtt(vtt);
+    tick();
   } catch (e) {
     error.value = `Subtitle tidak bisa dimuat (${e}).`;
     subPick.value = null;
@@ -131,12 +174,65 @@ async function pickSub(s: Subtitle | null) {
   }
 }
 
+// how subtitles look is remembered for every video, the delay per video; both in the app database
+const SUB_STYLE = "neptunus.subStyle";
+const delayKey = `subDelay:${props.path}`;
+const subStyle = ref({ size: 1, color: "#ffffff", bg: 0.6, pos: 7 }); // pos: % from the bottom of the video
+const subDelay = ref(0);
+let prefsLoaded = false;
+let saveTimer: ReturnType<typeof setTimeout> | undefined;
+const save = (key: string, value: string | null) => invoke("setting_set", { key, value }).catch(() => {});
+function flushPrefs() {
+  clearTimeout(saveTimer);
+  saveTimer = undefined;
+  save("subStyle", JSON.stringify(subStyle.value));
+  save(delayKey, subDelay.value ? String(subDelay.value) : null);
+}
+watch([subStyle, subDelay], () => {
+  if (!prefsLoaded) return;
+  clearTimeout(saveTimer); // sliders fire many times a second
+  saveTimer = setTimeout(flushPrefs, 400);
+}, { deep: true });
+async function loadPrefs() {
+  try {
+    let style = await invoke<string | null>("setting_get", { key: "subStyle" });
+    // older builds kept it in the webview's storage: carried over once
+    if (!style) try { style = localStorage.getItem(SUB_STYLE); if (style) { save("subStyle", style); localStorage.removeItem(SUB_STYLE); } } catch {}
+    if (style) subStyle.value = { ...subStyle.value, ...JSON.parse(style) };
+    subDelay.value = Number(await invoke<string | null>("setting_get", { key: delayKey })) || 0;
+  } catch {}
+  prefsLoaded = true;
+}
+const nudge = (d: number) => (subDelay.value = Math.round((subDelay.value + d) * 10) / 10);
+const SIZES = [{ v: 0.75, l: "Kecil" }, { v: 1, l: "Sedang" }, { v: 1.35, l: "Besar" }, { v: 1.75, l: "Sangat besar" }];
+const COLORS = ["#ffffff", "#ffeb3b", "#7fdbff", "#b9f6ca", "#ffb3c1"];
+const BGS = [{ v: 0, l: "Tanpa" }, { v: 0.4, l: "Tipis" }, { v: 0.6, l: "Sedang" }, { v: 0.85, l: "Pekat" }];
+// a sample line while a style control moves, at the exact spot it will sit (no lift for the bar)
+const preview = ref(false);
+let previewTimer: ReturnType<typeof setTimeout> | undefined;
+function showPreview() {
+  preview.value = true;
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(() => (preview.value = false), 1500);
+}
+const cueText = computed(() => cue.value || (preview.value ? "Contoh subtitle\nseperti ini tampilannya" : ""));
+const cueStyle = computed(() => ({
+  "--pos": `${subStyle.value.pos}%`,
+  fontSize: `calc(clamp(16px, 2.4vw, 30px) * ${subStyle.value.size})`,
+  color: subStyle.value.color,
+  background: `rgb(0 0 0 / ${subStyle.value.bg})`,
+  textShadow: subStyle.value.bg < 0.3 ? "0 0 3px #000, 0 0 3px #000, 1px 1px 2px #000" : "0 1px 3px #000",
+}));
+
 async function loadSubs() {
   if (!props.sub?.sources.length) return;
-  subs.value = await subtitles(props.sub);
-  let lang: string | null = null;
-  try { lang = localStorage.getItem(SUB_LANG); } catch {}
-  const again = lang !== null && subs.value.find((s) => (s.lang ?? "") === lang);
+  const [list, url, lang] = await Promise.all([
+    subtitles(props.sub),
+    invoke<string | null>("setting_get", { key: `subPick:${props.path}` }).catch(() => null),
+    invoke<string | null>("setting_get", { key: "subLang" }).catch(() => null),
+  ]);
+  subs.value = list;
+  const again = list.find((s) => s.url === url) ?? (lang !== null ? list.find((s) => (s.lang ?? "") === lang) : undefined);
   if (again) pickSub(again);
 }
 
@@ -149,6 +245,8 @@ function onKey(e: KeyboardEvent) {
   else if (e.key === "ArrowRight") skip(10);
   else if (e.key === "f") toggleFull();
   else if (e.key === "m") toggleMute();
+  else if (e.key === "c" && props.sub?.sources.length) menu.value = !menu.value;
+  else if ((e.key === "g" || e.key === "h") && subPick.value) nudge(e.key === "g" ? -0.1 : 0.1); // VLC's keys
   else return;
   wake();
 }
@@ -157,6 +255,7 @@ onMounted(async () => {
   window.addEventListener("keydown", onKey);
   document.addEventListener("fullscreenchange", onFull);
   wake();
+  loadPrefs();
   loadSubs();
   try {
     const url = props.path.startsWith("http")
@@ -200,7 +299,9 @@ onUnmounted(() => {
   window.removeEventListener("keydown", onKey);
   document.removeEventListener("fullscreenchange", onFull);
   clearTimeout(idleTimer);
-  if (subBlob) URL.revokeObjectURL(subBlob);
+  clearTimeout(previewTimer);
+  cancelAnimationFrame(raf);
+  if (saveTimer) flushPrefs();
   savePos(true);
   hls?.destroy();
 });
@@ -213,43 +314,84 @@ onUnmounted(() => {
       @ended="savePos(true)" @volumechange="volume = video!.volume; muted = video!.muted"
       @waiting="buffering = true" @loadstart="buffering = true" @playing="buffering = false" @canplay="buffering = false" @seeked="buffering = false"></video>
     <div v-if="buffering && !error" class="spin" aria-label="Memuat"></div>
-    <p v-if="cue" class="cue">{{ cue }}</p>
+    <p v-if="cueText" class="cue" :class="{ preview }" :style="cueStyle">{{ cueText }}</p>
     <p v-if="error" class="err">{{ error }}</p>
+
+    <!-- subtitle panel: over the right of the video; a click anywhere else closes it -->
+    <div v-if="menu" class="scrim" @pointerdown.stop="menu = false"></div>
+    <aside v-if="menu" class="panel" role="dialog" aria-label="Subtitle" @pointerdown.stop>
+      <header>
+        <strong>Subtitle</strong>
+        <button title="Tutup (Esc)" @click="menu = false"><Icon name="close" :size="22" /></button>
+      </header>
+      <!-- top: the language list scrolls on its own; bottom: delay and style stay in reach -->
+      <section class="langs">
+          <h4>Bahasa</h4>
+          <button class="opt" :class="{ on: !subPick }" role="menuitemradio" :aria-checked="!subPick" @click="pickSub(null)"><Icon name="done" :size="18" />Mati</button>
+          <p v-if="subs === null" class="mnote">Mencari subtitle…</p>
+          <p v-else-if="!subs.length" class="mnote">Tidak ada subtitle untuk judul ini.</p>
+          <button v-for="x in subList" :key="x.s.url" class="opt" :class="{ on: subPick === x.s }" role="menuitemradio" :aria-checked="subPick === x.s"
+            :title="x.label" @click="pickSub(x.s)">
+            <Icon name="done" :size="18" /><span class="mlabel">{{ x.label }}</span><small v-if="subPick === x.s && subLoading">memuat…</small>
+          </button>
+      </section>
+      <div class="settings">
+        <section>
+          <h4>Delay <small>g / h</small></h4>
+          <div class="delay">
+            <button title="Lebih cepat 0,1 detik (g)" @click="nudge(-0.1)">−</button>
+            <output>{{ subDelay > 0 ? "+" : "" }}{{ subDelay.toFixed(1) }} detik</output>
+            <button title="Lebih lambat 0,1 detik (h)" @click="nudge(0.1)">+</button>
+            <button class="reset" :disabled="!subDelay" @click="subDelay = 0">Reset</button>
+          </div>
+          <input type="range" min="-10" max="10" step="0.1" v-model.number="subDelay" aria-label="Delay subtitle"
+            :style="{ '--done': `${(subDelay + 10) * 5}%` }" />
+        </section>
+        <section>
+          <h4>Tampilan</h4>
+          <div class="srow"><span class="lbl">Ukuran</span>
+            <div class="chips"><button v-for="z in SIZES" :key="z.v" :class="{ on: subStyle.size === z.v }" @click="subStyle.size = z.v; showPreview()">{{ z.l }}</button></div></div>
+          <div class="srow"><span class="lbl">Warna</span>
+            <div class="chips">
+              <button v-for="c in COLORS" :key="c" class="swatch" :class="{ on: subStyle.color === c }" :style="{ background: c }" :title="c" @click="subStyle.color = c; showPreview()"></button>
+            </div></div>
+          <div class="srow"><span class="lbl">Posisi</span>
+            <input type="range" min="0" max="85" step="0.5" v-model.number="subStyle.pos" aria-label="Posisi subtitle dari bawah" @input="showPreview"
+              :style="{ '--done': `${(subStyle.pos / 85) * 100}%` }" /></div>
+          <div class="srow"><span class="lbl">Latar</span>
+            <div class="chips"><button v-for="b in BGS" :key="b.v" :class="{ on: subStyle.bg === b.v }" @click="subStyle.bg = b.v; showPreview()">{{ b.l }}</button></div></div>
+        </section>
+      </div>
+    </aside>
 
     <div class="bar top">
       <button title="Tutup (Esc)" @click="emit('close')"><Icon name="back" /></button>
       <strong>{{ title }}</strong>
-      <button class="vlc" title="Buka di VLC" @click="openVlc"><Icon name="openInNew" /></button>
     </div>
 
+    <div v-if="flash" :key="flash.n" class="flash"><Icon :name="flash.icon" :size="40" /></div>
+
     <div class="bar bottom" @pointerdown.stop>
-      <div class="seek" :style="{ '--done': pct(time), '--buf': pct(buffered) }">
-        <input type="range" min="0" :max="duration || 0" step="0.1" :value="time" aria-label="Posisi" @input="seek" />
+      <div ref="seekEl" class="seek" role="slider" tabindex="0" aria-label="Posisi" :aria-valuemax="Math.round(duration)" :aria-valuenow="Math.round(time)"
+        :aria-valuetext="fmt(time)" :style="{ '--done': pct(time), '--buf': pct(buffered), '--hover': hover === null ? '0%' : `${hover * 100}%` }"
+        @pointerdown="seekDown" @pointermove="seekMove" @pointerup="dragging = false" @pointercancel="dragging = false" @pointerleave="hover = null" @keydown="seekKey">
+        <div class="track"><i class="buf"></i><i class="hov"></i><i class="done"></i></div>
+        <span class="thumb"></span>
+        <span v-if="hover !== null && duration" class="tip">{{ fmt(hover * duration) }}</span>
       </div>
       <div class="row">
-        <button class="main" :title="playing ? 'Jeda (Spasi)' : 'Putar (Spasi)'" @click="toggle"><Icon :name="playing ? 'pause' : 'play'" :size="30" /></button>
-        <button title="Mundur 10 detik (←)" @click="skip(-10)"><Icon name="replay10" /></button>
-        <button title="Maju 10 detik (→)" @click="skip(10)"><Icon name="forward10" /></button>
+        <button :title="playing ? 'Jeda (k)' : 'Putar (k)'" @click="toggle"><Icon :name="playing ? 'pause' : 'play'" :size="32" /></button>
+        <button title="Mundur 10 detik (←)" @click="skip(-10)"><Icon name="replay10" :size="26" /></button>
+        <button title="Maju 10 detik (→)" @click="skip(10)"><Icon name="forward10" :size="26" /></button>
         <div class="vol">
-          <button :title="muted ? 'Bunyikan (M)' : 'Bisukan (M)'" @click="toggleMute"><Icon :name="muted || !volume ? 'volumeOff' : 'volume'" /></button>
+          <button :title="muted ? 'Bunyikan (m)' : 'Bisukan (m)'" @click="toggleMute"><Icon :name="muted || !volume ? 'volumeOff' : 'volume'" :size="26" /></button>
           <input type="range" min="0" max="1" step="0.05" :value="muted ? 0 : volume" aria-label="Volume" :style="{ '--done': `${(muted ? 0 : volume) * 100}%` }" @input="setVolume" />
         </div>
-        <span class="time">{{ fmt(time) }} <i>/ {{ fmt(duration) }}</i></span>
+        <span class="time">{{ fmt(time) }} / {{ fmt(duration) }}</span>
         <span class="grow"></span>
-        <div v-if="sub?.sources.length" class="subwrap">
-          <button :class="{ on: subPick }" :title="subs === null ? 'Mencari subtitle…' : 'Subtitle'" @click="menu = !menu"><Icon name="subtitles" /></button>
-          <div v-if="menu" class="menu" role="menu">
-            <p class="mhead">Subtitle</p>
-            <button role="menuitemradio" :aria-checked="!subPick" :class="{ on: !subPick }" @click="pickSub(null)"><Icon name="done" :size="18" />Mati</button>
-            <p v-if="subs === null" class="mnote">Mencari subtitle…</p>
-            <p v-else-if="!subs.length" class="mnote">Tidak ada subtitle untuk judul ini.</p>
-            <button v-for="x in subList" :key="x.s.url" role="menuitemradio" :aria-checked="subPick === x.s" :class="{ on: subPick === x.s }"
-              :title="x.s.source" @click="pickSub(x.s)">
-              <Icon name="done" :size="18" />{{ x.label }}<small v-if="subPick === x.s && subLoading">memuat…</small>
-            </button>
-          </div>
-        </div>
-        <button :title="full ? 'Keluar layar penuh (F)' : 'Layar penuh (F)'" @click="toggleFull"><Icon :name="full ? 'fullscreenExit' : 'fullscreen'" /></button>
+        <button v-if="sub?.sources.length" class="cc" :class="{ on: subPick }" :title="subs === null ? 'Mencari subtitle…' : 'Subtitle (c)'"
+          @click="menu = !menu"><Icon name="subtitles" :size="26" /></button>
+        <button :title="full ? 'Keluar layar penuh (f)' : 'Layar penuh (f)'" @click="toggleFull"><Icon :name="full ? 'fullscreenExit' : 'fullscreen'" :size="30" /></button>
       </div>
     </div>
   </div>
@@ -266,79 +408,127 @@ onUnmounted(() => {
 video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
 
 .bar {
-  position: absolute; left: 0; right: 0; display: flex; gap: 8px;
-  padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16px, env(safe-area-inset-right));
-  transition: opacity 0.3s, transform 0.35s var(--spring);
+  position: absolute; left: 0; right: 0; display: flex; gap: 4px;
+  padding-left: max(12px, env(safe-area-inset-left)); padding-right: max(12px, env(safe-area-inset-right));
+  transition: opacity 0.25s;
 }
 .idle .bar { opacity: 0; pointer-events: none; }
-.idle .top { transform: translateY(-12px); }
-.idle .bottom { transform: translateY(12px); }
-.top { top: 0; align-items: center; padding-top: 10px; padding-bottom: 36px; background: linear-gradient(rgb(0 0 0 / 0.7), transparent); }
-.top strong { flex: 1; font-size: 17px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.top { top: 0; align-items: center; padding-top: 8px; padding-bottom: 40px; background: linear-gradient(rgb(0 0 0 / 0.65), transparent); }
+.top strong { flex: 1; font-size: 18px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-shadow: 0 0 2px rgb(0 0 0 / 0.5); }
 .bottom {
-  bottom: 0; flex-direction: column; gap: 4px; padding-top: 48px; padding-bottom: max(12px, env(safe-area-inset-bottom));
-  background: linear-gradient(transparent, rgb(0 0 0 / 0.8));
+  bottom: 0; flex-direction: column; gap: 0; padding-top: 60px; padding-bottom: max(2px, env(safe-area-inset-bottom));
+  background: linear-gradient(transparent, rgb(0 0 0 / 0.75));
 }
-.row { display: flex; align-items: center; gap: 4px; }
+.row { display: flex; align-items: center; height: 48px; }
 .grow { flex: 1; }
 .bar button {
-  color: inherit; width: 44px; height: 44px; border-radius: 22px; display: inline-grid; place-items: center; flex: none;
-  transition: background 0.2s, border-radius 0.3s var(--spring), transform 0.3s var(--spring);
+  position: relative; color: inherit; width: 48px; height: 48px; display: inline-grid; place-items: center; flex: none;
+  opacity: 0.9; transition: opacity 0.1s;
 }
-.bar button:hover { background: rgb(255 255 255 / 0.14); }
-.bar button:active { border-radius: 12px; transform: scale(0.94); }
-.bar button.on { color: var(--primary, #a8c7fa); }
-.bar .main { width: 52px; height: 52px; border-radius: 26px; background: #fff; color: #000; margin-right: 6px; }
-.bar .main:hover { background: rgb(255 255 255 / 0.85); }
-.bar .main:active { border-radius: 14px; }
-.time { font-size: 14px; font-variant-numeric: tabular-nums; margin-left: 8px; white-space: nowrap; }
-.time i { font-style: normal; opacity: 0.65; }
+.bar button:hover { opacity: 1; }
+.top button { width: 44px; height: 44px; border-radius: 22px; }
+.top button:hover { background: rgb(255 255 255 / 0.12); }
+.time { font-size: 14px; font-variant-numeric: tabular-nums; margin-left: 8px; white-space: nowrap; opacity: 0.95; text-shadow: 0 0 2px rgb(0 0 0 / 0.5); }
+/* the red underline YouTube puts under CC when captions are on */
+.cc::after {
+  content: ""; position: absolute; left: 12px; right: 12px; bottom: 9px; height: 3px; border-radius: 2px; background: #f03;
+  transform: scaleX(0); transition: transform 0.2s;
+}
+.cc.on::after { transform: scaleX(1); }
 
-/* seek: played / buffered / rest, with a thumb that grows on hover */
+/* seek: thin line that thickens on hover; buffered, hovered and played layered over it */
+.seek { position: relative; height: 16px; margin: 0 2px; display: flex; align-items: center; cursor: pointer; touch-action: none; outline: none; }
+.track { position: relative; width: 100%; height: 3px; background: rgb(255 255 255 / 0.2); transition: height 0.1s; }
+.seek:hover .track, .seek:focus-visible .track { height: 5px; }
+.track i { position: absolute; inset: 0 auto 0 0; }
+.buf { width: var(--buf); background: rgb(255 255 255 / 0.4); }
+.hov { width: var(--hover); background: rgb(255 255 255 / 0.5); }
+.done { width: var(--done); background: #f03; }
+.thumb {
+  position: absolute; left: var(--done); width: 13px; height: 13px; margin-left: -6.5px; border-radius: 50%; background: #f03;
+  transform: scale(0); transition: transform 0.1s;
+}
+.seek:hover .thumb, .seek:focus-visible .thumb { transform: scale(1); }
+.tip {
+  position: absolute; bottom: 22px; left: clamp(24px, var(--hover), calc(100% - 24px)); transform: translateX(-50%);
+  padding: 3px 8px; border-radius: 4px; background: rgb(28 28 28 / 0.9); font-size: 13px; font-weight: 500;
+  font-variant-numeric: tabular-nums; pointer-events: none; white-space: nowrap;
+}
 input[type=range] { -webkit-appearance: none; appearance: none; background: none; margin: 0; cursor: pointer; }
-.seek { position: relative; height: 20px; display: flex; align-items: center; }
-.seek input { width: 100%; height: 20px; }
-.seek input::-webkit-slider-runnable-track {
-  height: 4px; border-radius: 2px; transition: height 0.15s;
-  background: linear-gradient(to right, #fff var(--done), rgb(255 255 255 / 0.45) var(--done) var(--buf), rgb(255 255 255 / 0.2) var(--buf));
-}
-.seek:hover input::-webkit-slider-runnable-track { height: 6px; }
-.seek input::-moz-range-track { height: 4px; border-radius: 2px; background: linear-gradient(to right, #fff var(--done), rgb(255 255 255 / 0.45) var(--done) var(--buf), rgb(255 255 255 / 0.2) var(--buf)); }
-input::-webkit-slider-thumb {
-  -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: #fff; margin-top: -5px;
-  transform: scale(0); transition: transform 0.2s var(--spring);
-}
-.seek:hover input::-webkit-slider-thumb { transform: scale(1); margin-top: -4px; }
-input::-moz-range-thumb { width: 14px; height: 14px; border: 0; border-radius: 50%; background: #fff; }
+input::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px; border-radius: 50%; background: #fff; margin-top: -4.5px; }
+input::-moz-range-thumb { width: 12px; height: 12px; border: 0; border-radius: 50%; background: #fff; }
 .vol { display: flex; align-items: center; }
-.vol input { width: 0; height: 20px; opacity: 0; transition: width 0.3s var(--spring), opacity 0.2s; }
-.vol:hover input, .vol:focus-within input { width: 90px; opacity: 1; margin-right: 6px; }
-.vol input::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: linear-gradient(to right, #fff var(--done), rgb(255 255 255 / 0.25) var(--done)); }
-.vol input::-webkit-slider-thumb { transform: scale(1); }
+.vol input { width: 0; height: 20px; opacity: 0; transition: width 0.2s, opacity 0.2s, margin 0.2s; }
+.vol:hover input, .vol:focus-within input { width: 60px; opacity: 1; margin-right: 8px; }
+.vol input::-webkit-slider-runnable-track { height: 3px; background: linear-gradient(to right, #fff var(--done), rgb(255 255 255 / 0.25) var(--done)); }
+.vol input::-moz-range-track { height: 3px; background: linear-gradient(to right, #fff var(--done), rgb(255 255 255 / 0.25) var(--done)); }
 
-.subwrap { position: relative; }
-.menu {
-  position: absolute; right: 0; bottom: 52px; min-width: 220px; max-height: min(360px, 60vh); overflow-y: auto; padding: 8px;
-  border-radius: 20px; background: rgb(28 28 30 / 0.94); backdrop-filter: blur(16px); box-shadow: 0 8px 32px rgb(0 0 0 / 0.5);
-  display: flex; flex-direction: column; scrollbar-width: thin;
+.flash {
+  position: absolute; width: 72px; height: 72px; border-radius: 50%; display: grid; place-items: center; pointer-events: none;
+  background: rgb(0 0 0 / 0.5); animation: flash 0.6s ease-out forwards;
 }
-.mhead { margin: 4px 12px 6px; font-size: 13px; font-weight: 700; opacity: 0.6; text-transform: uppercase; letter-spacing: 0.06em; }
-.mnote { margin: 6px 12px; font-size: 14px; opacity: 0.7; }
-.menu button {
-  width: 100%; height: 40px; border-radius: 12px; display: flex; gap: 10px; padding: 0 12px; justify-content: flex-start;
-  font-size: 14px; text-align: left;
+@keyframes flash { from { opacity: 1; transform: scale(1); } to { opacity: 0; transform: scale(1.6); } }
+.scrim { position: absolute; inset: 0; z-index: 2; }
+.panel {
+  position: absolute; z-index: 3; top: 12px; right: 12px; bottom: 76px; width: min(340px, calc(100% - 24px));
+  display: flex; flex-direction: column; border-radius: 16px; overflow: hidden;
+  background: rgb(20 20 20 / 0.72); backdrop-filter: blur(18px) saturate(1.3); box-shadow: 0 8px 40px rgb(0 0 0 / 0.45);
+  animation: slide 0.25s var(--spring);
 }
-.menu button :deep(svg) { opacity: 0; }
-.menu button.on :deep(svg) { opacity: 1; }
-.menu small { margin-left: auto; opacity: 0.6; }
-
+@keyframes slide { from { opacity: 0; transform: translateX(24px); } }
+.panel header { display: flex; align-items: center; justify-content: space-between; padding: 8px 8px 4px 18px; }
+.panel header strong { font-size: 16px; font-weight: 600; }
+.panel header button { width: 40px; height: 40px; border-radius: 20px; display: grid; place-items: center; color: inherit; }
+.panel header button:hover { background: rgb(255 255 255 / 0.12); }
+.panel section { padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+.langs { flex: 1; min-height: 120px; overflow-y: auto; scrollbar-width: thin; }
+.settings { flex: none; border-top: 1px solid rgb(255 255 255 / 0.12); background: rgb(0 0 0 / 0.25); padding-bottom: 6px; }
+.settings section + section { border-top: 1px solid rgb(255 255 255 / 0.08); }
+.srow { display: flex; align-items: center; gap: 8px; }
+.srow .lbl { flex: none; width: 52px; margin: 0 0 0 8px; }
+.srow .chips { padding: 0; gap: 4px; }
+.panel h4 { margin: 2px 8px 2px; font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.6; }
+.panel h4 small { margin-left: 6px; font-weight: 500; text-transform: none; letter-spacing: 0; opacity: 0.8; }
+.mnote { margin: 2px 8px; font-size: 13px; opacity: 0.65; }
+.opt { width: 100%; min-height: 40px; border-radius: 10px; display: flex; align-items: center; gap: 10px; padding: 0 10px; font-size: 14px; text-align: left; color: inherit; }
+.opt:hover { background: rgb(255 255 255 / 0.1); }
+.opt.on { background: rgb(255 255 255 / 0.14); font-weight: 600; }
+.opt :deep(svg) { flex: none; opacity: 0; }
+.opt.on :deep(svg) { opacity: 1; color: #f03; }
+.opt small { margin-left: auto; opacity: 0.6; }
+.mlabel { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.delay { display: flex; align-items: center; gap: 6px; padding: 0 4px; }
+.delay button {
+  min-width: 40px; height: 36px; border-radius: 18px; font-size: 20px; color: inherit; background: rgb(255 255 255 / 0.1);
+}
+.delay button:hover:not(:disabled) { background: rgb(255 255 255 / 0.2); }
+.delay output { flex: 1; text-align: center; font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.delay .reset { font-size: 13px; padding: 0 12px; }
+.delay .reset:disabled { opacity: 0.35; }
+.panel input[type=range] { width: calc(100% - 16px); margin: 4px 8px; height: 20px; }
+.srow input[type=range] { flex: 1; width: auto; margin: 0 8px 0 0; }
+.panel input::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: linear-gradient(to right, #f03 var(--done), rgb(255 255 255 / 0.25) var(--done)); }
+.panel input::-moz-range-track { height: 4px; border-radius: 2px; background: rgb(255 255 255 / 0.25); }
+.panel input::-webkit-slider-thumb { margin-top: -4px; }
+.lbl { margin: 4px 8px 0; font-size: 13px; opacity: 0.75; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 6px; }
+.chips button {
+  height: 28px; padding: 0 10px; border-radius: 14px; font-size: 13px; color: inherit;
+  background: rgb(255 255 255 / 0.1); border: 2px solid transparent;
+}
+.chips button:hover { background: rgb(255 255 255 / 0.18); }
+.chips button.on { background: #fff; color: #000; font-weight: 600; }
+.chips .swatch { width: 28px; padding: 0; border-color: rgb(255 255 255 / 0.25); }
+.chips .swatch.on { border-color: #f03; box-shadow: 0 0 0 2px rgb(20 20 20); }
 .cue {
-  position: absolute; left: 50%; bottom: 7%; transform: translateX(-50%); max-width: min(90%, 1000px); margin: 0;
-  padding: 4px 12px; border-radius: 8px; background: rgb(0 0 0 / 0.6); white-space: pre-line; text-align: center;
-  font-size: clamp(16px, 2.4vw, 30px); line-height: 1.35; font-weight: 500; text-shadow: 0 1px 3px #000; pointer-events: none;
+  position: absolute; left: 50%; bottom: var(--pos, 7%); transform: translateX(-50%); max-width: min(90%, 1000px); margin: 0;
+  padding: 4px 12px; border-radius: 8px; white-space: pre-line; text-align: center;
+  line-height: 1.35; font-weight: 500; pointer-events: none;
   transition: bottom 0.35s var(--spring);
 }
-.vplayer:not(.idle) .cue { bottom: 130px; }
+/* lifted clear of the control bar while it shows, wherever it was placed */
+.vplayer:not(.idle) .cue:not(.preview) { bottom: max(var(--pos, 7%), 100px); }
+.cue.preview { z-index: 4; transition: none; }
 .spin {
   position: absolute; width: 56px; height: 56px; border-radius: 50%; pointer-events: none;
   border: 5px solid rgb(255 255 255 / 0.25); border-top-color: #fff; animation: spin 0.9s linear infinite;
@@ -347,7 +537,6 @@ input::-moz-range-thumb { width: 14px; height: 14px; border: 0; border-radius: 5
 .err { position: absolute; background: rgb(0 0 0 / 0.75); padding: 12px 20px; border-radius: 16px; margin: 0 16px; text-align: center; }
 @media (max-width: 600px) {
   .bar button { width: 40px; height: 40px; }
-  .bar .main { width: 46px; height: 46px; }
   .vol input { display: none; }
   .time { font-size: 13px; margin-left: 4px; }
 }

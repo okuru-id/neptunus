@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 import Icon from "./Icon.vue";
 import { confirm } from "./ConfirmDialog.vue";
 import { extName, has, newer, unsupported, type ExtInfo, type RepoExt } from "./ext";
+import { rowCatalogs, sourceInfo, type SourceInfo } from "./videoext";
+import { FEATURES, featureOn, loadFeatures, setFeature } from "./videoprefs";
 
 // Settings › Ekstensi: install from a repository (registry.json) or a package file, then
 // enable, configure or remove. Emits `changed` whenever the installed set changes.
@@ -43,6 +45,22 @@ const update = (e: ExtInfo) => {
   const r = repoById.value.get(e.id);
   return r && newer(r.version, e.version) ? r : undefined;
 };
+// video: which of catalog / sources / subtitles each addon offers, so only those get a switch
+const vinfo = reactive<Record<string, SourceInfo | null>>({});
+loadFeatures();
+watch(installed, (list) => {
+  for (const e of list.filter(isVideo)) {
+    if (e.id in vinfo) continue;
+    vinfo[e.id] = null;
+    sourceInfo(e.id).then((i) => (vinfo[e.id] = i), () => {});
+  }
+});
+const offers = (e: ExtInfo) => {
+  const i = vinfo[e.id];
+  if (!i) return FEATURES; // not known yet: show them all
+  return FEATURES.filter((f) => f.id === "catalog" ? rowCatalogs(i).length : f.id === "streams" ? i.streams !== false : i.subtitles);
+};
+
 function setKind(k: Kind) {
   kind.value = k;
   openId.value = null;
@@ -214,6 +232,12 @@ onMounted(() => {
             <button class="icon-btn" title="Hapus" @click="remove(e)"><Icon name="trash" /></button>
             <button class="switch" role="switch" :aria-checked="e.enabled" :title="e.enabled ? 'Nonaktifkan' : 'Aktifkan'" @click="toggle(e)"><span></span></button>
           </div>
+          <div v-if="kind === 'video' && e.enabled && offers(e).length" class="feats" role="group" aria-label="Fitur yang dipakai">
+            <button v-for="f in offers(e)" :key="f.id" type="button" role="switch" :aria-checked="featureOn(e.id, f.id)"
+              :class="{ on: featureOn(e.id, f.id) }" @click="setFeature(e.id, f.id, !featureOn(e.id, f.id))">
+              <Icon :name="featureOn(e.id, f.id) ? 'done' : 'close'" :size="16" />{{ f.label }}
+            </button>
+          </div>
           <form v-if="openId === e.id" class="form" @submit.prevent="save(e)">
             <p v-if="e.description" class="hint">{{ e.description }}</p>
             <template v-for="s in e.settings" :key="s.key">
@@ -257,6 +281,13 @@ onMounted(() => {
 
 <style scoped>
 .exts { display: flex; flex-direction: column; gap: 16px; }
+.feats { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 12px 68px; } /* lined up with the name */
+.feats button {
+  display: inline-flex; align-items: center; gap: 4px; height: 30px; padding: 0 12px 0 8px; border-radius: 15px; font-size: 13px; font-weight: 600;
+  color: var(--on-surface-variant); border: 1px solid var(--outline-variant); transition: background 0.2s, color 0.2s, border-color 0.2s;
+}
+.feats button:hover { background: var(--surface-container-highest); }
+.feats button.on { background: var(--secondary-container); color: var(--on-secondary-container); border-color: transparent; }
 .panel { padding: 28px; border-radius: 28px; background: var(--surface-container-low); display: flex; flex-direction: column; gap: 20px; }
 .head { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
 .mark { width: 56px; height: 56px; display: grid; place-items: center; flex: none; background: var(--primary-container); color: var(--on-primary-container); }

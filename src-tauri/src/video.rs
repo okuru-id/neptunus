@@ -60,50 +60,6 @@ pub async fn video_url(app: AppHandle, path: String) -> Result<Option<String>, S
     Ok(None)
 }
 
-/// Open a video in the system VLC. VLC's own decoder set is far broader than what the webview
-/// pipeline (WebKit MSE / GStreamer) accepts, so this is the escape hatch for exotic files.
-#[tauri::command]
-pub fn video_open_external(path: String) -> Result<(), String> {
-    #[cfg(mobile)]
-    return Err("Membuka di VLC hanya untuk aplikasi desktop.".into());
-    #[cfg(desktop)]
-    {
-        // the URL can come from a third-party addon: only a web URL or a real file, never something VLC
-        // would read as an option
-        let web = path.starts_with("http://") || path.starts_with("https://");
-        if !web && (path.starts_with('-') || !Path::new(&path).is_file()) {
-            return Err("Alamat video tidak valid.".into());
-        }
-        const FAIL: &str = "VLC tidak bisa dijalankan. Pasang VLC dulu (videolan.org), lalu coba lagi.";
-        #[cfg(target_os = "macos")]
-        return std::process::Command::new("open")
-            .args(["-a", "VLC", &path])
-            .spawn()
-            .map(|_| ())
-            .map_err(|_| FAIL.into());
-        #[cfg(not(target_os = "macos"))]
-        {
-            let cands: &[&str] = if cfg!(windows) {
-                &["vlc", "C:\\Program Files\\VideoLAN\\VLC\\vlc.exe"]
-            } else {
-                &["vlc"]
-            };
-            for c in cands {
-                if std::process::Command::new(c)
-                    .arg(&path)
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn()
-                    .is_ok()
-                {
-                    return Ok(());
-                }
-            }
-            Err(FAIL.into())
-        }
-    }
-}
-
 /// WebKitGTK can't play media from a custom scheme (`asset://`), so desktop serves local videos over
 /// `http://127.0.0.1` with Range support. Only files handed out by `url` are served, under a random
 /// per-run token.
@@ -232,11 +188,21 @@ mod serve {
 /// Fetches a subtitle file for the player as WebVTT. Done here rather than in the webview: subtitle
 /// hosts rarely send CORS headers, and SRT has to become VTT for the track element anyway.
 #[tauri::command]
-pub fn video_subtitle(url: String) -> Result<String, String> {
+pub fn video_subtitle(db: tauri::State<crate::db::Db>, url: String) -> Result<String, String> {
     if !url.starts_with("https://") && !url.starts_with("http://") {
         return Err("Alamat subtitle tidak valid.".into());
     }
-    let res = attohttpc::get(&url).header("User-Agent", "Mozilla/5.0").timeout(std::time::Duration::from_secs(20))
+    // fetched once, then served from the database: works offline and spares the addon's host
+    if let Ok(Some(vtt)) = db.subtitle(&url) {
+        return Ok(vtt);
+    }
+    let vtt = fetch_subtitle(&url)?;
+    let _ = db.save_subtitle(&url, &vtt);
+    Ok(vtt)
+}
+
+fn fetch_subtitle(url: &str) -> Result<String, String> {
+    let res = attohttpc::get(url).header("User-Agent", "Mozilla/5.0").timeout(std::time::Duration::from_secs(20))
         .send().map_err(|e| e.to_string())?;
     if !res.is_success() {
         return Err(format!("HTTP {}", res.status()));

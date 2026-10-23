@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import Icon from "./Icon.vue";
 import CatalogRow from "./CatalogRow.vue";
+import Dropdown from "./Dropdown.vue";
 import { extName, type ExtInfo } from "./ext";
+import { featureOn, loadFeatures } from "./videoprefs";
 import {
   allStreams, subtitleQuery, CINEMETA, meta, rowCatalogs, searchCatalog, sourceInfo, streamScore, videoSources,
   type Episode, type Meta, type SourceInfo, type SourceStream, type StreamGroup, type SubtitleQuery,
@@ -11,8 +13,8 @@ import {
 
 // Video › Ekstensi: every addon with catalogs stacked as its own section, each catalog a
 // horizontal row. Playing asks all addons for streams, not just the one the title came from.
-const props = defineProps<{ exts: ExtInfo[]; query: string }>();
-const emit = defineEmits<{ play: [v: { path: string; title: string; sub?: SubtitleQuery }]; changed: [ExtInfo[]] }>();
+const props = defineProps<{ exts: ExtInfo[]; query: string; home?: number; reload?: number }>();
+const emit = defineEmits<{ play: [v: { path: string; title: string; sub?: SubtitleQuery }]; changed: [ExtInfo[]]; detail: [open: boolean]; refreshing: [busy: boolean] }>();
 
 const CINEMETA_KEY = "neptunus.cinemetaAdded";
 const infos = reactive<Record<string, SourceInfo | "error">>({});
@@ -20,9 +22,11 @@ const isCinemeta = (e: ExtInfo) => String(e.values?.manifestUrl ?? "").includes(
 const sources = computed(() =>
   videoSources(props.exts).sort((a, b) => Number(isCinemeta(b)) - Number(isCinemeta(a))));
 const ready = (id: string) => { const i = infos[id]; return i && i !== "error" ? i : undefined; };
+loadFeatures();
 const sections = computed(() =>
-  sources.value.map((e) => ({ e, info: ready(e.id) })).filter((s) => !s.info || rowCatalogs(s.info).length));
-const kindName = (t: string) => (t === "movie" ? "Film" : t === "series" ? "Serial" : t);
+  sources.value.filter((e) => featureOn(e.id, "catalog"))
+    .map((e) => ({ e, info: ready(e.id) })).filter((s) => !s.info || rowCatalogs(s.info).length));
+const kindName = (t: string) => ({ movie: "Film", series: "Serial", anime: "Anime", tv: "TV", channel: "Kanal" })[t] ?? t;
 
 // header search, debounced: each addon's search catalogs become rows of results
 const q = ref("");
@@ -31,7 +35,7 @@ watch(() => props.query, (v) => { clearTimeout(debounce); debounce = setTimeout(
 const searches = computed(() =>
   sources.value.flatMap((e) => {
     const info = ready(e.id);
-    if (!info) return [];
+    if (!info || !featureOn(e.id, "catalog")) return [];
     return ["movie", "series"].flatMap((t) => {
       const c = searchCatalog(info.catalogs, t);
       return c && (c.id.toLowerCase().includes("search") || (c.extra ?? []).some((x) => x.name === "search") || c.extraSupported?.includes("search"))
@@ -46,6 +50,16 @@ watch(sources, (list) => {
     sourceInfo(e.id).then((i) => (infos[e.id] = i), () => (infos[e.id] = "error"));
   }
 }, { immediate: true });
+
+// "Muat ulang": every addon's manifest and catalogs asked again, the database updated with the answers
+const refreshN = ref(0);
+const refreshing = ref(false);
+async function refreshAll() {
+  refreshing.value = true;
+  await Promise.all(sources.value.map((e) => sourceInfo(e.id, true).then((i) => (infos[e.id] = i), () => {})));
+  refreshN.value++;
+  refreshing.value = false;
+}
 
 // Cinemeta is the default catalog: added once; removing it in settings keeps it removed
 onMounted(async () => {
@@ -95,6 +109,35 @@ watch(sources, (list) => {
   } catch {}
 }, { immediate: true });
 
+// Some catalog addons list a series but give no episodes for it. Ask the other addons (Cinemeta has
+// most IMDb titles), then TVmaze, which also knows the newest anime. Episode ids follow Stremio's
+// "<imdb>:<season>:<episode>" when there is an IMDb id, so stream addons still find them.
+type TvEp = { season: number; number: number; name?: string; airdate?: string; image?: { medium?: string } };
+const tvEpisodes = (show: { _embedded?: { episodes?: TvEp[] } }, base: string) =>
+  (show._embedded?.episodes ?? []).map((e) => ({
+    id: `${base}:${e.season}:${e.number}`, name: e.name, season: e.season, episode: e.number, released: e.airdate, thumbnail: e.image?.medium,
+  }));
+const tvmaze = (url: string) => fetch(`https://api.tvmaze.com/${url}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+
+async function episodesElsewhere(m: Meta, source: string): Promise<Partial<Meta> | null> {
+  let id = m.id;
+  let show = id.startsWith("tvmaze:") ? await tvmaze(`shows/${encodeURIComponent(id.slice(7))}?embed=episodes`) : null;
+  if (show?.externals?.imdb) id = show.externals.imdb;
+  for (const e of id.startsWith("tt") ? sources.value : []) {
+    if (e.id === source && id === m.id) continue;
+    try {
+      const full = await meta(e.id, "series", id);
+      if (full?.videos?.length) return { id, videos: full.videos };
+    } catch {}
+  }
+  if (!show && id.startsWith("tt")) {
+    const found = await tvmaze(`lookup/shows?imdb=${encodeURIComponent(id)}`);
+    if (found?.id) show = await tvmaze(`shows/${found.id}?embed=episodes`);
+  }
+  const videos = show ? tvEpisodes(show, id.startsWith("tt") ? id : m.id) : [];
+  return videos.length ? { id, videos } : null;
+}
+
 async function openMeta(m: Meta, source: string) {
   scrollBack = scroller()?.scrollTop ?? 0;
   open.value = { m, source };
@@ -107,16 +150,22 @@ async function openMeta(m: Meta, source: string) {
     const full = await meta(source, m.type, m.id);
     if (open.value?.m === m && full) detail.value = { ...m, ...full };
   } catch {}
+  if (m.type === "series" && !detail.value?.videos?.length) {
+    const more = await episodesElsewhere(m, source);
+    if (open.value?.m === m && more) detail.value = { ...detail.value!, ...more };
+  }
   if (m.type === "series") season.value = seasons.value.find(([s]) => s > 0)?.[0] ?? seasons.value[0]?.[0] ?? 1;
   else findStreams(m.type, detail.value?.id ?? m.id);
 }
 
-async function findStreams(type: string, id: string) {
+let lastFind: [string, string] = ["", ""];
+async function findStreams(type: string, id: string, force = false) {
+  lastFind = [type, id];
   const mine = ++ask;
   found.value = null;
   sheetError.value = "";
-  const all = sources.value.map((e) => ({ id: e.id, name: extName(e), info: ready(e.id) }));
-  const list = await allStreams(all, type, id);
+  const all = sources.value.filter((e) => featureOn(e.id, "streams")).map((e) => ({ id: e.id, name: extName(e), info: ready(e.id) }));
+  const list = await allStreams(all, type, id, force);
   if (mine !== ask) return;
   // playable first (h264/web-ready), padded & torrent-only sink to the bottom; addons with nothing last
   for (const g of list) g.list.sort((a, b) => streamScore(a) - streamScore(b));
@@ -155,6 +204,15 @@ function describe(s: SourceStream) {
   return { quality, size, tags, head: lines[0] ?? "Sumber", rest: lines.slice(1).join(" · "), file };
 }
 
+// episodes without a picture, or whose picture fails to load, show the series art with an icon
+const badThumb = reactive(new Set<string>());
+const seasonEps = computed(() => seasons.value.find(([s]) => s === season.value)?.[1] ?? []);
+function setSeason(s: number) {
+  season.value = s;
+  episode.value = null;
+  ask++; // drops a source search still running for the previous episode
+}
+
 function pickEpisode(ep: Episode) {
   episode.value = ep;
   findStreams("series", ep.id);
@@ -164,9 +222,18 @@ function play(s: SourceStream) {
   const m = detail.value!;
   const ep = episode.value;
   const title = ep ? `${m.name} · S${ep.season ?? 1}E${ep.episode ?? ""}${ep.name && !/^S\d/.test(ep.name) ? ` — ${ep.name}` : ""}` : m.name;
-  const all = sources.value.map((e) => ({ id: e.id, name: extName(e), info: ready(e.id) }));
+  const all = sources.value.filter((e) => featureOn(e.id, "subtitles")).map((e) => ({ id: e.id, name: extName(e), info: ready(e.id) }));
   emit("play", { path: s.url!, title, sub: subtitleQuery(all, m.type, ep?.id ?? m.id, s) });
 }
+
+watch(() => props.home, () => open.value && close());
+// "Muat ulang katalog" also sits in the tab bar, in VideoLibrary
+watch(() => props.reload, () => refreshAll());
+watch(refreshing, (b) => emit("refreshing", b));
+// the back button lives beside the tabs, in VideoLibrary
+watch(open, (o) => emit("detail", !!o), { immediate: true });
+// leaving the tab or the Video menu forgets the open title; only a reload brings it back
+onUnmounted(() => { try { sessionStorage.removeItem(DETAIL_KEY); } catch {} });
 
 function close() {
   open.value = null;
@@ -179,7 +246,8 @@ function close() {
   <p v-if="!sources.length" class="none">Belum ada ekstensi video. Tambah addon Stremio di Pengaturan › Ekstensi › Video.</p>
 
   <div v-else-if="open && detail" class="page" :aria-label="detail.name">
-    <button class="back" @click="close"><Icon name="back" :size="18" />Kembali</button>
+    <div v-if="detail.background || detail.poster" class="backdrop" :class="{ blur: !detail.background }"
+      :style="{ backgroundImage: `url(&quot;${detail.background || detail.poster}&quot;)` }"></div>
     <div class="hero">
       <img v-if="detail.poster" :src="detail.poster" alt="" class="hposter" />
       <div class="htext">
@@ -188,22 +256,36 @@ function close() {
         <p v-if="detail.description" class="desc">{{ detail.description }}</p>
       </div>
     </div>
-    <template v-if="detail.type === 'series' && !episode">
-      <div v-if="seasons.length > 1" class="seasons">
-        <button v-for="[s] in seasons" :key="s" :class="{ on: season === s }" @click="season = s">{{ s ? `Musim ${s}` : "Spesial" }}</button>
+    <template v-if="detail.type === 'series'">
+      <p v-if="!seasons.length" class="none">Daftar episode tidak tersedia.</p>
+      <div v-else class="epsel">
+        <Dropdown class="sel" label="Musim" :model-value="season" @update:model-value="setSeason"
+          :options="seasons.map(([s, eps]) => ({ value: s, label: `${s ? `Musim ${s}` : 'Spesial'} (${eps.length})` }))" />
       </div>
-      <div class="list">
-        <button v-for="ep in seasons.find(([s]) => s === season)?.[1] ?? []" :key="ep.id" class="pick" @click="pickEpisode(ep)">
-          <strong>E{{ ep.episode ?? "?" }}</strong>
-          <span>{{ ep.name || detail.name }}</span>
+      <div v-if="seasonEps.length" class="eps" role="listbox" aria-label="Episode">
+        <button v-for="ep in seasonEps" :key="ep.id" class="ep" role="option" :aria-selected="episode?.id === ep.id"
+          :class="{ on: episode?.id === ep.id }" @click="pickEpisode(ep)">
+          <div class="ethumb">
+            <img v-if="ep.thumbnail && !badThumb.has(ep.id)" :src="ep.thumbnail" loading="lazy" alt="" @error="badThumb.add(ep.id)" />
+            <span v-else class="edefault" :style="detail.background || detail.poster ? { backgroundImage: `url(&quot;${detail.background || detail.poster}&quot;)` } : undefined">
+              <Icon name="movie" :size="30" />
+            </span>
+            <span class="enum">E{{ ep.episode ?? "?" }}</span>
+            <span v-if="episode?.id === ep.id" class="eplay"><Icon name="play" :size="26" /></span>
+          </div>
+          <strong>{{ ep.name || `Episode ${ep.episode ?? ""}` }}</strong>
+          <span v-if="ep.released">{{ new Date(ep.released).toLocaleDateString("id-ID", { dateStyle: "medium" }) }}</span>
         </button>
-        <p v-if="!seasons.length" class="none">Daftar episode tidak tersedia.</p>
       </div>
     </template>
 
-    <template v-else>
-      <button v-if="episode" class="back" @click="episode = null; ask++"><Icon name="back" :size="18" />Episode {{ episode.episode }}</button>
-      <h3>Pilih sumber</h3>
+    <template v-if="detail.type !== 'series' || episode">
+      <div class="phead">
+        <h3>Pilih sumber</h3>
+        <button class="reload" :disabled="found === null" title="Ambil ulang sumber dari semua ekstensi" @click="findStreams(...lastFind, true)">
+          <Icon name="refresh" :size="18" />Muat ulang
+        </button>
+      </div>
       <p v-if="found === null" class="none">Mencari sumber di semua ekstensi…</p>
       <p v-else-if="sheetError" class="none">{{ sheetError }}</p>
       <div v-if="groups.length" class="seasons" role="tablist" aria-label="Ekstensi sumber">
@@ -241,7 +323,7 @@ function close() {
       <h2>{{ extName(e) }}</h2>
       <p v-if="!info" class="none">Memuat katalog…</p>
       <CatalogRow v-for="c in info ? rowCatalogs(info) : []" :key="`${c.type}:${c.id}`" :title="`${c.name} · ${kindName(c.type)}`"
-        :source="e.id" :type="c.type" :catalog-id="c.id" @open="openMeta($event, e.id)" />
+        :source="e.id" :type="c.type" :catalog-id="c.id" :refresh="refreshN" @open="openMeta($event, e.id)" />
     </section>
   </div>
 
@@ -300,11 +382,68 @@ h3 { margin: 4px 0 0; font-size: 16px; font-weight: 700; }
 }
 .src:hover .go { border-radius: 14px; background: var(--primary); color: var(--on-primary); }
 
-.back { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: 999px; font-weight: 600; background: var(--secondary-container); color: var(--on-secondary-container); }
 @media (max-width: 600px) {
   .hero { gap: 14px; }
   .hposter { width: 120px; }
   .htext h2 { font-size: 24px; }
   .desc { -webkit-line-clamp: 4; }
 }
+/* the title's artwork behind the whole detail page, edge to edge, fading into the surface below */
+.page { position: relative; isolation: isolate; }
+.backdrop {
+  position: absolute; z-index: -1; top: 0; left: calc(-1 * var(--pad-l, 16px)); right: calc(-1 * var(--pad-r, 8px));
+  height: min(85vh, 760px); background: center 20% / cover no-repeat;
+  -webkit-mask-image: linear-gradient(#000 35%, transparent); mask-image: linear-gradient(#000 35%, transparent);
+}
+.backdrop::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--surface) 92%, transparent) 0%, color-mix(in srgb, var(--surface) 55%, transparent) 60%, transparent),
+    linear-gradient(color-mix(in srgb, var(--surface) 30%, transparent), transparent 40%);
+}
+/* a poster only (no wide art): blurred so the portrait crop doesn't look stretched */
+.backdrop.blur { filter: blur(28px) saturate(1.2); transform: scale(1.1); }
+.page .hero { min-height: min(45vh, 420px); align-items: flex-end; padding-top: 24px; }
+.page .desc { color: var(--on-surface); max-width: 70ch; }
+.phead { display: flex; align-items: center; gap: 12px; }
+.phead h3 { flex: 1; }
+.reload {
+  display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 14px 0 10px; border-radius: 18px; font-size: 14px; font-weight: 600;
+  background: var(--secondary-container); color: var(--on-secondary-container); transition: background 0.2s, opacity 0.2s;
+}
+.reload:hover:not(:disabled) { background: var(--surface-container-highest); }
+.reload:disabled { opacity: 0.6; }
+.spinning { animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.epsel { display: flex; flex-wrap: wrap; gap: 12px; }
+.sel { width: min(100%, 320px); }
+/* episodes: a horizontal strip of cards like the catalog rows */
+.eps {
+  display: flex; gap: 14px; overflow-x: auto; scroll-snap-type: x proximity; padding: 2px 2px 8px;
+  scrollbar-width: none; overscroll-behavior-x: contain;
+}
+.eps::-webkit-scrollbar { display: none; }
+.ep { flex: none; width: 220px; display: flex; flex-direction: column; gap: 3px; text-align: left; scroll-snap-align: start; }
+.ethumb {
+  position: relative; aspect-ratio: 16 / 9; border-radius: 16px; overflow: hidden; display: grid; place-items: center; margin-bottom: 6px;
+  background: var(--secondary-container); color: var(--on-secondary-container);
+  transition: border-radius 0.4s var(--spring), transform 0.45s var(--spring), box-shadow 0.2s;
+}
+.ethumb img { width: 100%; height: 100%; object-fit: cover; }
+.ep:hover .ethumb { border-radius: 24px; transform: scale(1.03); }
+.ep.on .ethumb { box-shadow: 0 0 0 3px var(--primary); }
+.enum {
+  position: absolute; left: 8px; bottom: 8px; padding: 2px 8px; border-radius: 8px; font-size: 12px; font-weight: 700;
+  background: rgb(0 0 0 / 0.65); color: #fff;
+}
+.eplay { position: absolute; inset: 0; display: grid; place-items: center; background: rgb(0 0 0 / 0.35); color: #fff; }
+.ep strong { font-size: 14px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ep.on strong { color: var(--primary); }
+.ep span:not(.enum):not(.eplay) { font-size: 12px; color: var(--on-surface-variant); }
+@media (max-width: 600px) { .ep { width: 170px; } }
+.edefault {
+  position: absolute; inset: 0; display: grid; place-items: center; color: #fff;
+  background: var(--secondary-container) center / cover no-repeat;
+}
+.edefault::before { content: ""; position: absolute; inset: 0; background: rgb(0 0 0 / 0.55); backdrop-filter: blur(6px); }
+.edefault :deep(svg) { position: relative; opacity: 0.9; }
 </style>

@@ -915,6 +915,44 @@ pub async fn ext_call(app: AppHandle, id: String, method: String, args: Vec<Valu
     crate::blocking(move || app.state::<Exts>().call(&id, &method, Value::Array(args))).await
 }
 
+/// `ext_call` through the database: an answer younger than `ttl` seconds comes from there, and when
+/// the extension fails (offline, addon down) an older one still does. ttl 0 always asks the extension.
+#[tauri::command]
+pub async fn ext_call_cached(app: AppHandle, id: String, method: String, args: Vec<Value>, ttl: i64) -> R<Value> {
+    crate::blocking(move || {
+        let db = app.state::<crate::db::Db>();
+        // a new bridge (another app version) reshapes the answers, so its fingerprint is part of the key
+        let bridge = if id.starts_with("stremio-") { bridge_tag() } else { 0 };
+        let key = format!("{id}|{method}|{}|{bridge:x}", Value::Array(args.clone()));
+        let hit = db.cached(&key).ok().flatten();
+        if let Some((v, age)) = &hit {
+            if *age < ttl {
+                if let Ok(v) = serde_json::from_str(v) {
+                    return Ok(v);
+                }
+            }
+        }
+        match app.state::<Exts>().call(&id, &method, Value::Array(args)) {
+            Ok(v) => {
+                let _ = db.cache(&key, &v.to_string());
+                Ok(v)
+            }
+            Err(err) => hit.and_then(|(v, _)| serde_json::from_str(&v).ok()).ok_or(err),
+        }
+    })
+    .await
+}
+
+fn bridge_tag() -> u64 {
+    use std::hash::{Hash, Hasher};
+    static TAG: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *TAG.get_or_init(|| {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        STREMIO_BRIDGE.hash(&mut h);
+        h.finish()
+    })
+}
+
 #[derive(Clone, serde::Serialize)]
 struct Progress {
     key: String,

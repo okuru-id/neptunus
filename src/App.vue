@@ -16,6 +16,7 @@ import Equalizer from "./lib/Equalizer.vue";
 import About from "./lib/About.vue";
 import ExtCatalog from "./lib/ExtCatalog.vue";
 import VideoLibrary from "./lib/VideoLibrary.vue";
+import { installUpdate, updater } from "./lib/updater";
 import SongMenu from "./lib/SongMenu.vue";
 import { downloadError, extName, has, unsupported, type ExtInfo } from "./lib/ext";
 import { pasted, verifyError, waiting, withVerify } from "./lib/verify";
@@ -268,7 +269,14 @@ async function removeFrom(path: string) {
   await openPlaylist(plId.value);
 }
 
+// the sticky header's height, so bars inside a view (the video tabs) can stick right under it
+const topEl = ref<HTMLElement>();
+const topH = ref(0);
+const topObs = new ResizeObserver(([e]) => (topH.value = (e.target as HTMLElement).offsetHeight));
+watch(topEl, (el, old) => { if (old) topObs.unobserve(old); if (el) topObs.observe(el); });
+const videoHome = ref(0); // the Video menu clicked while already there: back to the catalog
 function setView(v: View) {
+  if (v === "videos" && view.value === "videos") videoHome.value++;
   view.value = v;
   group.value = null;
   // songs downloaded elsewhere (catalog) since take their place in the open playlist
@@ -885,8 +893,8 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
       <button v-if="!narrow" class="icon-btn tonal collapse-btn" @click="toggleSidebar" :title="sidebarOpen ? 'Tutup sidebar' : 'Buka sidebar'"><Icon :name="sidebarOpen ? 'panelClose' : 'panelOpen'" /></button>
     </nav>
 
-    <main :class="{ 'has-player': !!now }">
-      <header class="top">
+    <main :class="{ 'has-player': !!now }" :style="{ '--top-h': `${topH}px` }">
+      <header ref="topEl" class="top">
         <div class="heading">
           <button v-if="group !== null" class="icon-btn tonal" @click="group = null" title="Kembali"><Icon name="back" /></button>
           <div>
@@ -917,7 +925,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
 
       <p v-if="loading" class="scanning"><span class="spinner" :style="{ clipPath: 'url(#shape-cookie12)' }"></span>Memindai folder musik…</p>
 
-      <VideoLibrary v-if="view === 'videos'" :query="query" :exts="exts" @play="current >= 0 && !paused && togglePause()" @count="videoCount = $event" @exts="exts = $event" />
+      <VideoLibrary v-if="view === 'videos'" :home="videoHome" :query="query" :exts="exts" @play="current >= 0 && !paused && togglePause()" @count="videoCount = $event" @exts="exts = $event" />
       <section v-else-if="!library.length && view !== 's3' && !(view === 'catalog' && extCatalog)" class="empty">
         <div class="empty-mark" :style="{ clipPath: 'url(#shape-cookie12)' }"><Icon name="note" :size="72" /></div>
         <h2>Belum ada musik</h2>
@@ -1217,7 +1225,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
         <strong>Versi {{ update.version }} tersedia</strong>
         <span>Rilis baru Neptunus sudah ada di GitHub.</span>
       </div>
-      <button class="btn filled small" @click="openUrl(update.url)">Lihat</button>
+      <button class="btn filled small" :disabled="updater.busy" @click="installUpdate">{{ updater.busy ? `Mengunduh ${updater.pct}%` : updater.done ? "Dibuka" : updater.error ? "Coba lagi" : "Unduh & pasang" }}</button>
       <button class="icon-btn small" title="Lewati versi ini" aria-label="Lewati versi ini" @click="skipUpdate"><Icon name="close" :size="18" /></button>
     </div>
   </Transition>

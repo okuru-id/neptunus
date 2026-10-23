@@ -646,7 +646,10 @@ pub fn run() {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
             let _ = DATA_DIR.set(dir.clone());
-            app.manage(Db::open(&dir.join("library.db"))?);
+            let db = Db::open(&dir.join("library.db"))?;
+            #[cfg(target_os = "ios")]
+            let _ = db.rehome(&dir.to_string_lossy());
+            app.manage(db);
             // iOS mutes the default (solo ambient) session when the app leaves the foreground.
             #[cfg(target_os = "ios")]
             unsafe {

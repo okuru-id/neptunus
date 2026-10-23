@@ -219,6 +219,37 @@ impl Db {
         c.execute("DELETE FROM ext_cache WHERE saved < unixepoch() - 7 * 86400", []).map(|_| ())
     }
 
+    /// iOS moves the app's data container (a new UUID in its path) on every reinstall or update, so saved
+    /// paths point at the old one. Rewrites `…/Application/<old>/` to the container `dir` is in.
+    #[cfg(any(target_os = "ios", test))]
+    pub fn rehome(&self, dir: &str) -> rusqlite::Result<()> {
+        let id = |p: &str| {
+            let s = &p[p.find("/Application/")?..];
+            Some(s[..13 + s[13..].find('/')? + 1].to_owned())
+        };
+        let Some(new) = id(&format!("{dir}/")) else { return Ok(()) };
+        let mut c = self.0.lock().unwrap();
+        let mut olds: Vec<String> = c
+            .prepare("SELECT path FROM folders UNION SELECT path FROM tracks")?
+            .query_map([], |r| r.get::<_, String>(0))?
+            .filter_map(|p| id(&p.ok()?))
+            .filter(|o| *o != new)
+            .collect();
+        olds.sort();
+        olds.dedup();
+        let tx = c.transaction()?;
+        tx.execute_batch("PRAGMA defer_foreign_keys = ON")?;
+        for old in &olds {
+            // rows that already exist under the new container (a folder added again) win; the old ones go
+            for t in ["tracks", "playlist_tracks", "downloads", "folders"] {
+                tx.execute(&format!("UPDATE OR IGNORE {t} SET path = replace(path, ?1, ?2)"), [old, &new])?;
+                tx.execute(&format!("DELETE FROM {t} WHERE instr(path, ?1)"), [old])?;
+            }
+            tx.execute("UPDATE settings SET value = replace(value, ?1, ?2)", [old, &new])?;
+        }
+        tx.commit()
+    }
+
     pub fn folders(&self) -> rusqlite::Result<Vec<String>> {
         let c = self.0.lock().unwrap();
         let mut s = c.prepare("SELECT path FROM folders ORDER BY path")?;
@@ -280,5 +311,33 @@ impl Db {
         tx.execute("UPDATE OR IGNORE playlist_tracks SET path=?2 WHERE path=?1", [old, new])?;
         tx.execute("DELETE FROM tracks WHERE path=?1", [old])?;
         tx.commit()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rehome_moves_paths_to_the_new_container() {
+        let f = std::env::temp_dir().join(format!("rehome-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&f);
+        let db = Db::open(&f).unwrap();
+        let (old, new) = ("/private/var/mobile/Containers/Data/Application/AAA", "/private/var/mobile/Containers/Data/Application/BBB");
+        let t = |p: &str| Track { path: p.into(), title: "t".into(), artist: "a".into(), album: "b".into(), duration_secs: 1 };
+        db.add_folder(&format!("{old}/Documents")).unwrap();
+        db.upsert(&[t(&format!("{old}/Documents/a.flac")), t(&format!("{old}/Documents/b.flac")), t(&format!("{new}/Documents/b.flac"))]).unwrap();
+        db.0.lock().unwrap().execute_batch(&format!(
+            "INSERT INTO playlists VALUES (1, 'p'); INSERT INTO playlist_tracks VALUES (1, '{old}/Documents/a.flac', 0);"
+        )).unwrap();
+        db.rehome(&format!("{new}/Library/Application Support/id.neptunus.desktop")).unwrap();
+        assert_eq!(db.folders().unwrap(), vec![format!("{new}/Documents")]);
+        let c = db.0.lock().unwrap();
+        let paths: Vec<String> = c.prepare("SELECT path FROM tracks ORDER BY path").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+        assert_eq!(paths, vec![format!("{new}/Documents/a.flac"), format!("{new}/Documents/b.flac")]);
+        let pl: String = c.query_row("SELECT path FROM playlist_tracks", [], |r| r.get(0)).unwrap();
+        assert_eq!(pl, format!("{new}/Documents/a.flac"));
+        drop(c);
+        let _ = std::fs::remove_file(&f);
     }
 }

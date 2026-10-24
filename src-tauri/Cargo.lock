@@ -3070,7 +3070,7 @@ dependencies = [
 
 [[package]]
 name = "neptunus"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aes",
  "attohttpc",

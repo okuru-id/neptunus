@@ -30,6 +30,17 @@ async function load(force = false) {
 
 onMounted(() => load());
 const list = computed<RowItem[] | null>(() => props.items ?? metas.value);
+
+// A catalog brings 50-100 titles and a page stacks several, but a phone shows three posters a row: render
+// a handful and add more as the strip nears its end, or opening the catalogs builds hundreds of cards at once.
+const PAGE = 15;
+const shown = ref(PAGE);
+const visible = computed(() => list.value?.slice(0, shown.value) ?? null);
+watch(list, () => (shown.value = PAGE));
+function more() {
+  const s = strip.value;
+  if (s && list.value && shown.value < list.value.length && s.scrollLeft + s.clientWidth * 2 >= s.scrollWidth) shown.value += PAGE;
+}
 watch(() => props.extra, () => metas.value !== null && load());
 // "Muat ulang": ask the addon again and refresh the database copy
 watch(() => props.refresh, () => load(true));
@@ -47,12 +58,12 @@ const scroll = (dir: number) => strip.value?.scrollBy({ left: dir * strip.value.
       </div>
     </header>
     <p v-if="error" class="note">Tidak bisa dimuat ({{ error }}). <button class="retry" @click="load(true)">Coba lagi</button></p>
-    <div v-else ref="strip" class="strip">
-      <template v-if="list">
-        <div v-for="m in list" :key="m.id" class="card" :class="{ cached: cached.ids.has(m.id) }">
+    <div v-else ref="strip" class="strip" @scroll.passive="more">
+      <template v-if="visible">
+        <div v-for="m in visible" :key="m.id" class="card" :class="{ cached: cached.ids.has(m.id) }">
           <button class="open" :title="m.name" @click="emit('open', m)">
             <div class="poster" :class="{ wide: m.posterShape === 'landscape' }">
-              <img v-if="m.poster" :src="m.poster" loading="lazy" alt="" />
+              <img v-if="m.poster" :src="m.poster" loading="lazy" decoding="async" alt="" />
               <Icon v-else name="movie" :size="32" />
               <span v-if="cached.ids.has(m.id)" class="saved" title="Sudah ada di cache"><Icon name="download" :size="14" /></span>
               <span v-if="m.progress" class="progress"><i :style="{ width: `${Math.round(m.progress * 100)}%` }"></i></span>
@@ -71,7 +82,8 @@ const scroll = (dir: number) => strip.value?.scrollBy({ left: dir * strip.value.
 </template>
 
 <style scoped>
-.row { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+/* rows out of view skip layout and paint until scrolled near */
+.row { display: flex; flex-direction: column; gap: 10px; min-width: 0; content-visibility: auto; contain-intrinsic-size: auto 300px; }
 header { display: flex; align-items: center; gap: 8px; }
 h3 { flex: 1; margin: 0; font-size: 18px; font-weight: 700; }
 .nav { display: flex; gap: 4px; }

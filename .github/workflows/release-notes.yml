@@ -1,0 +1,32 @@
+name: Release notes
+
+# A release made on github.com (say from a phone, with no git at hand) starts with no title and no notes,
+# and Build only writes them when it creates the release itself. This fills in every release that is
+# still empty from its release-notes-<tag>.md, titled like the others ("Neptunus vX.Y.Z"). Releases that
+# already have notes are left alone.
+on:
+  push:
+    branches: [main]
+    paths: ["release-notes-*.md", ".github/workflows/release-notes.yml"]
+  release:
+    types: [published]
+
+jobs:
+  notes:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          # the okuru-id org keeps GITHUB_TOKEN read-only, see build.yml
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          for f in release-notes-v*.md; do
+            tag="${f#release-notes-}"
+            tag="${tag%.md}"
+            body=$(gh release view "$tag" --json body --jq .body 2>/dev/null) || continue
+            [ -z "$body" ] || continue
+            gh release edit "$tag" --title "Neptunus $tag" --notes-file "$f"
+            echo "filled $tag"
+          done

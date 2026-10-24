@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref, toRaw, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import Icon from "./Icon.vue";
 import CatalogRow from "./CatalogRow.vue";
@@ -7,6 +7,8 @@ import Dropdown from "./Dropdown.vue";
 import { extName, type ExtInfo } from "./ext";
 import { featureOn, loadFeatures } from "./videoprefs";
 import { cached, remember } from "./vcache";
+import { clock, forget, lastPlayed, progressOf, recordPlay, resumeKey, toggleBookmark, vlib, type Saved, type Watched } from "./vlibrary";
+import type { RowItem } from "./CatalogRow.vue";
 import {
   allStreams, subtitleQuery, CINEMETA, meta, rowCatalogs, searchCatalog, sourceInfo, streamScore, videoSources,
   type Episode, type Meta, type SourceInfo, type SourceStream, type StreamGroup, type SubtitleQuery,
@@ -15,7 +17,7 @@ import {
 // Video › Ekstensi: every addon with catalogs stacked as its own section, each catalog a
 // horizontal row. Playing asks all addons for streams, not just the one the title came from.
 const props = defineProps<{ exts: ExtInfo[]; query: string; home?: number; reload?: number }>();
-const emit = defineEmits<{ play: [v: { path: string; title: string; sub?: SubtitleQuery }]; changed: [ExtInfo[]]; detail: [open: boolean]; refreshing: [busy: boolean] }>();
+const emit = defineEmits<{ play: [v: { path: string; title: string; sub?: SubtitleQuery; resume?: string }]; changed: [ExtInfo[]]; detail: [open: boolean]; refreshing: [busy: boolean] }>();
 
 const CINEMETA_KEY = "neptunus.cinemetaAdded";
 const infos = reactive<Record<string, SourceInfo | "error">>({});
@@ -139,6 +141,10 @@ async function episodesElsewhere(m: Meta, source: string): Promise<Partial<Meta>
   return videos.length ? { id, videos } : null;
 }
 
+// whether `m` is still the open title (a newer one may have been opened while its details loaded);
+// `open` keeps a reactive copy, so compare the objects underneath
+const isOpen = (m: Meta) => toRaw(open.value?.m) === toRaw(m);
+
 async function openMeta(m: Meta, source: string) {
   scrollBack = scroller()?.scrollTop ?? 0;
   open.value = { m, source };
@@ -149,11 +155,11 @@ async function openMeta(m: Meta, source: string) {
   sheetError.value = "";
   try {
     const full = await meta(source, m.type, m.id);
-    if (open.value?.m === m && full) detail.value = { ...m, ...full };
+    if (isOpen(m) && full) detail.value = { ...m, ...full };
   } catch {}
   if (m.type === "series" && !detail.value?.videos?.length) {
     const more = await episodesElsewhere(m, source);
-    if (open.value?.m === m && more) detail.value = { ...detail.value!, ...more };
+    if (isOpen(m) && more) detail.value = { ...detail.value!, ...more };
   }
   if (m.type === "series") season.value = seasons.value.find(([s]) => s > 0)?.[0] ?? seasons.value[0]?.[0] ?? 1;
   else findStreams(m.type, detail.value?.id ?? m.id);
@@ -219,13 +225,67 @@ function pickEpisode(ep: Episode) {
   findStreams("series", ep.id);
 }
 
+const subSources = () => sources.value.filter((e) => featureOn(e.id, "subtitles")).map((e) => ({ id: e.id, name: extName(e), info: ready(e.id) }));
+
 function play(s: SourceStream) {
   const m = detail.value!;
   const ep = episode.value;
   const title = ep ? `${m.name} · S${ep.season ?? 1}E${ep.episode ?? ""}${ep.name && !/^S\d/.test(ep.name) ? ` — ${ep.name}` : ""}` : m.name;
-  const all = sources.value.filter((e) => featureOn(e.id, "subtitles")).map((e) => ({ id: e.id, name: extName(e), info: ready(e.id) }));
   remember(ep ? [m.id, ep.id] : [m.id], s.url!);
-  emit("play", { path: s.url!, title, sub: subtitleQuery(all, m.type, ep?.id ?? m.id, s) });
+  // kept under the id the title was opened with, so the catalog row and the bookmark find it again
+  const opened = { ...m, id: open.value!.m.id };
+  recordPlay(opened, open.value!.source, ep, s, title);
+  emit("play", { path: s.url!, title, sub: subtitleQuery(subSources(), m.type, ep?.id ?? m.id, s), resume: ep?.id ?? opened.id });
+}
+
+// --- the viewer's own rows: watched last and bookmarked ---
+function noteOf(h: Watched) {
+  const p = progressOf(resumeKey(h));
+  const ep = h.episode ? `S${h.episode.season ?? 1}E${h.episode.episode ?? "?"}` : "";
+  const at = p ? (p.dur ? `sisa ${clock(Math.max(0, p.dur - p.pos))}` : `dari ${clock(p.pos)}`) : "";
+  return [ep, at].filter(Boolean).join(" · ") || "Sudah ditonton";
+}
+const watching = computed<RowItem[]>(() => {
+  void vlib.seen; // read again after a player closes
+  return vlib.history.map((h) => {
+    const p = progressOf(resumeKey(h));
+    return { ...h, note: noteOf(h), progress: p?.dur ? Math.min(1, p.pos / p.dur) : undefined };
+  });
+});
+const bookmarked = computed<RowItem[]>(() => vlib.bookmarks);
+
+/** A title from the viewer's rows: its page, with the episode watched last picked again. */
+async function openSaved(m: Saved | Watched) {
+  await openMeta(m, m.source);
+  const ep = "episode" in m ? m.episode : undefined;
+  if (!ep || !isOpen(m)) return;
+  const full = detail.value?.videos?.find((e) => e.id === ep.id) ?? ep;
+  season.value = full.season ?? season.value;
+  pickEpisode(full);
+}
+
+// the open title's place in the viewer's rows
+const openId = computed(() => open.value?.m.id ?? "");
+const saved = computed(() => !!openId.value && vlib.bookmarks.some((b) => b.id === openId.value));
+const resumable = computed(() => (openId.value ? lastPlayed(openId.value) : undefined));
+const resumeLabel = computed(() => {
+  void vlib.seen;
+  const h = resumable.value;
+  if (!h) return "";
+  const p = progressOf(resumeKey(h));
+  const ep = h.episode ? `S${h.episode.season ?? 1}E${h.episode.episode ?? "?"} ` : "";
+  return `Lanjutkan ${ep}${p ? `· ${clock(p.pos)}` : ""}`.trim();
+});
+function bookmark() {
+  if (open.value) toggleBookmark({ ...detail.value!, id: open.value.m.id }, open.value.source);
+}
+/** Plays the source watched last again, from where it was left. */
+function resume() {
+  const h = resumable.value;
+  if (!h?.stream.url) return;
+  remember(h.episode ? [h.id, h.episode.id] : [h.id], h.stream.url);
+  recordPlay({ ...detail.value!, id: h.id }, h.source, h.episode ?? null, h.stream, h.title);
+  emit("play", { path: h.stream.url, title: h.title, sub: subtitleQuery(subSources(), h.type, h.episode?.id ?? h.id, h.stream), resume: resumeKey(h) });
 }
 
 watch(() => props.home, () => open.value && close());
@@ -256,6 +316,12 @@ function close() {
         <h2>{{ detail.name }}</h2>
         <span class="sub">{{ [detail.releaseInfo || detail.year, kindName(detail.type)].filter(Boolean).join(" · ") }}</span>
         <p v-if="detail.description" class="desc">{{ detail.description }}</p>
+        <div class="hacts">
+          <button v-if="resumable" class="hbtn filled" @click="resume"><Icon name="play" :size="20" />{{ resumeLabel }}</button>
+          <button class="hbtn" :class="{ on: saved }" :aria-pressed="saved" @click="bookmark">
+            <Icon :name="saved ? 'bookmarkOn' : 'bookmark'" :size="20" />{{ saved ? "Tersimpan" : "Simpan" }}
+          </button>
+        </div>
       </div>
     </div>
     <template v-if="detail.type === 'series'">
@@ -323,6 +389,11 @@ function close() {
   </div>
 
   <div v-else class="sections">
+    <section v-if="watching.length || bookmarked.length" class="source">
+      <CatalogRow v-if="watching.length" title="Lanjutkan menonton" :items="watching" removable @open="openSaved($event as Watched)" @remove="forget($event.id)" />
+      <CatalogRow v-if="bookmarked.length" title="Disimpan" :items="bookmarked" removable @open="openSaved($event as Saved)"
+        @remove="toggleBookmark($event, ($event as Saved).source)" />
+    </section>
     <section v-for="{ e, info } in sections" :key="e.id" class="source">
       <h2>{{ extName(e) }}</h2>
       <p v-if="!info" class="none">Memuat katalog…</p>
@@ -345,6 +416,17 @@ function close() {
 .htext { min-width: 0; display: flex; flex-direction: column; gap: 8px; justify-content: flex-end; }
 .htext h2 { margin: 0; font-size: clamp(28px, 4vw, 44px); font-weight: 800; line-height: 1.05; letter-spacing: -0.02em; }
 .sub { color: var(--primary); font-weight: 600; font-size: 14px; }
+.hacts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.hbtn {
+  height: 44px; padding: 0 20px 0 16px; border-radius: 22px; display: inline-flex; align-items: center; gap: 8px;
+  font-size: 14px; font-weight: 650; background: var(--secondary-container); color: var(--on-secondary-container);
+  transition: border-radius 0.3s var(--spring);
+}
+.hbtn:active { border-radius: 14px; }
+.hbtn.filled { background: var(--primary); color: var(--on-primary); }
+.hbtn { white-space: nowrap; }
+@media (max-width: 600px) { .hbtn { height: 40px; padding: 0 14px 0 10px; font-size: 13px; gap: 6px; } }
+.hbtn.on { background: var(--tertiary-container); color: var(--on-tertiary-container); }
 .desc { margin: 4px 0 0; font-size: 14px; line-height: 1.5; color: var(--on-surface-variant); display: -webkit-box; -webkit-line-clamp: 6; max-width: 70ch; -webkit-box-orient: vertical; overflow: hidden; }
 h3 { margin: 4px 0 0; font-size: 16px; font-weight: 700; }
 .seasons { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; }

@@ -33,6 +33,8 @@ import darkMode from "@material-symbols/svg-400/rounded/dark_mode-fill.svg?raw";
 import autoMode from "@material-symbols/svg-400/rounded/brightness_auto-fill.svg?raw";
 import palette from "@material-symbols/svg-400/rounded/palette-fill.svg?raw";
 import clearAll from "@material-symbols/svg-400/rounded/delete_sweep-fill.svg?raw";
+import bookmark from "@material-symbols/svg-400/rounded/bookmark_add.svg?raw";
+import bookmarkOn from "@material-symbols/svg-400/rounded/bookmark_added-fill.svg?raw";
 import moreVert from "@material-symbols/svg-400/rounded/more_vert-fill.svg?raw";
 import back from "@material-symbols/svg-400/rounded/arrow_back-fill.svg?raw";
 import collapse from "@material-symbols/svg-400/rounded/keyboard_arrow_down-fill.svg?raw";
@@ -135,6 +137,8 @@ export const icons = {
   autoMode,
   palette,
   clearAll,
+  bookmark,
+  bookmarkOn,
 };
 
 export type IconName = keyof typeof icons;

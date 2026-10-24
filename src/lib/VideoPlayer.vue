@@ -5,7 +5,8 @@ import Icon from "./Icon.vue";
 import { subtitles, type Subtitle, type SubtitleQuery } from "./videoext";
 import type Hls from "hls.js";
 
-const props = defineProps<{ path: string; title: string; sub?: SubtitleQuery }>();
+// `resume`: the film or episode id from a catalog, so where it was left holds whichever source plays it
+const props = defineProps<{ path: string; title: string; sub?: SubtitleQuery; resume?: string }>();
 const emit = defineEmits<{ close: [] }>();
 
 const ext = (p: string) => p.split(/[?#]/)[0].split(".").pop()?.toLowerCase() ?? "";
@@ -13,7 +14,8 @@ const ext = (p: string) => p.split(/[?#]/)[0].split(".").pop()?.toLowerCase() ??
 const video = ref<HTMLVideoElement>();
 const error = ref("");
 // where each video was left, so it picks up from there next time
-const posKey = `video-pos:${props.path}`;
+const posKey = `video-pos:${props.resume ?? props.path}`;
+const durKey = `video-dur:${props.resume ?? props.path}`;
 let hls: Hls | undefined;
 const buffering = ref(true);
 let lastSave = 0;
@@ -28,8 +30,13 @@ function savePos(force = false) {
   if (!v || closed || (!force && Date.now() - lastSave < 5000)) return;
   lastSave = Date.now();
   try {
-    if (v.duration && v.duration - v.currentTime > 10) localStorage.setItem(posKey, String(v.currentTime));
-    else localStorage.removeItem(posKey);
+    if (v.duration && v.duration - v.currentTime > 10) {
+      localStorage.setItem(posKey, String(v.currentTime));
+      localStorage.setItem(durKey, String(v.duration)); // for the progress under "Lanjutkan menonton"
+    } else {
+      localStorage.removeItem(posKey);
+      localStorage.removeItem(durKey);
+    }
   } catch {}
 }
 
@@ -344,7 +351,8 @@ onMounted(async () => {
     resolvedUrl = url;
     const v = video.value!;
     let start: number | null = null;
-    try { start = Number(localStorage.getItem(posKey)) || null; } catch {}
+    // older plays were kept by stream URL
+    try { start = Number(localStorage.getItem(posKey) ?? localStorage.getItem(`video-pos:${props.path}`)) || null; } catch {}
     if (start) v.addEventListener("loadedmetadata", () => { v.currentTime = start; }, { once: true });
     v.addEventListener("loadedmetadata", readAudios);
     (v as any).audioTracks?.addEventListener?.("addtrack", readAudios);

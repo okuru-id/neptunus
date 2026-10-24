@@ -3,12 +3,13 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import Icon from "./Icon.vue";
 import VideoPlayer from "./VideoPlayer.vue";
+import { vlib } from "./vlibrary";
 import VideoCatalogs from "./VideoCatalogs.vue";
 import { refreshCached } from "./vcache";
 import type { ExtInfo } from "./ext";
 import type { SubtitleQuery } from "./videoext";
 
-type Video = { path: string; title: string; size?: number; sub?: SubtitleQuery };
+type Video = { path: string; title: string; size?: number; sub?: SubtitleQuery; resume?: string };
 type Tab = "local" | "cloud" | "ext";
 
 const props = defineProps<{ query: string; exts: ExtInfo[]; home?: number }>();
@@ -48,7 +49,7 @@ watch(() => tab.value === "ext" && inDetail.value, (on) => emit("detail", on), {
 watch(() => !!open.value, (on) => emit("watching", on));
 // the cache may have let go of old videos: check again on load and after each one
 onMounted(refreshCached);
-watch(open, (v) => !v && refreshCached());
+watch(open, (v) => { if (!v) { refreshCached(); vlib.seen++; } });
 onUnmounted(() => emit("watching", false));
 const size = (b?: number) =>
   b == null ? "" : b >= 1 << 30 ? `${(b / (1 << 30)).toFixed(1)} GB` : `${Math.round(b / (1 << 20))} MB`;
@@ -100,7 +101,7 @@ onMounted(async () => {
     </div>
   </template>
 
-  <VideoPlayer v-if="open" :key="open.path" :path="open.path" :title="open.title" :sub="open.sub" @close="open = null" />
+  <VideoPlayer v-if="open" :key="open.path" :path="open.path" :title="open.title" :sub="open.sub" :resume="open.resume" @close="open = null" />
 </template>
 
 <style scoped>

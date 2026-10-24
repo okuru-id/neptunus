@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import Icon from "./Icon.vue";
 import { catalog, type Meta } from "./videoext";
 import { cached } from "./vcache";
+import { poster } from "./posters";
 
 // One catalog as a horizontal strip of posters. Loads right away: the answer usually comes from the
 // app database, so waiting for the row to scroll into view only made rows blink in while scrolling.
@@ -63,9 +64,9 @@ const scroll = (dir: number) => strip.value?.scrollBy({ left: dir * strip.value.
         <div v-for="m in visible" :key="m.id" class="card" :class="{ cached: cached.ids.has(m.id) }">
           <button class="open" :title="m.name" @click="emit('open', m)">
             <div class="poster" :class="{ wide: m.posterShape === 'landscape' }">
-              <img v-if="m.poster" :src="m.poster" loading="lazy" decoding="async" alt="" />
+              <img v-if="m.poster" :src="poster(m.poster, m)" loading="lazy" decoding="async" alt="" />
               <Icon v-else name="movie" :size="32" />
-              <span v-if="cached.ids.has(m.id)" class="saved" title="Sudah ada di cache"><Icon name="download" :size="14" /></span>
+              <span v-if="cached.ids.has(m.id)" class="saved" title="Sudah ada di cache"><Icon name="downloadDone" :size="14" /></span>
               <span v-if="m.progress" class="progress"><i :style="{ width: `${Math.round(m.progress * 100)}%` }"></i></span>
             </div>
             <strong>{{ m.name }}</strong>
@@ -115,8 +116,6 @@ h3 { flex: 1; margin: 0; font-size: 18px; font-weight: 700; }
   transition: border-radius 0.4s var(--spring), transform 0.45s var(--spring);
 }
 .poster.wide { aspect-ratio: 16 / 9; }
-/* a stream of it is in the disk cache (vcache.ts) */
-.card.cached .poster { outline: 3px solid var(--tertiary); outline-offset: -3px; }
 .saved {
   position: absolute; top: 8px; left: 8px; width: 24px; height: 24px; border-radius: 12px; display: grid; place-items: center;
   background: var(--tertiary-container); color: var(--on-tertiary-container);

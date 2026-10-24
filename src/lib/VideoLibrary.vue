@@ -5,11 +5,12 @@ import Icon from "./Icon.vue";
 import VideoPlayer from "./VideoPlayer.vue";
 import { vlib } from "./vlibrary";
 import VideoCatalogs from "./VideoCatalogs.vue";
-import { refreshCached } from "./vcache";
+import { refreshCached, remember } from "./vcache";
 import type { ExtInfo } from "./ext";
 import type { SubtitleQuery } from "./videoext";
 
-type Video = { path: string; title: string; size?: number; sub?: SubtitleQuery; resume?: string };
+// `cached`: the film/episode ids whose cache mark this stream earns once it really plays
+type Video = { path: string; title: string; size?: number; sub?: SubtitleQuery; resume?: string; cached?: string[] };
 type Tab = "local" | "cloud" | "ext";
 
 const props = defineProps<{ query: string; exts: ExtInfo[]; home?: number }>();
@@ -101,7 +102,8 @@ onMounted(async () => {
     </div>
   </template>
 
-  <VideoPlayer v-if="open" :key="open.path" :path="open.path" :title="open.title" :sub="open.sub" :resume="open.resume" @close="open = null" />
+  <VideoPlayer v-if="open" :key="open.path" :path="open.path" :title="open.title" :sub="open.sub" :resume="open.resume" @close="open = null"
+    @played="open?.cached && remember(open.cached, open.path)" />
 </template>
 
 <style scoped>

@@ -702,6 +702,7 @@ pub fn run() {
             s3::s3_list,
             video::video_list,
             video::video_url,
+            video::poster_base,
             video::video_cached,
             video::video_cache_size,
             video::video_cache_clear,

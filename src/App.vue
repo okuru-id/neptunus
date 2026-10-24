@@ -320,7 +320,7 @@ function setCacheDays(d: number) {
 async function clearCache() {
   const ok = await confirm({
     title: "Hapus cache film?",
-    message: "Buffer film online yang tersimpan dihapus. Film yang diputar lagi akan dimuat dari awal.",
+    message: "Buffer film online dan poster katalog yang tersimpan dihapus. Film yang diputar lagi akan dimuat dari awal, dan poster diunduh lagi saat katalog dibuka.",
     confirm: "Hapus", icon: "trash", danger: true,
   });
   if (!ok) return;
@@ -1009,7 +1009,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
               <span class="conn-mark" :style="{ clipPath: 'url(#shape-cookie9)' }"><Icon name="movie" :size="28" /></span>
               <div class="conn-id">
                 <strong>Cache film</strong>
-                <span>{{ cacheSize === null ? "Menghitung…" : `${bytes(cacheSize)} dipakai untuk buffer film online` }}</span>
+                <span>{{ cacheSize === null ? "Menghitung…" : `${bytes(cacheSize)} dipakai untuk buffer film online dan poster katalog` }}</span>
               </div>
               <button class="btn tonal" :disabled="!cacheSize" @click="clearCache"><Icon name="trash" />Hapus cache</button>
             </div>

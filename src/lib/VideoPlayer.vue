@@ -7,7 +7,8 @@ import type Hls from "hls.js";
 
 // `resume`: the film or episode id from a catalog, so where it was left holds whichever source plays it
 const props = defineProps<{ path: string; title: string; sub?: SubtitleQuery; resume?: string }>();
-const emit = defineEmits<{ close: [] }>();
+// `played`: the video really ran (a few seconds of it), unlike a source that never starts
+const emit = defineEmits<{ close: []; played: [] }>();
 
 const ext = (p: string) => p.split(/[?#]/)[0].split(".").pop()?.toLowerCase() ?? "";
 
@@ -59,10 +60,19 @@ const fmt = (t: number) => {
 };
 const pct = (n: number) => `${duration.value ? Math.min(100, (n / duration.value) * 100) : 0}%`;
 
+let ranFrom: number | null = null; // where playback was first seen moving
+let ran = false;
 function sync() {
   const v = video.value;
   if (!v) return;
   if (!dragging) time.value = v.currentTime;
+  if (!ran && !v.paused && v.readyState >= 3) {
+    ranFrom ??= v.currentTime;
+    if (v.currentTime - ranFrom >= 3) {
+      ran = true;
+      emit("played");
+    }
+  }
   duration.value = isFinite(v.duration) ? v.duration : 0;
   // the webview's own buffer, or what the app downloaded when that reaches further (kept between checks,
   // or every timeupdate would cut the bar back to the webview's few seconds)

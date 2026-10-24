@@ -324,6 +324,13 @@ fn load(m: &str) -> Option<(u64, String, Vec<bool>)> {
     Some((len, mime, l.next().unwrap_or("").chars().map(|c| c == '1').collect()))
 }
 
+/// Whether anything of the video at `path` came down: its `.meta` marks a chunk done. The file itself
+/// appears as soon as a download starts, also for one that fails before its first byte.
+pub fn has_data(path: &Path) -> bool {
+    std::fs::read_to_string(path.with_extension("meta")).ok().as_deref().and_then(load).is_some_and(|(_, _, done)| done.contains(&true))
+        && path.exists()
+}
+
 /// Last time the video at `path` was played, from its `.meta` (or the file itself).
 pub fn used(path: &Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path.with_extension("meta")).or_else(|_| std::fs::metadata(path)).and_then(|m| m.modified()).ok()

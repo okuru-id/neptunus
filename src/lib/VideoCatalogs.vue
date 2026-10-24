@@ -6,7 +6,8 @@ import CatalogRow from "./CatalogRow.vue";
 import Dropdown from "./Dropdown.vue";
 import { extName, type ExtInfo } from "./ext";
 import { featureOn, loadFeatures } from "./videoprefs";
-import { cached, remember } from "./vcache";
+import { cached } from "./vcache";
+import { poster } from "./posters";
 import { clock, forget, lastPlayed, progressOf, recordPlay, resumeKey, toggleBookmark, vlib, type Saved, type Watched } from "./vlibrary";
 import type { RowItem } from "./CatalogRow.vue";
 import {
@@ -17,7 +18,7 @@ import {
 // Video › Ekstensi: every addon with catalogs stacked as its own section, each catalog a
 // horizontal row. Playing asks all addons for streams, not just the one the title came from.
 const props = defineProps<{ exts: ExtInfo[]; query: string; home?: number; reload?: number }>();
-const emit = defineEmits<{ play: [v: { path: string; title: string; sub?: SubtitleQuery; resume?: string }]; changed: [ExtInfo[]]; detail: [open: boolean]; refreshing: [busy: boolean] }>();
+const emit = defineEmits<{ play: [v: { path: string; title: string; sub?: SubtitleQuery; resume?: string; cached?: string[] }]; changed: [ExtInfo[]]; detail: [open: boolean]; refreshing: [busy: boolean] }>();
 
 const CINEMETA_KEY = "neptunus.cinemetaAdded";
 const infos = reactive<Record<string, SourceInfo | "error">>({});
@@ -231,11 +232,12 @@ function play(s: SourceStream) {
   const m = detail.value!;
   const ep = episode.value;
   const title = ep ? `${m.name} · S${ep.season ?? 1}E${ep.episode ?? ""}${ep.name && !/^S\d/.test(ep.name) ? ` — ${ep.name}` : ""}` : m.name;
-  remember(ep ? [m.id, ep.id] : [m.id], s.url!);
   // kept under the id the title was opened with, so the catalog row and the bookmark find it again
   const opened = { ...m, id: open.value!.m.id };
   recordPlay(opened, open.value!.source, ep, s, title);
-  emit("play", { path: s.url!, title, sub: subtitleQuery(subSources(), m.type, ep?.id ?? m.id, s), resume: ep?.id ?? opened.id });
+  // marked as cached only once it really plays (VideoLibrary, on the player's `played`)
+  emit("play", { path: s.url!, title, sub: subtitleQuery(subSources(), m.type, ep?.id ?? m.id, s), resume: ep?.id ?? opened.id,
+    cached: ep ? [m.id, ep.id] : [m.id] });
 }
 
 // --- the viewer's own rows: watched last and bookmarked ---
@@ -264,6 +266,12 @@ async function openSaved(m: Saved | Watched) {
   pickEpisode(full);
 }
 
+// the page's backdrop: the title's background, else its poster blurred (from the poster cache)
+const backdrop = computed(() => {
+  const d = detail.value;
+  return d && open.value ? poster(d.background || d.poster, open.value.m, d.background ? "backdrop" : "poster") : undefined;
+});
+
 // the open title's place in the viewer's rows
 const openId = computed(() => open.value?.m.id ?? "");
 const saved = computed(() => !!openId.value && vlib.bookmarks.some((b) => b.id === openId.value));
@@ -283,9 +291,9 @@ function bookmark() {
 function resume() {
   const h = resumable.value;
   if (!h?.stream.url) return;
-  remember(h.episode ? [h.id, h.episode.id] : [h.id], h.stream.url);
   recordPlay({ ...detail.value!, id: h.id }, h.source, h.episode ?? null, h.stream, h.title);
-  emit("play", { path: h.stream.url, title: h.title, sub: subtitleQuery(subSources(), h.type, h.episode?.id ?? h.id, h.stream), resume: resumeKey(h) });
+  emit("play", { path: h.stream.url, title: h.title, sub: subtitleQuery(subSources(), h.type, h.episode?.id ?? h.id, h.stream), resume: resumeKey(h),
+    cached: h.episode ? [h.id, h.episode.id] : [h.id] });
 }
 
 watch(() => props.home, () => open.value && close());
@@ -309,9 +317,9 @@ function close() {
 
   <div v-else-if="open && detail" class="page" :aria-label="detail.name">
     <div v-if="detail.background || detail.poster" class="backdrop" :class="{ blur: !detail.background }"
-      :style="{ backgroundImage: `url(&quot;${detail.background || detail.poster}&quot;)` }"></div>
+      :style="{ backgroundImage: `url(&quot;${backdrop}&quot;)` }"></div>
     <div class="hero">
-      <img v-if="detail.poster" :src="detail.poster" alt="" class="hposter" />
+      <img v-if="detail.poster" :src="poster(detail.poster, open!.m)" alt="" class="hposter" />
       <div class="htext">
         <h2>{{ detail.name }}</h2>
         <span class="sub">{{ [detail.releaseInfo || detail.year, kindName(detail.type)].filter(Boolean).join(" · ") }}</span>
@@ -334,12 +342,12 @@ function close() {
         <button v-for="ep in seasonEps" :key="ep.id" class="ep" role="option" :aria-selected="episode?.id === ep.id"
           :class="{ on: episode?.id === ep.id, cached: cached.ids.has(ep.id) }" @click="pickEpisode(ep)">
           <div class="ethumb">
-            <img v-if="ep.thumbnail && !badThumb.has(ep.id)" :src="ep.thumbnail" loading="lazy" alt="" @error="badThumb.add(ep.id)" />
-            <span v-else class="edefault" :style="detail.background || detail.poster ? { backgroundImage: `url(&quot;${detail.background || detail.poster}&quot;)` } : undefined">
+            <img v-if="ep.thumbnail && !badThumb.has(ep.id)" :src="poster(ep.thumbnail, ep, 'thumb')" loading="lazy" alt="" @error="badThumb.add(ep.id)" />
+            <span v-else class="edefault" :style="detail.background || detail.poster ? { backgroundImage: `url(&quot;${backdrop}&quot;)` } : undefined">
               <Icon name="movie" :size="30" />
             </span>
             <span class="enum">E{{ ep.episode ?? "?" }}</span>
-            <span v-if="cached.ids.has(ep.id)" class="saved" title="Sudah ada di cache"><Icon name="download" :size="14" /></span>
+            <span v-if="cached.ids.has(ep.id)" class="saved" title="Sudah ada di cache"><Icon name="downloadDone" :size="14" /></span>
             <span v-if="episode?.id === ep.id" class="eplay"><Icon name="play" :size="26" /></span>
           </div>
           <strong>{{ ep.name || `Episode ${ep.episode ?? ""}` }}</strong>
@@ -369,7 +377,8 @@ function close() {
           <span class="q" :class="{ hd: describe(s).quality === '4K' || describe(s).quality === '1080p' }">{{ describe(s).quality || "SD" }}</span>
           <span class="info">
             <strong>{{ describe(s).head }}</strong>
-            <span v-if="describe(s).size || describe(s).tags.length" class="tags">
+            <span v-if="cached.urls.has(s.url ?? '') || describe(s).size || describe(s).tags.length" class="tags">
+              <span v-if="cached.urls.has(s.url ?? '')" class="tag kept"><Icon name="downloadDone" :size="14" />Di cache</span>
               <span v-if="describe(s).size" class="tag size"><Icon name="download" :size="14" />{{ describe(s).size }}</span>
               <span v-for="t in describe(s).tags" :key="t" class="tag">{{ t }}</span>
             </span>
@@ -459,6 +468,7 @@ h3 { margin: 4px 0 0; font-size: 16px; font-weight: 700; }
   height: 22px; padding: 0 7px; border-radius: 6px; display: inline-flex; align-items: center; gap: 3px;
   font-size: 11px; font-weight: 700; background: var(--surface-container-highest); color: var(--on-surface-variant);
 }
+.src .tag.kept { background: var(--tertiary-container); color: var(--on-tertiary-container); }
 .src .tag.size { background: var(--secondary-container); color: var(--on-secondary-container); font-variant-numeric: tabular-nums; }
 .src .file { font-family: ui-monospace, monospace; font-size: 11px; opacity: 0.8; -webkit-line-clamp: 1; }
 /* tonal at rest, filled on hover: visible on any row without shouting over the list */
@@ -518,8 +528,6 @@ h3 { margin: 4px 0 0; font-size: 16px; font-weight: 700; }
 .ethumb img { width: 100%; height: 100%; object-fit: cover; }
 .ep:hover .ethumb { border-radius: 24px; transform: scale(1.03); }
 .ep.on .ethumb { box-shadow: 0 0 0 3px var(--primary); }
-.ep.cached:not(.on) .ethumb { box-shadow: 0 0 0 3px var(--tertiary); }
-.src.cached { box-shadow: inset 0 0 0 2px var(--tertiary); }
 .enum {
   position: absolute; left: 8px; bottom: 8px; padding: 2px 8px; border-radius: 8px; font-size: 12px; font-weight: 700;
   background: rgb(0 0 0 / 0.65); color: #fff;

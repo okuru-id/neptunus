@@ -48,6 +48,7 @@ pub async fn video_list(app: AppHandle, db: State<'_, Db>) -> Result<Vec<Video>,
 }
 
 mod fill;
+mod posters;
 
 /// The file name a remote video is kept under in the cache folder (without `.part`).
 fn cache_key(name: &str) -> String {
@@ -62,7 +63,8 @@ fn cache_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
 /// Bytes the video disk cache takes.
 #[tauri::command]
 pub fn video_cache_size(app: AppHandle) -> Result<u64, String> {
-    Ok(std::fs::read_dir(cache_dir(&app)?).into_iter().flatten().flatten().filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum())
+    let films: u64 = std::fs::read_dir(cache_dir(&app)?).into_iter().flatten().flatten().filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum();
+    Ok(films + posters::size())
 }
 
 /// Empties the video disk cache (Settings › Lokal), stopping the last video's download first.
@@ -72,14 +74,24 @@ pub fn video_cache_clear(app: AppHandle) -> Result<(), String> {
     for e in std::fs::read_dir(cache_dir(&app)?).into_iter().flatten().flatten() {
         let _ = std::fs::remove_file(e.path());
     }
+    posters::clear();
     Ok(())
 }
 
-/// Which of the remote video `urls` have something in the disk cache.
+/// Which of the remote video `urls` have something downloaded in the disk cache.
 #[tauri::command]
 pub fn video_cached(app: AppHandle, urls: Vec<String>) -> Result<Vec<String>, String> {
     let dir = cache_dir(&app)?;
-    Ok(urls.into_iter().filter(|u| dir.join(format!("{}.part", cache_key(u))).exists()).collect())
+    Ok(urls.into_iter().filter(|u| fill::has_data(&dir.join(format!("{}.part", cache_key(u))))).collect())
+}
+
+/// Where the catalogs load posters from: the loopback server, which keeps them on disk (`posters`);
+/// what the picture is of and the image URL go after it, each percent-encoded and split by a slash. `None` when the server can't start: posters then
+/// come straight from their hosts.
+#[tauri::command]
+pub fn poster_base(app: AppHandle) -> Option<String> {
+    posters::set_dir(app.path().app_cache_dir().ok()?.join("posters"));
+    serve::poster_base().ok()
 }
 
 /// A URL the webview can stream: presigned for S3, the loopback server for local files (desktop and
@@ -202,6 +214,11 @@ mod serve {
         }
     }
 
+    pub fn poster_base() -> Result<String, String> {
+        let (port, token) = server()?;
+        Ok(format!("http://127.0.0.1:{port}/{token}/~poster/"))
+    }
+
     fn server() -> Result<(u16, String), String> {
         Ok(match SERVER.get() {
             Some(s) => s.clone(),
@@ -266,6 +283,21 @@ mod serve {
                     range = v.trim().strip_prefix("bytes=").map(str::to_owned);
                 }
             }
+        }
+        // `~poster/<title>/<url>`, both percent-encoded (see `posters::get`)
+        if let Some(rest) = target.strip_prefix(&format!("/{token}/~poster/")) {
+            let (title, url) = rest.split_once('/').unwrap_or(("", rest));
+            return match decode(title).zip(decode(url)).and_then(|(t, u)| super::posters::get(&u, Some(&t))) {
+                Some((bytes, mime)) => {
+                    // the same URL is always the same picture: let the webview keep it too
+                    write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nCache-Control: max-age=604800\r\nConnection: close\r\n\r\n", bytes.len())?;
+                    if method == "GET" {
+                        stream.write_all(&bytes)?;
+                    }
+                    Ok(())
+                }
+                None => stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
+            };
         }
         if let Some(id) = target.strip_prefix(&format!("/{token}/~fill/")) {
             let f = FILL.lock().unwrap().as_ref().filter(|(n, _)| id == n.to_string()).map(|(_, f)| f.clone());

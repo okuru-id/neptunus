@@ -18,6 +18,14 @@ Local files, your own S3 bucket and streaming extensions, wrapped in a Material 
 
 [**Download**](https://github.com/okuru-id/neptunus/releases) · [Website](https://neptunus.id) · [Features](#features) · [Build from source](#build-from-source)
 
+<br />
+
+<img src="docs/screenshots/desktop-lyrics.webp" alt="Now playing with synced lyrics, the interface tinted from the cover art" width="100%" />
+
+<img src="docs/screenshots/desktop-albums.webp" alt="Album grid on the desktop" width="60%" /> <img src="docs/screenshots/mobile-songs.webp" alt="Song list on a phone" width="17%" /> <img src="docs/screenshots/mobile-lyrics.webp" alt="Synced lyrics on a phone" width="17%" />
+
+<sub>Songs, artists and covers in these screenshots are made up.</sub>
+
 </div>
 
 ---

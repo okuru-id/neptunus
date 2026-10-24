@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, onUnmounted, ref, watch } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import Icon from "./Icon.vue";
 import { subtitles, type Subtitle, type SubtitleQuery } from "./videoext";
@@ -17,13 +17,15 @@ const posKey = `video-pos:${props.path}`;
 let hls: Hls | undefined;
 const buffering = ref(true);
 let lastSave = 0;
+let closed = false; // the player is closing (or closed): late events and async steps do nothing
 let lastFill = 0;
 let filled = 0; // seconds the app has downloaded from the playhead on (`video_buffered`)
 let resolvedUrl = "";
 
 function savePos(force = false) {
   const v = video.value;
-  if (!v || (!force && Date.now() - lastSave < 5000)) return;
+  // once closing, the element has let go of the video: no position to save, and none to forget
+  if (!v || closed || (!force && Date.now() - lastSave < 5000)) return;
   lastSave = Date.now();
   try {
     if (v.duration && v.duration - v.currentTime > 10) localStorage.setItem(posKey, String(v.currentTime));
@@ -337,6 +339,8 @@ onMounted(async () => {
   loadSubs();
   try {
     const url = (await invoke<string | null>("video_url", { path: props.path })) ?? convertFileSrc(props.path);
+    // closed while the URL was on its way: stop the download it just started, play nothing
+    if (closed) return void invoke("video_stop", { url }).catch(() => {});
     resolvedUrl = url;
     const v = video.value!;
     let start: number | null = null;
@@ -352,6 +356,7 @@ onMounted(async () => {
     // unlike hls.js, fetch segments without CORS. hls.js only steps in when that fails, which in
     // practice is WebView2 on Windows.
     v.addEventListener("error", async () => {
+      if (closed) return;
       const native = `${v.error?.code ?? "?"}${v.error?.message ? `: ${v.error.message}` : ""}`;
       if (ext(props.path) === "m3u8" && !hls) {
         const Hls = (await import("hls.js")).default;
@@ -375,6 +380,22 @@ onMounted(async () => {
   }
 });
 
+// Closing must let go of the media pipeline: a <video> taken out of the page keeps its decoder, buffers
+// and connection until garbage collection, which on phones can be much later, so each film opened and
+// closed would add one more and the whole app would slow down.
+onBeforeUnmount(() => {
+  savePos(true); // while the element still knows where it was
+  closed = true;
+  hls?.destroy();
+  hls = undefined;
+  const v = video.value;
+  if (v) {
+    v.pause();
+    v.removeAttribute("src");
+    v.load();
+  }
+});
+
 onUnmounted(() => {
   // iOS: the video took the audio session, and the music output it stopped has to be opened again
   if (!droid && document.documentElement.classList.contains("mobile")) invoke("audio_after_video").catch(() => {});
@@ -385,8 +406,6 @@ onUnmounted(() => {
   clearTimeout(pictureTimer);
   cancelAnimationFrame(raf);
   if (saveTimer) flushPrefs();
-  savePos(true);
-  hls?.destroy();
   invoke("video_stop", { url: resolvedUrl }).catch(() => {});
   if (full.value) droid?.fullscreen?.(false);
 });

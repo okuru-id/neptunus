@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 
 const props = withDefaults(defineProps<{ value: number; max: number; playing: boolean; height?: number; buffered?: number | null }>(), { height: 28, buffered: null });
 const emit = defineEmits<{ scrub: [v: number]; seek: [v: number] }>();
@@ -14,21 +14,33 @@ const amp = ref(0);
 
 const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-// The wave rolls while playing and settles flat on pause.
+// The wave rolls while playing and settles flat on pause. The frame loop stops once it is flat, so a
+// paused player (a film playing, say) costs nothing; playing starts it again.
 let raf = 0;
+let last = 0;
 let ro: ResizeObserver | undefined;
+function tick(t: number) {
+  const dt = Math.min((t - last) / 1000, 0.1);
+  last = t;
+  if (!reduced) phase.value = (phase.value + dt * Math.PI * 2 * 0.8) % (Math.PI * 2);
+  amp.value += ((props.playing ? 1 : 0) - amp.value) * Math.min(1, dt * 5);
+  if (!props.playing && amp.value < 0.005) {
+    amp.value = 0;
+    raf = 0;
+    return;
+  }
+  raf = requestAnimationFrame(tick);
+}
+function run() {
+  if (raf) return;
+  last = performance.now();
+  raf = requestAnimationFrame(tick);
+}
+watch(() => props.playing, (on) => on && run());
 onMounted(() => {
   ro = new ResizeObserver(() => (width.value = el.value!.clientWidth));
   ro.observe(el.value!);
-  let last = performance.now();
-  const tick = (t: number) => {
-    const dt = Math.min((t - last) / 1000, 0.1);
-    last = t;
-    if (!reduced) phase.value = (phase.value + dt * Math.PI * 2 * 0.8) % (Math.PI * 2);
-    amp.value += ((props.playing ? 1 : 0) - amp.value) * Math.min(1, dt * 5);
-    raf = requestAnimationFrame(tick);
-  };
-  raf = requestAnimationFrame(tick);
+  if (props.playing) run();
 });
 onUnmounted(() => {
   cancelAnimationFrame(raf);

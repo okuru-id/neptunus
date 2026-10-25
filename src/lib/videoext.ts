@@ -14,7 +14,11 @@ export type Meta = {
 };
 export type Stream = {
   name?: string; title?: string; url?: string; infoHash?: string;
-  behaviorHints?: { notWebReady?: boolean; videoSize?: number; filename?: string; videoHash?: string };
+  behaviorHints?: {
+    notWebReady?: boolean; videoSize?: number; filename?: string; videoHash?: string;
+    /** headers the stream's host wants (Referer, Origin, User-Agent…), sent along like Stremio does */
+    proxyHeaders?: { request?: Record<string, string>; response?: Record<string, string> };
+  };
 };
 export type CatalogInfo = {
   id: string; name: string; type: string; extraSupported?: string[];

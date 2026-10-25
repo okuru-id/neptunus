@@ -18,7 +18,7 @@ import {
 // Video › Ekstensi: every addon with catalogs stacked as its own section, each catalog a
 // horizontal row. Playing asks all addons for streams, not just the one the title came from.
 const props = defineProps<{ exts: ExtInfo[]; query: string; home?: number; reload?: number }>();
-const emit = defineEmits<{ play: [v: { path: string; title: string; sub?: SubtitleQuery; resume?: string; cached?: string[] }]; changed: [ExtInfo[]]; detail: [open: boolean]; refreshing: [busy: boolean] }>();
+const emit = defineEmits<{ play: [v: { path: string; title: string; sub?: SubtitleQuery; resume?: string; cached?: string[]; headers?: Record<string, string> }]; changed: [ExtInfo[]]; detail: [open: boolean]; refreshing: [busy: boolean] }>();
 
 const CINEMETA_KEY = "neptunus.cinemetaAdded";
 const infos = reactive<Record<string, SourceInfo | "error">>({});
@@ -237,7 +237,7 @@ function play(s: SourceStream) {
   recordPlay(opened, open.value!.source, ep, s, title);
   // marked as cached only once it really plays (VideoLibrary, on the player's `played`)
   emit("play", { path: s.url!, title, sub: subtitleQuery(subSources(), m.type, ep?.id ?? m.id, s), resume: ep?.id ?? opened.id,
-    cached: ep ? [m.id, ep.id] : [m.id] });
+    cached: ep ? [m.id, ep.id] : [m.id], headers: s.behaviorHints?.proxyHeaders?.request });
 }
 
 // --- the viewer's own rows: watched last and bookmarked ---
@@ -293,7 +293,7 @@ function resume() {
   if (!h?.stream.url) return;
   recordPlay({ ...detail.value!, id: h.id }, h.source, h.episode ?? null, h.stream, h.title);
   emit("play", { path: h.stream.url, title: h.title, sub: subtitleQuery(subSources(), h.type, h.episode?.id ?? h.id, h.stream), resume: resumeKey(h),
-    cached: h.episode ? [h.id, h.episode.id] : [h.id] });
+    cached: h.episode ? [h.id, h.episode.id] : [h.id], headers: h.stream.behaviorHints?.proxyHeaders?.request });
 }
 
 watch(() => props.home, () => open.value && close());

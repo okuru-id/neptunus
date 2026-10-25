@@ -20,6 +20,9 @@ const TRIES: u32 = 5;
 
 pub struct Fill {
     pub url: String,
+    /// headers the source asks for (a Stremio stream's `behaviorHints.proxyHeaders.request`): many hosts
+    /// refuse, or never answer, a request without their Referer, Origin or User-Agent
+    headers: Vec<(String, String)>,
     path: PathBuf,
     meta: PathBuf,
     s: Mutex<State>,
@@ -80,7 +83,7 @@ impl State {
 
 impl Fill {
     /// Downloads `url` into `path`, resuming what an earlier play of it left there.
-    pub fn start(url: String, path: PathBuf) -> Arc<Self> {
+    pub fn start(url: String, headers: Vec<(String, String)>, path: PathBuf) -> Arc<Self> {
         let meta = path.with_extension("meta");
         let mut s = State::default();
         if let Some((len, mime, done)) = std::fs::read_to_string(&meta).ok().as_deref().and_then(load) {
@@ -88,10 +91,15 @@ impl Fill {
                 (s.len, s.mime, s.done) = (Some(len), mime, done);
             }
         }
-        let f = Arc::new(Fill { url, path, meta, s: Mutex::new(s), cv: Condvar::new() });
+        let f = Arc::new(Fill { url, headers, path, meta, s: Mutex::new(s), cv: Condvar::new() });
         let t = f.clone();
         std::thread::spawn(move || t.download());
         f
+    }
+
+    /// The cache file this download writes.
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -216,8 +224,21 @@ impl Fill {
     /// One request from `start` on, written to the file until the player needs another part of it.
     /// `Ok(false)` when there's nothing more to do.
     fn fetch(&self, file: &File, start: u64) -> Result<bool, String> {
-        let res = attohttpc::get(&self.url)
-            .header("User-Agent", "Mozilla/5.0")
+        let mut req = attohttpc::get(&self.url);
+        if !self.headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("user-agent")) {
+            req = req.header("User-Agent", "Mozilla/5.0");
+        }
+        for (k, v) in &self.headers {
+            // the range is ours to set, and the rest of these belong to the connection
+            if !["range", "host", "content-length", "connection"].iter().any(|h| k.eq_ignore_ascii_case(h)) {
+                use attohttpc::header::{HeaderName, HeaderValue};
+                // a malformed one is left out rather than failing the video
+                if let (Ok(k), Ok(v)) = (HeaderName::from_bytes(k.as_bytes()), HeaderValue::from_str(v)) {
+                    req = req.header(k, v);
+                }
+            }
+        }
+        let res = req
             .header("Range", format!("bytes={start}-"))
             .connect_timeout(Duration::from_secs(15))
             .read_timeout(Duration::from_secs(30))
@@ -331,6 +352,27 @@ pub fn has_data(path: &Path) -> bool {
         && path.exists()
 }
 
+/// Bytes the video at `path` takes on disk. A partly downloaded one already has its full length, but on
+/// Linux, macOS, iOS and Android the parts not written yet take no space (a sparse file), so there it's
+/// what its `.meta` marks downloaded. Windows writes the gaps out, so there it is the length.
+pub fn stored(path: &Path) -> u64 {
+    let len = path.metadata().map_or(0, |m| m.len());
+    if cfg!(windows) {
+        return len;
+    }
+    match std::fs::read_to_string(path.with_extension("meta")).ok().as_deref().and_then(load) {
+        Some((total, _, done)) => (done.iter().filter(|&&d| d).count() as u64 * CHUNK).min(total).min(len),
+        None => len,
+    }
+}
+
+/// How much of the video at `path` came down, 0 to 1 (its `.meta`); 0 without one.
+pub fn progress(path: &Path) -> f64 {
+    std::fs::read_to_string(path.with_extension("meta")).ok().as_deref().and_then(load)
+        .filter(|(_, _, done)| !done.is_empty())
+        .map_or(0.0, |(_, _, done)| done.iter().filter(|&&d| d).count() as f64 / done.len() as f64)
+}
+
 /// Last time the video at `path` was played, from its `.meta` (or the file itself).
 pub fn used(path: &Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path.with_extension("meta")).or_else(|_| std::fs::metadata(path)).and_then(|m| m.modified()).ok()
@@ -365,4 +407,74 @@ fn write_at(f: &File, mut buf: &[u8], mut off: u64) -> std::io::Result<()> {
         off += n as u64;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+
+    /// A host that only answers with its Referer, like the ones Stremio addons send `proxyHeaders` for.
+    fn picky_host(body: &'static [u8]) -> String {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/film.mp4", l.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for mut s in l.incoming().flatten() {
+                let mut head = String::new();
+                let mut r = BufReader::new(s.try_clone().unwrap());
+                while r.read_line(&mut head).map_or(false, |n| n > 2) {}
+                let lower = head.to_lowercase();
+                if !lower.contains("referer: https://addon.example/") || !lower.contains("user-agent: addonplayer/1") {
+                    let _ = s.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    continue;
+                }
+                let _ = write!(s, "HTTP/1.1 206 Partial Content\r\nContent-Type: video/mp4\r\nContent-Range: bytes 0-{}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len() - 1, body.len(), body.len());
+                let _ = s.write_all(body);
+            }
+        });
+        url
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stored_counts_what_came_down() {
+        let dir = std::env::temp_dir().join(format!("neptunus-stored-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("film.part");
+        // a 100 MB film with three 1 MB chunks downloaded: its file is 100 MB long but sparse
+        File::create(&path).unwrap().set_len(100 * CHUNK).unwrap();
+        let done: String = (0..100).map(|i| if [0, 1, 50].contains(&i) { '1' } else { '0' }).collect();
+        std::fs::write(path.with_extension("meta"), format!("{}\nvideo/mp4\n{done}", 100 * CHUNK)).unwrap();
+        assert_eq!(path.metadata().unwrap().len(), 100 * CHUNK);
+        assert_eq!(stored(&path), 3 * CHUNK);
+        // no .meta: nothing to go by but the length
+        std::fs::remove_file(path.with_extension("meta")).unwrap();
+        assert_eq!(stored(&path), 100 * CHUNK);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn sends_the_sources_headers() {
+        let dir = std::env::temp_dir().join(format!("neptunus-fill-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let url = picky_host(b"0123456789");
+        // without them the host refuses: nothing to download, the player is sent to the source
+        let bare = Fill::start(url.clone(), vec![], dir.join("bare.part"));
+        assert_eq!(bare.head(), None);
+        bare.close();
+        // with them it answers; their User-Agent replaces ours, and a Range among them is ignored
+        let headers = vec![
+            ("Referer".into(), "https://addon.example/".into()),
+            ("User-Agent".into(), "AddonPlayer/1".into()),
+            ("Range".into(), "bytes=5-".into()),
+        ];
+        let f = Fill::start(url, headers, dir.join("ok.part"));
+        assert_eq!(f.head().map(|(len, _)| len), Some(10));
+        let file = f.file().unwrap();
+        assert_eq!(f.read(&file, 0, 10).unwrap(), b"0123456789");
+        f.close();
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

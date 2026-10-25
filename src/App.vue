@@ -21,6 +21,7 @@ import { installUpdate, updater } from "./lib/updater";
 import SongMenu from "./lib/SongMenu.vue";
 import { downloadError, extName, has, unsupported, type ExtInfo } from "./lib/ext";
 import { asked, needsVerify, verified, withVerify } from "./lib/verify";
+import { refreshCached } from "./lib/vcache";
 import { activity, catalogDl } from "./lib/activity";
 import { loadQuality, longQuality, qualities, shortQuality } from "./lib/quality";
 import TitleBar from "./lib/TitleBar.vue";
@@ -309,7 +310,34 @@ const CACHE_DAYS = [1, 3, 7, 14, 30].map((d) => ({ value: d, label: `${d} hari` 
 const cacheSize = ref<number | null>(null);
 const cacheDays = ref(7);
 const bytes = (n: number) => (n >= 2 ** 30 ? `${(n / 2 ** 30).toFixed(1)} GB` : `${Math.round(n / 2 ** 20)} MB`);
+// the films in it, to delete some by hand
+type CachedFilm = { key: string; title: string | null; size: number; done: number; used: number };
+const cacheFilms = ref<CachedFilm[]>([]);
+const cachePick = ref(new Set<string>());
+const pickedSize = computed(() => cacheFilms.value.filter((f) => cachePick.value.has(f.key)).reduce((n, f) => n + f.size, 0));
+function togglePick(key: string) {
+  const s = new Set(cachePick.value);
+  if (!s.delete(key)) s.add(key);
+  cachePick.value = s;
+}
+const pickAll = () => (cachePick.value = cachePick.value.size === cacheFilms.value.length ? new Set() : new Set(cacheFilms.value.map((f) => f.key)));
+const playedOn = (secs: number) => (secs ? new Date(secs * 1000).toLocaleDateString("id-ID", { day: "numeric", month: "short" }) : "");
+async function removePicked() {
+  const n = cachePick.value.size;
+  const ok = await confirm({
+    title: `Hapus ${n} film dari cache?`,
+    message: `${bytes(pickedSize.value)} dikosongkan. Film itu dimuat dari awal lagi kalau diputar nanti.`,
+    confirm: "Hapus", icon: "trash", danger: true,
+  });
+  if (!ok) return;
+  await invoke("video_cache_remove", { keys: [...cachePick.value] }).catch((e) => notify(String(e)));
+  cachePick.value = new Set();
+  await loadCache();
+  refreshCached(); // the cache marks in the catalogs
+}
 async function loadCache() {
+  cacheFilms.value = await invoke<CachedFilm[]>("video_cache_list").catch(() => []);
+  cachePick.value = new Set([...cachePick.value].filter((k) => cacheFilms.value.some((f) => f.key === k)));
   cacheSize.value = await invoke<number>("video_cache_size").catch(() => 0);
   cacheDays.value = Number(await invoke<string | null>("setting_get", { key: "video_cache_days" }).catch(() => null)) || 7;
 }
@@ -326,6 +354,7 @@ async function clearCache() {
   if (!ok) return;
   await invoke("video_cache_clear").catch((e) => notify(String(e)));
   await loadCache();
+  refreshCached();
 }
 watch(() => view.value === "s3" && settingsTab.value === "local", (on) => on && loadCache(), { immediate: true });
 
@@ -1013,6 +1042,28 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
               </div>
               <button class="btn tonal" :disabled="!cacheSize" @click="clearCache"><Icon name="trash" />Hapus cache</button>
             </div>
+            <div v-if="cacheFilms.length" class="cfilms">
+              <div class="cf-head">
+                <button class="cf-all" @click="pickAll">
+                  <Icon :name="cachePick.size === cacheFilms.length ? 'checkOn' : 'checkOff'" :size="20" />Pilih semua
+                </button>
+                <button class="btn filled" :disabled="!cachePick.size" @click="removePicked">
+                  <Icon name="trash" />{{ cachePick.size ? `Hapus ${cachePick.size} (${bytes(pickedSize)})` : "Hapus yang dipilih" }}
+                </button>
+              </div>
+              <ul class="cf-list">
+                <li v-for="f in cacheFilms" :key="f.key">
+                  <button class="cf-row" role="checkbox" :aria-checked="cachePick.has(f.key)" :class="{ on: cachePick.has(f.key) }" @click="togglePick(f.key)">
+                    <Icon :name="cachePick.has(f.key) ? 'checkOn' : 'checkOff'" :size="22" class="cf-box" />
+                    <span class="cf-text">
+                      <strong>{{ f.title ?? "Tanpa judul" }}</strong>
+                      <span>{{ [`${Math.round(f.done * 100)}% terunduh`, playedOn(f.used) && `diputar ${playedOn(f.used)}`].filter(Boolean).join(" · ") }}</span>
+                    </span>
+                    <span class="cf-size">{{ bytes(f.size) }}</span>
+                  </button>
+                </li>
+              </ul>
+            </div>
             <div class="look-row">
               <div class="look-text"><strong>Simpan selama</strong><span>Film yang tidak diputar lebih lama dari ini dihapus otomatis. Total cache paling banyak 10 GB.</span></div>
               <Dropdown class="cache-days" label="Simpan selama" :model-value="cacheDays" :options="CACHE_DAYS" @update:model-value="setCacheDays" />
@@ -1567,6 +1618,20 @@ li:hover .row-act, .row-act:focus-visible, .row-menu.open .row-act, .row-act.ope
 .look-text { flex: 1; min-width: 180px; display: flex; flex-direction: column; gap: 2px; font-size: 13px; color: var(--on-surface-variant); }
 .look-text strong { font-size: 15px; font-weight: 700; color: var(--on-surface); }
 .cache-days { width: min(100%, 220px); }
+.cfilms { display: flex; flex-direction: column; gap: 8px; }
+.cf-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.cf-all { display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 12px 0 8px; border-radius: 20px; font: inherit; font-size: 14px; font-weight: 600; color: var(--on-surface); }
+.cf-all:hover { background: var(--surface-container-highest); }
+.cf-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border-radius: 20px; overflow: hidden; background: var(--surface-container); max-height: 360px; overflow-y: auto; }
+.cf-row { width: 100%; display: flex; align-items: center; gap: 12px; padding: 10px 16px 10px 12px; text-align: left; font: inherit; color: var(--on-surface); transition: background-color 0.2s; }
+.cf-row:hover { background: var(--surface-container-high); }
+.cf-row.on { background: var(--secondary-container); color: var(--on-secondary-container); }
+.cf-box { flex: none; color: var(--on-surface-variant); }
+.cf-row.on .cf-box { color: var(--primary); }
+.cf-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.cf-text strong { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cf-text span { font-size: 12px; opacity: 0.75; }
+.cf-size { flex: none; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .seg { display: inline-flex; border: 1px solid var(--outline); border-radius: 20px; overflow: hidden; }
 .seg button { display: inline-flex; align-items: center; gap: 6px; height: 40px; padding: 0 14px; font: inherit; font-size: 14px; font-weight: 600; color: var(--on-surface); background: transparent; }
 .seg button + button { border-left: 1px solid var(--outline); }

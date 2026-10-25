@@ -706,6 +706,8 @@ pub fn run() {
             video::video_cached,
             video::video_cache_size,
             video::video_cache_clear,
+            video::video_cache_list,
+            video::video_cache_remove,
             video::video_buffered,
             video::video_stop,
             video::video_subtitle,

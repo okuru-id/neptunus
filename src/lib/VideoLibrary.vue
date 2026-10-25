@@ -10,7 +10,8 @@ import type { ExtInfo } from "./ext";
 import type { SubtitleQuery } from "./videoext";
 
 // `cached`: the film/episode ids whose cache mark this stream earns once it really plays
-type Video = { path: string; title: string; size?: number; sub?: SubtitleQuery; resume?: string; cached?: string[] };
+// `headers`: what the stream's host wants with every request (`proxyHeaders` of a Stremio stream)
+type Video = { path: string; title: string; size?: number; sub?: SubtitleQuery; resume?: string; cached?: string[]; headers?: Record<string, string> };
 type Tab = "local" | "cloud" | "ext";
 
 const props = defineProps<{ query: string; exts: ExtInfo[]; home?: number }>();
@@ -102,7 +103,7 @@ onMounted(async () => {
     </div>
   </template>
 
-  <VideoPlayer v-if="open" :key="open.path" :path="open.path" :title="open.title" :sub="open.sub" :resume="open.resume" @close="open = null"
+  <VideoPlayer v-if="open" :key="open.path" :path="open.path" :title="open.title" :sub="open.sub" :resume="open.resume" :headers="open.headers" @close="open = null"
     @played="open?.cached && remember(open.cached, open.path)" />
 </template>
 

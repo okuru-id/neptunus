@@ -63,7 +63,10 @@ fn cache_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
 /// Bytes the video disk cache takes.
 #[tauri::command]
 pub fn video_cache_size(app: AppHandle) -> Result<u64, String> {
-    let films: u64 = std::fs::read_dir(cache_dir(&app)?).into_iter().flatten().flatten().filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum();
+    // a film downloaded in part counts what came down, not its whole length (`fill::stored`)
+    let films: u64 = std::fs::read_dir(cache_dir(&app)?).into_iter().flatten().flatten().map(|e| e.path())
+        .map(|p| if p.extension().is_some_and(|x| x == "part") { fill::stored(&p) } else { p.metadata().map_or(0, |m| m.len()) })
+        .sum();
     Ok(films + posters::size())
 }
 
@@ -75,6 +78,59 @@ pub fn video_cache_clear(app: AppHandle) -> Result<(), String> {
         let _ = std::fs::remove_file(e.path());
     }
     posters::clear();
+    Ok(())
+}
+
+#[derive(Serialize)]
+pub struct CachedFilm {
+    /// the cache files' name (a hash of the video's URL or S3 path)
+    key: String,
+    /// the player's title for it; none for videos cached before titles were kept
+    title: Option<String>,
+    /// bytes it takes (`fill::stored`)
+    size: u64,
+    /// how much of it came down, 0 to 1
+    done: f64,
+    /// when it was last played, unix seconds
+    used: u64,
+}
+
+/// The films in the disk cache, last played first (Settings › Lokal, to delete some by hand).
+#[tauri::command]
+pub fn video_cache_list(app: AppHandle) -> Result<Vec<CachedFilm>, String> {
+    let dir = cache_dir(&app)?;
+    let mut out: Vec<CachedFilm> = std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "part"))
+        .filter_map(|p| {
+            let key = p.file_stem()?.to_str()?.to_owned();
+            let title = std::fs::read_to_string(p.with_extension("json")).ok()
+                .and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok())
+                .and_then(|j| j["title"].as_str().map(str::to_owned));
+            let used = fill::used(&p).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
+            Some(CachedFilm { key, title, size: fill::stored(&p), done: fill::progress(&p), used })
+        })
+        .collect();
+    out.sort_by(|a, b| b.used.cmp(&a.used));
+    Ok(out)
+}
+
+/// Deletes the cached films `keys` (from `video_cache_list`), stopping the download of one still playing.
+#[tauri::command]
+pub fn video_cache_remove(app: AppHandle, keys: Vec<String>) -> Result<(), String> {
+    let dir = cache_dir(&app)?;
+    for key in keys {
+        // a hash, so nothing outside the cache folder can be named
+        if key.is_empty() || !key.bytes().all(|b| b.is_ascii_hexdigit()) {
+            continue;
+        }
+        let part = dir.join(format!("{key}.part"));
+        if serve::FILL.lock().unwrap().as_ref().is_some_and(|(_, f)| f.path() == part) {
+            serve::stop();
+        }
+        for ext in ["part", "meta", "json"] {
+            let _ = std::fs::remove_file(part.with_extension(ext));
+        }
+    }
     Ok(())
 }
 
@@ -99,7 +155,7 @@ pub fn poster_base(app: AppHandle) -> Option<String> {
 /// Remote videos go through the loopback server too, which downloads them in full and keeps them
 /// on disk for the days set in Settings › Lokal, a week by default (`fill`).
 #[tauri::command]
-pub async fn video_url(app: AppHandle, path: String) -> Result<Option<String>, String> {
+pub async fn video_url(app: AppHandle, path: String, headers: Option<std::collections::HashMap<String, String>>, title: Option<String>) -> Result<Option<String>, String> {
     let remote = path.starts_with("http://") || path.starts_with("https://");
     let url = if path.starts_with("s3://") {
         let (app, path) = (app.clone(), path.clone());
@@ -118,7 +174,7 @@ pub async fn video_url(app: AppHandle, path: String) -> Result<Option<String>, S
         // kept under the S3 path, not the presigned URL, which changes every time
         // Settings › Lokal: days a video stays in the cache after it was last played
         let days = app.state::<Db>().setting("video_cache_days").ok().flatten().and_then(|d| d.parse().ok()).unwrap_or(7);
-        return serve::fill(url, &path, &dir, days).map(Some);
+        return serve::fill(url, headers.unwrap_or_default().into_iter().collect(), &path, title.as_deref(), &dir, days).map(Some);
     }
     Ok(Some(url))
 }
@@ -180,7 +236,7 @@ mod serve {
     }
 
     /// Starts (or resumes) downloading `url` into `dir`, stopping the previous video's download.
-    pub fn fill(url: String, name: &str, dir: &std::path::Path, days: u64) -> Result<String, String> {
+    pub fn fill(url: String, headers: Vec<(String, String)>, name: &str, title: Option<&str>, dir: &std::path::Path, days: u64) -> Result<String, String> {
         let (port, token) = server()?;
         let mut cur = FILL.lock().unwrap();
         let id = cur.take().map_or(0, |(id, f)| { f.close(); id + 1 });
@@ -189,9 +245,13 @@ mod serve {
         let key = super::cache_key(name);
         let path = dir.join(format!("{key}.part"));
         let _ = std::fs::File::options().append(true).open(path.with_extension("meta")).and_then(|f| f.set_modified(std::time::SystemTime::now()));
+        // what it is, for the list in Settings › Lokal (the files are named by a hash)
+        if let Some(title) = title.filter(|t| !t.is_empty()) {
+            let _ = std::fs::write(path.with_extension("json"), serde_json::json!({ "title": title }).to_string());
+        }
         let (d, keep) = (dir.to_owned(), path.clone());
         std::thread::spawn(move || prune(&d, &keep, days));
-        *cur = Some((id, super::fill::Fill::start(url, path)));
+        *cur = Some((id, super::fill::Fill::start(url, headers, path)));
         Ok(format!("http://127.0.0.1:{port}/{token}/~fill/{id}"))
     }
 
@@ -201,13 +261,14 @@ mod serve {
         const CAP: u64 = 10 << 30;
         let mut all: Vec<_> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path())
             .filter(|p| p.extension().is_some_and(|x| x == "part") && p != keep)
-            .map(|p| (super::fill::used(&p).unwrap_or(std::time::UNIX_EPOCH), p.metadata().map_or(0, |m| m.len()), p))
+            .map(|p| (super::fill::used(&p).unwrap_or(std::time::UNIX_EPOCH), super::fill::stored(&p), p))
             .collect();
         all.sort_by_key(|a| a.0);
-        let mut total: u64 = all.iter().map(|a| a.1).sum::<u64>() + keep.metadata().map_or(0, |m| m.len());
+        let mut total: u64 = all.iter().map(|a| a.1).sum::<u64>() + super::fill::stored(keep);
         for (used, size, p) in all {
             if total > CAP || used.elapsed().unwrap_or_default() > max_age {
                 let _ = std::fs::remove_file(p.with_extension("meta"));
+                let _ = std::fs::remove_file(p.with_extension("json"));
                 let _ = std::fs::remove_file(&p);
                 total -= size;
             }

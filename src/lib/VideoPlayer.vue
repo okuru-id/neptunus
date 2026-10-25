@@ -6,7 +6,8 @@ import { subtitles, type Subtitle, type SubtitleQuery } from "./videoext";
 import type Hls from "hls.js";
 
 // `resume`: the film or episode id from a catalog, so where it was left holds whichever source plays it
-const props = defineProps<{ path: string; title: string; sub?: SubtitleQuery; resume?: string }>();
+// `headers`: sent with every request for the video (the stream's host wants them, see `videoext`)
+const props = defineProps<{ path: string; title: string; sub?: SubtitleQuery; resume?: string; headers?: Record<string, string> }>();
 // `played`: the video really ran (a few seconds of it), unlike a source that never starts
 const emit = defineEmits<{ close: []; played: [] }>();
 
@@ -406,7 +407,7 @@ onMounted(async () => {
   loadPrefs();
   loadSubs();
   try {
-    const url = (await invoke<string | null>("video_url", { path: props.path })) ?? convertFileSrc(props.path);
+    const url = (await invoke<string | null>("video_url", { path: props.path, headers: props.headers ?? null, title: props.title })) ?? convertFileSrc(props.path);
     // closed while the URL was on its way: stop the download it just started, play nothing
     if (closed) return void invoke("video_stop", { url }).catch(() => {});
     resolvedUrl = url;

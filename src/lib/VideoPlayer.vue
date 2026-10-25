@@ -25,13 +25,28 @@ let lastFill = 0;
 let filled = 0; // seconds the app has downloaded from the playhead on (`video_buffered`)
 let resolvedUrl = "";
 
+// Watched to the end, credits included: played again, it starts over.
+const finished = (t: number, d: number) => d > 0 && (d - t < 10 || t / d > 0.95);
+
+// Where playback has to pick up again, until it really has. The first `timeupdate` comes before the jump
+// there lands, and iOS sometimes drops a jump made that early: saving then would overwrite the place with
+// the start, so nothing is saved until the video is there (`keepResume`).
+let resumeAt: number | null = null;
+let resumeTries = 0;
+function keepResume() {
+  const v = video.value;
+  if (resumeAt === null || !v || v.seeking || v.readyState < 1) return;
+  if (Math.abs(v.currentTime - resumeAt) < 3 || ++resumeTries > 5) resumeAt = null;
+  else v.currentTime = resumeAt;
+}
+
 function savePos(force = false) {
   const v = video.value;
   // once closing, the element has let go of the video: no position to save, and none to forget
-  if (!v || closed || (!force && Date.now() - lastSave < 5000)) return;
+  if (!v || closed || resumeAt !== null || (!force && Date.now() - lastSave < 5000)) return;
   lastSave = Date.now();
   try {
-    if (v.duration && v.duration - v.currentTime > 10) {
+    if (v.duration && !finished(v.currentTime, v.duration)) {
       localStorage.setItem(posKey, String(v.currentTime));
       localStorage.setItem(durKey, String(v.duration)); // for the progress under "Lanjutkan menonton"
     } else {
@@ -113,6 +128,39 @@ function checkPicture() {
       error.value = "Gambar video ini tidak bisa ditampilkan di perangkat ini (codec tidak didukung), hanya suaranya. Coba sumber lain, misalnya yang H.264/x264.";
   }, 3000);
 }
+// iOS takes the picture away from a video while the app is in the background (the screen locked, say)
+// and doesn't always give it back: the sound then plays on over a black frame. Back in view, the video
+// gets a fresh layer and seeks to where it already is, which makes WebKit draw a frame again; once more
+// when it next starts playing, in case the layer only comes back then.
+let wasHidden = false;
+let repaintOnPlay = false;
+function repaint() {
+  const v = video.value;
+  if (!v || closed) return;
+  v.style.visibility = "hidden";
+  void v.offsetHeight; // the style change lands before it is undone, so the layer is rebuilt
+  v.style.visibility = "";
+  if (v.readyState >= 1) v.currentTime = Math.max(0, v.currentTime - 0.01);
+}
+function onVisibility() {
+  if (document.hidden) {
+    wasHidden = true;
+    return;
+  }
+  if (!wasHidden) return;
+  wasHidden = false;
+  repaintOnPlay = true;
+  repaint();
+}
+function onPlaying() {
+  buffering.value = false;
+  checkPicture();
+  if (repaintOnPlay) {
+    repaintOnPlay = false;
+    repaint();
+  }
+}
+
 function wake() {
   idle.value = false;
   clearTimeout(idleTimer);
@@ -136,6 +184,7 @@ const frac = (e: PointerEvent) => {
 };
 function seekDown(e: PointerEvent) {
   dragging = true;
+  resumeAt = null; // the viewer picks the place now
   seekEl.value!.setPointerCapture(e.pointerId);
   seekMove(e);
 }
@@ -149,6 +198,7 @@ function seekKey(e: KeyboardEvent) {
 }
 const skip = (d: number) => {
   const v = video.value!;
+  resumeAt = null;
   v.currentTime = Math.max(0, Math.min(v.duration || 0, v.currentTime + d));
   blink(d < 0 ? "replay10" : "forward10");
   wake();
@@ -351,6 +401,7 @@ function onKey(e: KeyboardEvent) {
 onMounted(async () => {
   window.addEventListener("keydown", onKey);
   document.addEventListener("fullscreenchange", onFull);
+  document.addEventListener("visibilitychange", onVisibility);
   wake();
   loadPrefs();
   loadSubs();
@@ -363,7 +414,10 @@ onMounted(async () => {
     let start: number | null = null;
     // older plays were kept by stream URL
     try { start = Number(localStorage.getItem(posKey) ?? localStorage.getItem(`video-pos:${props.path}`)) || null; } catch {}
-    if (start) v.addEventListener("loadedmetadata", () => { v.currentTime = start; }, { once: true });
+    if (start) v.addEventListener("loadedmetadata", () => {
+      if (finished(start, v.duration)) return; // seen to the end before: from the start
+      resumeAt = v.currentTime = start;
+    }, { once: true });
     v.addEventListener("loadedmetadata", readAudios);
     (v as any).audioTracks?.addEventListener?.("addtrack", readAudios);
     const fail = (why: string) => {
@@ -419,6 +473,7 @@ onUnmounted(() => {
   if (!droid && document.documentElement.classList.contains("mobile")) invoke("audio_after_video").catch(() => {});
   window.removeEventListener("keydown", onKey);
   document.removeEventListener("fullscreenchange", onFull);
+  document.removeEventListener("visibilitychange", onVisibility);
   clearTimeout(idleTimer);
   clearTimeout(previewTimer);
   clearTimeout(pictureTimer);
@@ -433,9 +488,9 @@ onUnmounted(() => {
   <div ref="box" class="vplayer" :class="{ idle, full }" role="dialog" :aria-label="title" @pointermove="wake" @pointerdown="down">
     <video ref="video" autoplay playsinline preload="auto" @click="tap" @dblclick="toggleFull"
       @webkitbeginfullscreen="nativeSubs(true)" @webkitendfullscreen="nativeSubs(false)"
-      @timeupdate="sync(); savePos()" @progress="sync" @durationchange="sync" @pause="playing = false; idle = false; savePos(true)" @play="playing = true; wake()"
+      @timeupdate="keepResume(); sync(); savePos()" @progress="sync" @durationchange="sync" @pause="playing = false; idle = false; savePos(true)" @play="playing = true; wake()"
       @ended="savePos(true)" @volumechange="volume = video!.volume; muted = video!.muted"
-      @waiting="buffering = true" @loadstart="buffering = true" @playing="buffering = false; checkPicture()" @canplay="buffering = false" @seeked="buffering = false"></video>
+      @waiting="buffering = true" @loadstart="buffering = true" @playing="onPlaying" @canplay="buffering = false" @seeked="buffering = false; keepResume()"></video>
     <div v-if="buffering && !error" class="spin" aria-label="Memuat"></div>
     <p v-if="cueText" class="cue" :class="{ preview }" :style="cueStyle">{{ cueText }}</p>
     <p v-if="error" class="err">{{ error }}</p>

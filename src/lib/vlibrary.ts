@@ -56,6 +56,8 @@ export function progressOf(key: string): { pos: number; dur: number } | null {
   try {
     const pos = Number(localStorage.getItem(`video-pos:${key}`));
     const dur = Number(localStorage.getItem(`video-dur:${key}`));
+    // watched to the end (credits included): played again it starts over, so there is nothing to resume
+    if (dur > 0 && (dur - pos < 10 || pos / dur > 0.95)) return null;
     return pos > 0 ? { pos, dur } : null;
   } catch {
     return null;

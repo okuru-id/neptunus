@@ -35,6 +35,10 @@ name, target = spec["targets"].find { |k, _| k.end_with?("_iOS") }
 abort "no iOS target in #{path}" unless target
 deps = target["dependencies"] ||= []
 deps << { "framework" => "Frameworks/MobileVLCKit.xcframework", "embed" => true, "codeSign" => true }
+# it exports its own clock_gettime, which fails for the clocks Rust's std asks for (a panic at launch);
+# the linker takes a symbol from the first library that has it, so libSystem goes before it
+base = ((target["settings"] ||= {})["base"] ||= {})
+base["OTHER_LDFLAGS"] = "$(inherited) -lSystem"
 File.write(path, spec.to_yaml)
 puts "MobileVLCKit added to #{name}"
 RUBY

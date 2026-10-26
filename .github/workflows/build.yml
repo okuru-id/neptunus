@@ -139,6 +139,13 @@ jobs:
       # films play in a VLCKit screen (src-tauri/ios/NeptunusPlayer.swift) rather than the WebView
       - run: scripts/ios-vlckit.sh
       - run: npm run tauri ios build -- --ci --no-sign
+      # only VLCKit's classes may come from it: a C function it also has (clock_gettime) breaks the app
+      - name: Check what the app takes from MobileVLCKit
+        run: |
+          unzip -q -o src-tauri/gen/apple/build/arm64/*.ipa -d "$RUNNER_TEMP/ipa"
+          if nm -m -u "$RUNNER_TEMP"/ipa/Payload/*.app/Neptunus | grep "from MobileVLCKit" | grep -v '_OBJC_'; then
+            echo "::error::these resolve to MobileVLCKit instead of the system"; exit 1
+          fi
 
       - run: mv src-tauri/gen/apple/build/arm64/*.ipa "Neptunus_${GITHUB_REF_NAME#v}_unsigned.ipa"
 

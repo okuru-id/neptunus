@@ -1,7 +1,9 @@
 package id.neptunus.desktop
 
+import android.content.Context
 import android.net.Uri
 import android.os.Bundle
+import android.os.Looper
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.core.view.WindowCompat
@@ -17,7 +19,11 @@ import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.Renderer
+import androidx.media3.exoplayer.text.TextOutput
+import androidx.media3.exoplayer.text.TextRenderer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import org.json.JSONObject
@@ -39,7 +45,16 @@ class PlayerActivity : ComponentActivity() {
       .setAllowCrossProtocolRedirects(true)
       .setUserAgent(headers.entries.firstOrNull { it.key.equals("user-agent", true) }?.value ?: "Mozilla/5.0")
       .setDefaultRequestProperties(headers.filterKeys { !it.equals("user-agent", true) })
-    player = ExoPlayer.Builder(this)
+    // Subtitles left unparsed by the source (below) reach the text renderer as raw text/vtt, srt or ssa,
+    // which Media3 only decodes there with its legacy decoding on; off, every film with a subtitle fails
+    // ("Legacy decoding is disabled, can't handle text/vtt samples").
+    val renderers = object : DefaultRenderersFactory(this) {
+      override fun buildTextRenderers(context: Context, output: TextOutput, outputLooper: Looper, extensionRendererMode: Int, out: ArrayList<Renderer>) {
+        super.buildTextRenderers(context, output, outputLooper, extensionRendererMode, out)
+        out.filterIsInstance<TextRenderer>().forEach { it.experimentalSetLegacyDecodingEnabled(true) }
+      }
+    }
+    player = ExoPlayer.Builder(this, renderers)
       // the film starts without waiting for every subtitle file to be read
       .setMediaSourceFactory(DefaultMediaSourceFactory(DefaultDataSource.Factory(this, http)).experimentalParseSubtitlesDuringExtraction(false))
       .setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true)

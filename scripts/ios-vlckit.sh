@@ -22,28 +22,19 @@ fw=$(find "$tmp" -name MobileVLCKit.xcframework -type d -prune | head -1)
 mkdir -p "$APPLE/Frameworks"
 rm -rf "$APPLE/Frameworks/MobileVLCKit.xcframework"
 mv "$fw" "$APPLE/Frameworks/"
-# the device slice's library (the CI builds for arm64 phones only)
-lib=$(cd "$APPLE" && find Frameworks/MobileVLCKit.xcframework -path '*ios-arm64*' ! -path '*simulator*' -type f -name MobileVLCKit | head -1)
-[ -n "$lib" ] || { echo "no device slice in MobileVLCKit.xcframework" >&2; exit 1; }
 
 # the app target's sources: Sources/<app name>/ (main.mm and the bindings are there)
 src=$(find "$APPLE/Sources" -mindepth 1 -maxdepth 1 -type d | head -1)
 cp src-tauri/ios/NeptunusPlayer.swift "$src/"
 
-# a static framework: linked, not embedded, with what its podspec says it needs
-ruby -ryaml - "$APPLE/project.yml" "$lib" <<'RUBY'
+# a dynamic framework: embedded in the app (and signed with it), else the app dies at launch
+ruby -ryaml - "$APPLE/project.yml" <<'RUBY'
 path = ARGV[0]
 spec = YAML.load_file(path)
 name, target = spec["targets"].find { |k, _| k.end_with?("_iOS") }
 abort "no iOS target in #{path}" unless target
 deps = target["dependencies"] ||= []
-deps << { "framework" => "Frameworks/MobileVLCKit.xcframework", "embed" => false }
-%w[AVFoundation AudioToolbox CFNetwork CoreMedia CoreText OpenGLES VideoToolbox].each { |f| deps << { "sdk" => "#{f}.framework" } }
-%w[libc++ libxml2 libz libbz2 libiconv].each { |l| deps << { "sdk" => "#{l}.tbd" } }
-# its Objective-C categories load only when the whole library is: -force_load on it alone, since -ObjC
-# would load every object of libapp.a too, whose Tauri Swift objects are in it more than once
-base = ((target["settings"] ||= {})["base"] ||= {})
-base["OTHER_LDFLAGS"] = "$(inherited) -force_load $(PROJECT_DIR)/#{ARGV[1]}"
+deps << { "framework" => "Frameworks/MobileVLCKit.xcframework", "embed" => true, "codeSign" => true }
 File.write(path, spec.to_yaml)
 puts "MobileVLCKit added to #{name}"
 RUBY

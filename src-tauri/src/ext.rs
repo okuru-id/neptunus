@@ -137,8 +137,9 @@ impl Exts {
         }
         let (reply, answer) = mpsc::channel();
         let job = Job { method: method.to_owned(), args: args.to_string(), progress, root, reply };
-        // finishing a verification can't wait behind a download that may run for minutes
-        let parallel = matches!(method, "download" | "checkAvailability" | "completeGrant");
+        // finishing a verification can't wait behind a download that may run for minutes, and a film's
+        // sources (or its details) shouldn't wait behind the catalog rows still loading from the same addon
+        let parallel = matches!(method, "download" | "checkAvailability" | "completeGrant" | "videoStreams" | "videoMeta");
         let mut workers = self.workers.lock().unwrap();
         let slots = workers.entry(id.to_owned()).or_default();
         let pick = match parallel {

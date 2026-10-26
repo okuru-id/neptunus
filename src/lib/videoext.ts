@@ -93,9 +93,17 @@ export type StreamGroup = { id: string; name: string; list: SourceStream[]; note
 
 /** Streams for one title from every addon that serves it, one group each, so the user can play from any
  *  of them and see why an addon came back empty. */
-export function allStreams(sources: { id: string; name: string; info?: SourceInfo }[], type: string, id: string, force = false) {
+/** `each` gets every addon's group as soon as that addon answers, so the quick ones show while a slow one
+ *  is still being waited for (on a phone's network, often the case). */
+export function allStreams(sources: { id: string; name: string; info?: SourceInfo }[], type: string, id: string, force = false, each?: (g: StreamGroup) => void) {
   return Promise.all(
     sources.filter((s) => servesStreams(s.info, id)).map(async (s): Promise<StreamGroup> => {
+      const g = await group(s);
+      each?.(g);
+      return g;
+    }),
+  );
+  async function group(s: { id: string; name: string }): Promise<StreamGroup> {
       try {
         const all = await streams(s.id, type, id, force);
         const list = all.filter((x) => x.url).map((x) => ({ ...x, source: s.id, sourceName: s.name })) as SourceStream[];
@@ -104,8 +112,7 @@ export function allStreams(sources: { id: string; name: string; info?: SourceInf
       } catch (e) {
         return { id: s.id, name: s.name, list: [], note: `Gagal memuat (${e}).` };
       }
-    }),
-  );
+  }
 }
 
 export type Subtitle = { id?: string; url: string; lang?: string; source: string };

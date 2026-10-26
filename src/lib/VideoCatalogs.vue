@@ -11,7 +11,7 @@ import { poster } from "./posters";
 import { clock, forget, lastPlayed, progressOf, recordPlay, resumeKey, toggleBookmark, vlib, type Saved, type Watched } from "./vlibrary";
 import type { RowItem } from "./CatalogRow.vue";
 import {
-  allStreams, subtitleQuery, CINEMETA, meta, rowCatalogs, searchCatalog, sourceInfo, streamScore, videoSources,
+  allStreams, subtitleQuery, CINEMETA, meta, rowCatalogs, searchCatalog, sourceInfo, videoSources,
   type Episode, type Meta, type SourceInfo, type SourceStream, type StreamGroup, type SubtitleQuery,
 } from "./videoext";
 
@@ -167,18 +167,29 @@ async function openMeta(m: Meta, source: string) {
 }
 
 let lastFind: [string, string] = ["", ""];
+// addons still being asked for the open title's sources
+const pending = ref(0);
 async function findStreams(type: string, id: string, force = false) {
   lastFind = [type, id];
   const mine = ++ask;
   found.value = null;
   sheetError.value = "";
   const all = sources.value.filter((e) => featureOn(e.id, "streams")).map((e) => ({ id: e.id, name: extName(e), info: ready(e.id) }));
-  const list = await allStreams(all, type, id, force);
+  pending.value = all.length;
+  // each addon's sources show as soon as it answers, in the order the addon gives them; the tabs keep
+  // the order the addons are installed in (not which answered first), with the ones that had nothing last
+  const order = (g: StreamGroup) => (g.list.length ? 0 : all.length) + all.findIndex((e) => e.id === g.id);
+  const list = await allStreams(all, type, id, force, (g) => {
+    if (mine !== ask) return;
+    pending.value--;
+    found.value = [...(found.value ?? []), g].sort((a, b) => order(a) - order(b));
+  });
   if (mine !== ask) return;
-  // playable first (h264/web-ready), padded & torrent-only sink to the bottom; addons with nothing last
-  for (const g of list) g.list.sort((a, b) => streamScore(a) - streamScore(b));
-  found.value = list.sort((a, b) => Number(!a.list.length) - Number(!b.list.length));
-  if (!list.length) sheetError.value = "Belum ada ekstensi yang menyediakan sumber video.";
+  pending.value = 0;
+  if (!list.length) {
+    found.value = [];
+    sheetError.value = "Belum ada ekstensi yang menyediakan sumber video.";
+  }
 }
 
 // the picker groups streams by the addon they came from, one tab each
@@ -186,6 +197,8 @@ const pickTab = ref("");
 const groups = computed(() => found.value ?? []);
 const tab = computed(() => groups.value.find((g) => g.id === pickTab.value) ?? groups.value[0]);
 const tabList = computed(() => tab.value?.list ?? []);
+// each source's badges and lines worked out once, not on every redraw of every row
+const tabRows = computed(() => tabList.value.map((s) => ({ s, d: describe(s) })));
 watch(groups, (g) => { if (!g.some((x) => x.id === pickTab.value)) pickTab.value = g[0]?.id ?? ""; });
 
 // A stream's name/title are free text ("1080p", "💾 1.4 GB", file names…): pull out quality, size and
@@ -220,6 +233,17 @@ function setSeason(s: number) {
   episode.value = null;
   ask++; // drops a source search still running for the previous episode
 }
+
+// the episode strip scrolls by touch; with a mouse there are arrows, dimmed at either end
+const epStrip = ref<HTMLElement>();
+const epEnds = ref({ start: true, end: true });
+function epScrolled() {
+  const s = epStrip.value;
+  // a few pixels of slack: the strip's padding and scroll snapping keep it just off 0 and the very end
+  if (s) epEnds.value = { start: s.scrollLeft <= 6, end: s.scrollLeft + s.clientWidth >= s.scrollWidth - 6 };
+}
+const scrollEps = (dir: number) => epStrip.value?.scrollBy({ left: dir * epStrip.value.clientWidth * 0.8, behavior: "smooth" });
+watch(seasonEps, () => requestAnimationFrame(epScrolled), { flush: "post" });
 
 function pickEpisode(ep: Episode) {
   episode.value = ep;
@@ -337,8 +361,12 @@ function close() {
       <div v-else class="epsel">
         <Dropdown class="sel" label="Musim" :model-value="season" @update:model-value="setSeason"
           :options="seasons.map(([s, eps]) => ({ value: s, label: `${s ? `Musim ${s}` : 'Spesial'} (${eps.length})` }))" />
+        <div v-if="seasonEps.length" class="epnav">
+          <button title="Episode sebelumnya" aria-label="Geser episode ke kiri" :disabled="epEnds.start" @click="scrollEps(-1)"><Icon name="back" :size="20" /></button>
+          <button title="Episode berikutnya" aria-label="Geser episode ke kanan" class="fwd" :disabled="epEnds.end" @click="scrollEps(1)"><Icon name="back" :size="20" /></button>
+        </div>
       </div>
-      <div v-if="seasonEps.length" class="eps" role="listbox" aria-label="Episode">
+      <div v-if="seasonEps.length" ref="epStrip" class="eps" role="listbox" aria-label="Episode" @scroll.passive="epScrolled">
         <button v-for="ep in seasonEps" :key="ep.id" class="ep" role="option" :aria-selected="episode?.id === ep.id"
           :class="{ on: episode?.id === ep.id, cached: cached.ids.has(ep.id) }" @click="pickEpisode(ep)">
           <div class="ethumb">
@@ -359,31 +387,32 @@ function close() {
     <template v-if="detail.type !== 'series' || episode">
       <div class="phead">
         <h3>Pilih sumber</h3>
-        <button class="reload" :disabled="found === null" title="Ambil ulang sumber dari semua ekstensi" @click="findStreams(...lastFind, true)">
+        <button class="reload" :disabled="pending > 0" title="Ambil ulang sumber dari semua ekstensi" @click="findStreams(...lastFind, true)">
           <Icon name="refresh" :size="18" />Muat ulang
         </button>
       </div>
-      <p v-if="found === null" class="none">Mencari sumber di semua ekstensi…</p>
+      <p v-if="pending && !groups.length" class="none">Mencari sumber di semua ekstensi…</p>
       <p v-else-if="sheetError" class="none">{{ sheetError }}</p>
       <div v-if="groups.length" class="seasons" role="tablist" aria-label="Ekstensi sumber">
         <button v-for="g in groups" :key="g.id" role="tab" :aria-selected="pickTab === g.id" :class="{ on: pickTab === g.id }" @click="pickTab = g.id">
           {{ g.name }} <small>{{ g.list.length }}</small>
         </button>
+        <span v-if="pending" class="more-coming"><Icon name="sync" :size="16" class="spinning" />{{ pending }} ekstensi lagi…</span>
       </div>
       <p v-if="tab && !tabList.length" class="none">{{ tab.note }}</p>
-      <div v-if="tabList.length" :key="pickTab" class="list">
-        <button v-for="(s, i) in tabList" :key="i" class="pick src" :class="{ cached: cached.urls.has(s.url ?? '') }" :title="cached.urls.has(s.url ?? '') ? 'Sudah ada di cache' : undefined" @click="play(s)">
+      <div v-if="tabRows.length" :key="pickTab" class="list">
+        <button v-for="({ s, d }, i) in tabRows" :key="i" class="pick src" :title="cached.urls.has(s.url ?? '') ? 'Sudah ada di cache' : undefined" @click="play(s)">
           <span class="no">{{ i + 1 }}</span>
-          <span class="q" :class="{ hd: describe(s).quality === '4K' || describe(s).quality === '1080p' }">{{ describe(s).quality || "SD" }}</span>
+          <span class="q" :class="{ hd: d.quality === '4K' || d.quality === '1080p' }">{{ d.quality || "SD" }}</span>
           <span class="info">
-            <strong>{{ describe(s).head }}</strong>
-            <span v-if="cached.urls.has(s.url ?? '') || describe(s).size || describe(s).tags.length" class="tags">
+            <strong>{{ d.head }}</strong>
+            <span v-if="cached.urls.has(s.url ?? '') || d.size || d.tags.length" class="tags">
               <span v-if="cached.urls.has(s.url ?? '')" class="tag kept"><Icon name="downloadDone" :size="14" />Di cache</span>
-              <span v-if="describe(s).size" class="tag size"><Icon name="download" :size="14" />{{ describe(s).size }}</span>
-              <span v-for="t in describe(s).tags" :key="t" class="tag">{{ t }}</span>
+              <span v-if="d.size" class="tag size"><Icon name="download" :size="14" />{{ d.size }}</span>
+              <span v-for="t in d.tags" :key="t" class="tag">{{ t }}</span>
             </span>
-            <small v-if="describe(s).rest">{{ describe(s).rest }}</small>
-            <small v-if="describe(s).file" class="file" :title="describe(s).file">{{ describe(s).file }}</small>
+            <small v-if="d.rest">{{ d.rest }}</small>
+            <small v-if="d.file" class="file" :title="d.file">{{ d.file }}</small>
           </span>
           <span class="go"><Icon name="play" :size="26" /></span>
         </button>
@@ -511,7 +540,17 @@ h3 { margin: 4px 0 0; font-size: 16px; font-weight: 700; }
 .reload:disabled { opacity: 0.6; }
 .spinning { animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.epsel { display: flex; flex-wrap: wrap; gap: 12px; }
+.more-coming { display: inline-flex; align-items: center; gap: 6px; padding: 0 8px; font-size: 13px; color: var(--on-surface-variant); }
+.epsel { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
+.epnav { margin-left: auto; display: flex; gap: 4px; }
+.epnav button {
+  width: 40px; height: 40px; border-radius: 20px; display: grid; place-items: center; color: var(--on-surface);
+  background: var(--surface-container-high); transition: background 0.2s, opacity 0.2s;
+}
+.epnav button:hover:not(:disabled) { background: var(--surface-container-highest); }
+.epnav button:disabled { opacity: 0.35; cursor: default; }
+.epnav .fwd :deep(svg) { transform: scaleX(-1); }
+@media (hover: none) { .epnav { display: none; } }
 .sel { width: min(100%, 320px); }
 /* episodes: a horizontal strip of cards like the catalog rows */
 .eps {

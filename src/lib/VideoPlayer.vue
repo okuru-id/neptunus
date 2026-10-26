@@ -248,7 +248,9 @@ function readAudios() {
   const list: { label?: string; name?: string; language?: string; lang?: string; enabled?: boolean }[] =
     hls ? hls.audioTracks : Array.from((video.value as any)?.audioTracks ?? []);
   audios.value = list.map((t, i) => {
-    const name = t.label || t.name || (t.language || t.lang ? langName(t.language || t.lang) : `Audio ${i + 1}`);
+    // a remux's untitled tracks are ffmpeg's "audio_N": by language then
+    const own = [t.label, t.name].find((n) => n && !/^audio_\d+$/.test(n));
+    const name = own || (t.language || t.lang ? langName(t.language || t.lang) : `Audio ${i + 1}`);
     return list.some((o, j) => j !== i && (o.label || o.name) === (t.label || t.name) && (o.language || o.lang) === (t.language || t.lang)) ? `${name} ${i + 1}` : name;
   });
   audioOn.value = hls ? hls.audioTrack : Math.max(0, list.findIndex((t) => t.enabled));

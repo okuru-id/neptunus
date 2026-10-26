@@ -1,7 +1,8 @@
 //! Desktop: a film the webview's player refuses (MKV it won't take, AC3/DTS/E-AC3 audio) is remuxed by
 //! the system's `ffmpeg` while it plays: the video is copied as is when it is 8-bit H.264 (else, HEVC or
-//! 10-bit say, made H.264), the first audio track (players take one per segment) becomes stereo AAC, cut into an HLS playlist of fMP4 segments that the loopback
-//! server hands to the same player (`~remux/<id>/index.m3u8`). Only one runs at a time; a new one, or the
+//! 10-bit say, made H.264) and every audio track becomes stereo AAC, cut into HLS of fMP4 segments, each
+//! audio track its own rendition (players take one per segment) so a dub can be picked, that the
+//! loopback server hands to the same player (`~remux/<id>/index.m3u8`). Only one runs at a time; a new one, or the
 //! player closing, stops it.
 
 use std::path::PathBuf;
@@ -43,25 +44,36 @@ fn start(url: String, dir: PathBuf) -> Result<(String, f64), String> {
     } else {
         &["-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p"]
     };
-    vlog!("remux #{id}: {} {}, {duration:.0}s -> {}", field("codec_name"), field("pix_fmt"), if video[1] == "copy" { "copied" } else { "H.264" });
+    let audio = audio_tracks(&url);
+    vlog!("remux #{id}: {} {}, {duration:.0}s, {} audio -> {}", field("codec_name"), field("pix_fmt"), audio.len(), if video[1] == "copy" { "copied" } else { "H.264" });
+    // the video, and each audio track in one group: `language:` for the player's menu
+    let mut map = vec!["-map".to_owned(), "0:v:0".to_owned()];
+    let mut streams = vec![if audio.is_empty() { "v:0,name:video".to_owned() } else { "v:0,agroup:aud,name:video".to_owned() }];
+    for (i, (lang, _)) in audio.iter().enumerate() {
+        map.extend(["-map".to_owned(), format!("0:a:{i}")]);
+        let lang = if lang.is_empty() { String::new() } else { format!(",language:{lang}") };
+        streams.push(format!("a:{i},agroup:aud,name:a{i}{lang}{}", if i == 0 { ",default:yes" } else { "" }));
+    }
     let began = Instant::now();
-    let (playlist, log) = (dir.join("index.m3u8"), dir.join("ffmpeg.log"));
+    let (master, playlist, log) = (dir.join("index.m3u8"), dir.join("video.m3u8"), dir.join("ffmpeg.log"));
     let log_file = std::fs::File::create(&log).map_err(|e| e.to_string())?;
     let mut child = crate::ffmpeg::command("ffmpeg")
         .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-i", &url])
-        .args(["-map", "0:v:0", "-map", "0:a:0?"])
+        .args(&map)
         .args(video)
         .args(["-c:a", "aac", "-ac", "2", "-b:a", "192k", "-sn", "-dn"])
         .args(["-f", "hls", "-hls_time", "6", "-hls_list_size", "0", "-hls_playlist_type", "event"])
         .args(["-hls_segment_type", "fmp4", "-hls_fmp4_init_filename", "init.mp4"])
-        .arg("-hls_segment_filename").arg(dir.join("seg%05d.m4s"))
-        .arg(&playlist)
+        .arg("-hls_segment_filename").arg(dir.join("%v_seg%05d.m4s"))
+        .args(["-master_pl_name", "index.m3u8", "-var_stream_map", &streams.join(" ")])
+        .arg(dir.join("%v.m3u8"))
         .stdin(Stdio::null()).stdout(Stdio::null()).stderr(log_file)
         .spawn().map_err(|e| format!("ffmpeg tidak bisa dijalankan ({e})."))?;
     // the player can start once a segment is listed
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
-        if std::fs::read_to_string(&playlist).is_ok_and(|p| p.contains("#EXTINF")) {
+        if master.is_file() && std::fs::read_to_string(&playlist).is_ok_and(|p| p.contains("#EXTINF")) {
+            name_tracks(&master, &audio);
             vlog!("remux #{id}: first segment in {:.1}s", began.elapsed().as_secs_f32());
             break;
         }
@@ -79,6 +91,30 @@ fn start(url: String, dir: PathBuf) -> Result<(String, f64), String> {
     }
     *CURRENT.lock().unwrap() = Some((id, child, dir));
     Ok((format!("{}{id}/index.m3u8", super::serve::remux_base()?), duration))
+}
+
+/// The film's audio tracks, in order: language code (ISO 639-2, as tagged) and title, either may be empty.
+fn audio_tracks(url: &str) -> Vec<(String, String)> {
+    let out = crate::ffmpeg::command("ffprobe")
+        .args(["-v", "error", "-select_streams", "a", "-show_entries", "stream_tags=language,title", "-of", "json", url])
+        .output();
+    let json: serde_json::Value = out.ok().and_then(|o| serde_json::from_slice(&o.stdout).ok()).unwrap_or_default();
+    let tag = |s: &serde_json::Value, k: &str| s["tags"][k].as_str().unwrap_or("").to_owned();
+    json["streams"].as_array().map_or(vec![], |l| {
+        l.iter().map(|s| (tag(s, "language").chars().filter(|c| c.is_ascii_alphanumeric()).collect(), tag(s, "title"))).collect()
+    })
+}
+
+/// ffmpeg names the renditions `audio_N`: the track's own title instead, when it has one ("English Dub").
+fn name_tracks(master: &std::path::Path, audio: &[(String, String)]) {
+    let Ok(list) = std::fs::read_to_string(master) else { return };
+    let mut titles = audio.iter().map(|(_, t)| t.replace('"', "'"));
+    let list: Vec<String> = list.lines().map(|l| {
+        let title = if l.starts_with("#EXT-X-MEDIA:TYPE=AUDIO") { titles.next().unwrap_or_default() } else { String::new() };
+        if title.is_empty() { return l.to_owned() }
+        l.split(',').map(|kv| if kv.starts_with("NAME=") { format!("NAME=\"{title}\"") } else { kv.to_owned() }).collect::<Vec<_>>().join(",")
+    }).collect();
+    let _ = std::fs::write(master, list.join("\n") + "\n");
 }
 
 /// Stops the running remux; returns its number.

@@ -650,6 +650,15 @@ fn migrate_old_dirs(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // iOS keeps no stderr: a panic (which aborts in release) goes to the system log, for idevicesyslog
+    #[cfg(target_os = "ios")]
+    std::panic::set_hook(Box::new(|info| {
+        unsafe extern "C" {
+            fn syslog(priority: std::ffi::c_int, format: *const std::ffi::c_char, ...);
+        }
+        let msg = std::ffi::CString::new(format!("Neptunus panic: {info}").replace('\0', " ")).unwrap_or_default();
+        unsafe { syslog(3, c"%s".as_ptr(), msg.as_ptr()) };
+    }));
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init());

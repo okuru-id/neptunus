@@ -1,5 +1,6 @@
 mod db;
 mod ext;
+mod ffmpeg;
 mod local;
 mod lyrics;
 mod media;
@@ -704,6 +705,26 @@ pub fn run() {
             video::video_url,
             video::poster_base,
             video::video_cached,
+            video::video_log,
+            video::video_source_error,
+            #[cfg(target_os = "ios")]
+            video::ios_players,
+            #[cfg(target_os = "ios")]
+            video::ios_native_available,
+            #[cfg(target_os = "ios")]
+            video::ios_play_native,
+            #[cfg(target_os = "ios")]
+            video::ios_play_in,
+            #[cfg(desktop)]
+            video::remux::remux_missing,
+            #[cfg(desktop)]
+            video::remux::video_remux,
+            #[cfg(desktop)]
+            video::remux::video_remux_stop,
+            #[cfg(target_os = "linux")]
+            video::mpv::mpv_available,
+            #[cfg(target_os = "linux")]
+            video::mpv::mpv_play,
             video::video_cache_size,
             video::video_cache_clear,
             video::video_cache_list,

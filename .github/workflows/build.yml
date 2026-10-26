@@ -24,8 +24,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
-          # Notes come from release-notes-<tag>.md, or the commits since the previous tag.
-          f="release-notes-$GITHUB_REF_NAME.md"
+          # Notes come from release-notes/<tag>.md, or the commits since the previous tag.
+          f="release-notes/$GITHUB_REF_NAME.md"
           [ -f "$f" ] || git log --pretty='- %s' "$(git describe --tags --abbrev=0 HEAD^)..HEAD" > "$f"
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
             --title "Neptunus $GITHUB_REF_NAME" --notes-file "$f"
@@ -136,6 +136,8 @@ jobs:
       - run: npm run tauri ios init -- --ci
       # the generated Xcode project has Tauri's default icon; src-tauri/icons/ios holds Neptunus' (tauri icon output)
       - run: cp src-tauri/icons/ios/*.png src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/
+      # films play in a VLCKit screen (src-tauri/ios/NeptunusPlayer.swift) rather than the WebView
+      - run: scripts/ios-vlckit.sh
       - run: npm run tauri ios build -- --ci --no-sign
 
       - run: mv src-tauri/gen/apple/build/arm64/*.ipa "Neptunus_${GITHUB_REF_NAME#v}_unsigned.ipa"

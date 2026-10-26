@@ -35,8 +35,8 @@
     "android": { "minSdkVersion": 26 },
     "iOS": { "frameworks": ["MediaPlayer"] },
     "linux": {
-      "deb": { "depends": ["gstreamer1.0-plugins-good", "gstreamer1.0-plugins-bad", "gstreamer1.0-libav"] },
-      "rpm": { "depends": ["gstreamer1-plugins-good", "gstreamer1-plugins-bad-free", "gstreamer1-libav"] }
+      "deb": { "depends": ["gstreamer1.0-plugins-good", "gstreamer1.0-plugins-bad", "gstreamer1.0-libav"], "recommends": ["mpv", "ffmpeg"] },
+      "rpm": { "depends": ["gstreamer1-plugins-good", "gstreamer1-plugins-bad-free", "gstreamer1-libav"], "recommends": ["mpv", "ffmpeg"] }
     },
     "icon": [
       "icons/32x32.png",

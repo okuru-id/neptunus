@@ -22,6 +22,7 @@ import SongMenu from "./lib/SongMenu.vue";
 import { downloadError, extName, has, unsupported, type ExtInfo } from "./lib/ext";
 import { asked, needsVerify, verified, withVerify } from "./lib/verify";
 import { refreshCached } from "./lib/vcache";
+import { mpv, setEngine, type Engine } from "./lib/mpv";
 import { activity, catalogDl } from "./lib/activity";
 import { loadQuality, longQuality, qualities, shortQuality } from "./lib/quality";
 import TitleBar from "./lib/TitleBar.vue";
@@ -305,6 +306,13 @@ const settingsTab = ref<SettingsTab>(SETTINGS_TABS.some((t) => t.id === page.set
 watch([view, group, plId, settingsTab], ([view, group, plId, settingsTab]) => {
   try { sessionStorage.setItem(PAGE_KEY, JSON.stringify({ view, group, plId, settingsTab })); } catch {}
 });
+// Settings › Tampilan › Pemutar film (with an outside player here: mpv, a player app, VLC or Infuse)
+const ENGINES: { id: Engine; label: string; icon: IconName }[] = [
+  { id: "ask", label: "Tanya", icon: "info" },
+  { id: "builtin", label: "Aplikasi", icon: "movie" },
+  { id: "mpv", label: "", icon: "play" }, // `mpv.label`
+];
+
 // Settings › Lokal: the disk cache online films play from (Rust `video_cache_*`, `serve::prune`)
 const CACHE_DAYS = [1, 3, 7, 14, 30].map((d) => ({ value: d, label: `${d} hari` }));
 const cacheSize = ref<number | null>(null);
@@ -1002,7 +1010,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
 
       <p v-if="loading" class="scanning"><span class="spinner" :style="{ clipPath: 'url(#shape-cookie12)' }"></span>Memindai folder musik…</p>
 
-      <VideoLibrary v-if="view === 'videos'" :home="videoHome" :query="query" :exts="exts" @play="current >= 0 && !paused && togglePause()" @count="videoCount = $event" @exts="exts = $event" @detail="videoDetail = $event" @watching="watching = $event" />
+      <VideoLibrary v-if="view === 'videos'" :home="videoHome" :query="query" :exts="exts" @play="current >= 0 && !paused && togglePause()" @count="videoCount = $event" @exts="exts = $event" @detail="videoDetail = $event" @watching="watching = $event" @notice="notify($event)" />
       <section v-else-if="!library.length && view !== 's3' && !(view === 'catalog' && extCatalog)" class="empty">
         <div class="empty-mark" :style="{ clipPath: 'url(#shape-cookie12)' }"><Icon name="note" :size="72" /></div>
         <h2>Belum ada musik</h2>
@@ -1079,6 +1087,13 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
             <div class="seg" role="radiogroup" aria-label="Tema">
               <button v-for="m in THEME_MODES" :key="m.id" role="radio" :aria-checked="themeMode === m.id" :class="{ sel: themeMode === m.id }"
                 @click="setThemeMode(m.id)"><Icon :name="m.icon" :size="18" />{{ m.label }}</button>
+            </div>
+          </div>
+          <div v-if="mpv.available" class="look-row">
+            <div class="look-text"><strong>Pemutar film</strong><span>{{ mpv.label }} memutar lebih banyak format (MKV, HEVC, AC3/DTS) dan lebih tahan stream lambat{{ mpv.label === "mpv" ? ", di jendelanya sendiri" : ", dengan subtitle dari ekstensi" }}.</span></div>
+            <div class="seg" role="radiogroup" aria-label="Pemutar film">
+              <button v-for="m in ENGINES" :key="m.id" role="radio" :aria-checked="mpv.mode === m.id" :class="{ sel: mpv.mode === m.id }"
+                @click="setEngine(m.id)"><Icon :name="m.icon" :size="18" />{{ m.label || mpv.label }}</button>
             </div>
           </div>
         </section>

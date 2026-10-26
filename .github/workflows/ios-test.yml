@@ -1,0 +1,38 @@
+name: iOS test build
+
+# Run by hand (Actions › iOS test build › Run workflow) to try iOS changes without a release: the same
+# unsigned IPA as a tagged build, kept as a workflow artifact for a week.
+on:
+  workflow_dispatch:
+
+jobs:
+  ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: ios
+
+      - run: npm ci
+      - run: npm run tauri ios init -- --ci
+      - run: cp src-tauri/icons/ios/*.png src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/
+      - run: scripts/ios-vlckit.sh
+      - run: npm run tauri ios build -- --ci --no-sign
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neptunus-ios-test
+          path: src-tauri/gen/apple/build/arm64/*.ipa
+          retention-days: 7

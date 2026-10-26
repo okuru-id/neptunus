@@ -252,6 +252,16 @@ function pickEpisode(ep: Episode) {
 
 const subSources = () => sources.value.filter((e) => featureOn(e.id, "subtitles")).map((e) => ({ id: e.id, name: extName(e), info: ready(e.id) }));
 
+// the source's address, for another player or a download manager
+const copied = ref<string | null>(null);
+async function copySource(url: string) {
+  try {
+    await navigator.clipboard.writeText(url);
+    copied.value = url;
+    setTimeout(() => copied.value === url && (copied.value = null), 1500);
+  } catch {}
+}
+
 function play(s: SourceStream) {
   const m = detail.value!;
   const ep = episode.value;
@@ -414,6 +424,8 @@ function close() {
             <small v-if="d.rest">{{ d.rest }}</small>
             <small v-if="d.file" class="file" :title="d.file">{{ d.file }}</small>
           </span>
+          <span v-if="s.url" class="copy" role="button" tabindex="0" :title="copied === s.url ? 'Tersalin' : 'Salin alamat sumber'"
+            @click.stop="copySource(s.url)" @keydown.enter.stop.prevent="copySource(s.url)"><Icon :name="copied === s.url ? 'done' : 'copy'" :size="20" /></span>
           <span class="go"><Icon name="play" :size="26" /></span>
         </button>
       </div>
@@ -506,6 +518,11 @@ h3 { margin: 4px 0 0; font-size: 16px; font-weight: 700; }
   background: var(--secondary-container); color: var(--on-secondary-container);
   transition: border-radius 0.3s var(--spring), background 0.2s, color 0.2s;
 }
+.src .copy {
+  flex: none; width: 40px; height: 40px; border-radius: 20px; display: grid; place-items: center; color: var(--on-surface-variant);
+  transition: background 0.2s, color 0.2s;
+}
+.src .copy:hover, .src .copy:focus-visible { background: var(--surface-container-highest); color: var(--on-surface); outline: none; }
 .src:hover .go { border-radius: 14px; background: var(--primary); color: var(--on-primary); }
 
 @media (max-width: 600px) {
@@ -562,11 +579,12 @@ h3 { margin: 4px 0 0; font-size: 16px; font-weight: 700; }
 .ethumb {
   position: relative; aspect-ratio: 16 / 9; border-radius: 16px; overflow: hidden; display: grid; place-items: center; margin-bottom: 6px;
   background: var(--secondary-container); color: var(--on-secondary-container);
-  transition: border-radius 0.4s var(--spring), transform 0.45s var(--spring), box-shadow 0.2s;
+  transition: border-radius 0.4s var(--spring), transform 0.45s var(--spring);
 }
 .ethumb img { width: 100%; height: 100%; object-fit: cover; }
 .ep:hover .ethumb { border-radius: 24px; transform: scale(1.03); }
-.ep.on .ethumb { box-shadow: 0 0 0 3px var(--primary); }
+/* inside the thumb: a ring outside it is cut off by the scrolling strip */
+.ep.on .ethumb::after { content: ""; position: absolute; inset: 0; z-index: 1; border-radius: inherit; box-shadow: inset 0 0 0 3px var(--primary); pointer-events: none; }
 .enum {
   position: absolute; left: 8px; bottom: 8px; padding: 2px 8px; border-radius: 8px; font-size: 12px; font-weight: 700;
   background: rgb(0 0 0 / 0.65); color: #fff;

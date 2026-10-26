@@ -133,6 +133,22 @@ export const subtitleQuery = (sources: { id: string; name: string; info?: Source
   } satisfies SubtitleQuery;
 };
 
+/** A subtitle's language in Indonesian ("Inggris"); addons send ISO 639-1 or -2 codes. */
+export const langName = (l?: string) => {
+  if (!l) return "Lainnya";
+  try { return new Intl.DisplayNames(["id"], { type: "language" }).of(l.length === 3 ? ({ ind: "id", eng: "en", may: "ms", jpn: "ja", kor: "ko", chi: "zh", zho: "zh", spa: "es", fre: "fr", fra: "fr", ger: "de", deu: "de", por: "pt", ara: "ar", tha: "th", vie: "vi", rus: "ru", ita: "it", hin: "hi" }[l] ?? l) : l) ?? l; } catch { return l; }
+};
+export const byLang = (a: Subtitle, b: Subtitle) => langName(a.lang).localeCompare(langName(b.lang)) || a.source.localeCompare(b.source);
+/** "Indonesia - Subtitle Translator", numbered when one addon offers several files for a language. */
+export function subLabels(list: Subtitle[]) {
+  const seen: Record<string, number> = {};
+  return list.map((s) => {
+    const k = `${s.lang}|${s.source}`;
+    const n = (seen[k] = (seen[k] ?? 0) + 1);
+    return { s, label: `${langName(s.lang)}${n > 1 ? ` ${n}` : ""} - ${s.source}` };
+  });
+}
+
 /** Subtitles from every subtitle addon; one failing addon doesn't hide the rest. */
 export async function subtitles(q: SubtitleQuery) {
   const lists = await Promise.all(q.sources.map((s) =>

@@ -598,7 +598,7 @@ impl Host {
     }
 
     /// `ffmpeg.convert`: remuxes (`codec: "copy"`, the default) or re-encodes the audio of `src` into
-    /// `dst` with the ffmpeg on the PATH. Phones have none, so it fails there.
+    /// `dst` with the system's ffmpeg (`crate::ffmpeg`). Phones have none, so it fails there.
     fn ffmpeg(&self, src: &str, dst: &str, opts: &str) -> String {
         let run = || -> R<String> {
             let (src, dst) = (self.path(src)?, self.path(dst)?);
@@ -607,10 +607,10 @@ impl Host {
             if !codec.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
                 return Err(format!("invalid codec {codec}"));
             }
-            let ok = std::process::Command::new("ffmpeg")
+            let ok = crate::ffmpeg::command("ffmpeg")
                 .args(["-v", "error", "-y", "-i"]).arg(&src).args(["-vn", "-c:a", codec]).arg(&dst)
                 .status()
-                .map_err(|_| "ffmpeg tidak ditemukan. Pasang ffmpeg untuk unduhan ini.".to_owned())?;
+                .map_err(|_| crate::ffmpeg::missing().unwrap_or("ffmpeg tidak bisa dijalankan.").to_owned() + " Unduhan ini membutuhkannya.")?;
             if !ok.success() {
                 let _ = std::fs::remove_file(&dst);
                 return Err("ffmpeg gagal mengonversi file".into());
@@ -1119,7 +1119,7 @@ pub async fn ext_redownload(app: AppHandle, path: String, id: String, quality: O
 }
 
 /// A download the extension left for the host to decrypt (`decryption_key`, Amazon). FLAC-in-MP4 is
-/// decrypted natively into a plain .flac; other codecs (Opus, Dolby) need ffmpeg on the PATH.
+/// decrypted natively into a plain .flac; other codecs (Opus, Dolby) need the system's ffmpeg.
 fn finish_stream(path: &Path, res: &Value) -> R<PathBuf> {
     let key = ["decryption_key"].iter().find_map(|k| res[k].as_str()).or_else(|| res["decryption"]["key"].as_str()).filter(|k| !k.is_empty());
     if let Some(flac) = mp4::to_flac(path, key)? {
@@ -1131,10 +1131,10 @@ fn finish_stream(path: &Path, res: &Value) -> R<PathBuf> {
     let Some(key) = key else { return Ok(path.to_owned()) };
     let ext = res["output_extension"].as_str().filter(|e| !e.is_empty()).unwrap_or(".m4a");
     let out = path.with_extension(format!("dec{ext}"));
-    let ok = std::process::Command::new("ffmpeg")
+    let ok = crate::ffmpeg::command("ffmpeg")
         .args(["-v", "error", "-y", "-decryption_key", key, "-i"]).arg(path).args(["-c", "copy"]).arg(&out)
         .status()
-        .map_err(|_| "Kualitas ini butuh ffmpeg untuk dibuka. Pasang ffmpeg, atau pilih kualitas FLAC.".to_owned())?;
+        .map_err(|_| crate::ffmpeg::missing().unwrap_or("ffmpeg tidak bisa dijalankan.").to_owned() + " Kualitas ini membutuhkannya, atau pilih kualitas FLAC.")?;
     if !ok.success() {
         return Err("ffmpeg gagal mendekripsi file unduhan".into());
     }

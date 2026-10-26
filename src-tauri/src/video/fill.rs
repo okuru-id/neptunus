@@ -37,6 +37,8 @@ struct State {
     passthrough: bool,
     /// the download stopped for good; what's on disk is still served
     failed: bool,
+    /// why the source's last answer was no good, for the player to say instead of a format error
+    error: Option<String>,
     closed: bool,
     done: Vec<bool>,
     /// the request in flight: its first byte, how far it has written, and when it started
@@ -166,6 +168,11 @@ impl Fill {
         File::open(&self.path)
     }
 
+    /// Why the source wouldn't give the video, as last answered; `None` once it does.
+    pub fn error(&self) -> Option<String> {
+        self.lock().error.clone()
+    }
+
     /// Fraction of the file downloaded without a gap from `at` (a fraction of the file) on.
     pub fn buffered(&self, at: f64) -> Option<f64> {
         let s = self.lock();
@@ -200,7 +207,9 @@ impl Fill {
             match self.fetch(&file, start) {
                 Ok(true) => fails = 0,
                 Ok(false) => return,
-                Err(_) => {
+                Err(e) => {
+                    vlog!("fill: request failed ({e})");
+                    self.lock().error = Some(e);
                     fails += 1;
                     if fails >= TRIES {
                         return self.give_up();
@@ -212,6 +221,7 @@ impl Fill {
     }
 
     fn give_up(&self) {
+        vlog!("fill: gave up on {}", super::short(&self.url));
         let mut s = self.lock();
         if s.len.is_none() {
             s.passthrough = true;
@@ -243,16 +253,20 @@ impl Fill {
             .connect_timeout(Duration::from_secs(15))
             .read_timeout(Duration::from_secs(30))
             .send()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| format!("server sumber tidak bisa dihubungi ({e})"))?;
         let (status, headers, mut body) = res.split();
+        vlog!("fill: GET from {start} -> {status}");
         if !status.is_success() {
+            let why = refused(status.as_u16(), status.canonical_reason().unwrap_or(""));
             // refused outright: let the player try it and show its own error
             if self.lock().len.is_none() && status.is_client_error() {
+                self.lock().error = Some(why);
                 self.give_up();
                 return Ok(false);
             }
-            return Err(format!("HTTP {status}"));
+            return Err(why);
         }
+        self.lock().error = None;
         let header = |k: &str| headers.get(k).and_then(|v| v.to_str().ok()).unwrap_or("");
         // a server without ranges sends the whole file
         let ranged = status.as_u16() == 206;
@@ -270,8 +284,10 @@ impl Fill {
                     s.len = Some(len);
                     s.mime = if mime.starts_with("video/") { mime } else { super::mime(&self.url).into() };
                     s.done = vec![false; len.div_ceil(CHUNK) as usize];
+                    vlog!("fill: {len} bytes, served as {}{}", s.mime, if ranged { "" } else { " (no ranges)" });
                 }
                 _ => {
+                    vlog!("fill: passthrough (length {total:?}, type {mime:?})");
                     s.passthrough = true;
                     drop(s);
                     self.cv.notify_all();
@@ -286,16 +302,16 @@ impl Fill {
         let (mut pos, mut mark) = (start, start / CHUNK);
         let mut buf = vec![0; 64 << 10];
         loop {
-            let n = body.read(&mut buf).map_err(|e| e.to_string())?;
+            let n = body.read(&mut buf).map_err(|e| format!("koneksi ke server sumber terputus ({e})"))?;
             if n == 0 {
-                return if pos >= len { Ok(true) } else { Err("connection closed early".into()) };
+                return if pos >= len { Ok(true) } else { Err("server sumber memutus koneksi sebelum selesai".into()) };
             }
             let n = n.min(len.saturating_sub(pos) as usize);
             if let Err(e) = write_at(file, &buf[..n], pos) {
                 // out of space: keep serving what's there rather than retrying
                 self.lock().failed = true;
                 self.cv.notify_all();
-                return Err(e.to_string());
+                return Err(format!("cache tidak bisa ditulis ({e})"));
             }
             pos += n as u64;
             let mut s = self.lock();
@@ -335,6 +351,18 @@ impl Fill {
         let settled = pos - from >= CHUNK || since.is_some_and(|t| t.elapsed() > Duration::from_secs(3));
         settled && s.waiting.iter().any(|&w| s.ready(w) == 0 && (w < from || w > pos + 2 * CHUNK))
     }
+}
+
+/// What a refusal by the source means, for the player's error.
+fn refused(code: u16, reason: &str) -> String {
+    let what = match code {
+        401 | 403 => "server sumber menolak akses; link-nya mungkin sudah kedaluwarsa",
+        404 | 410 => "file tidak ada lagi di server sumber",
+        429 => "server sumber menerima terlalu banyak permintaan",
+        500..=599 => "server sumber sedang bermasalah atau sibuk",
+        _ => "server sumber menolak permintaan",
+    };
+    format!("{what} (HTTP {code}{}{reason})", if reason.is_empty() { "" } else { " " })
 }
 
 /// `.meta`: the length, the type and one `0`/`1` per chunk.
@@ -435,6 +463,30 @@ mod tests {
             }
         });
         url
+    }
+
+    #[test]
+    fn says_why_the_source_refused() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/film.mkv", l.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for mut s in l.incoming().flatten() {
+                let mut head = String::new();
+                let mut r = BufReader::new(s.try_clone().unwrap());
+                while r.read_line(&mut head).map_or(false, |n| n > 2) {}
+                let _ = s.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            }
+        });
+        let dir = std::env::temp_dir().join(format!("neptunus-refused-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = Fill::start(url, vec![], dir.join("film.part"));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while f.error().is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(f.error().as_deref(), Some("server sumber sedang bermasalah atau sibuk (HTTP 503 Service Unavailable)"));
+        f.close();
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

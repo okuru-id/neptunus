@@ -24,6 +24,7 @@ import update from "@material-symbols/svg-400/rounded/system_update_alt-fill.svg
 import info from "@material-symbols/svg-400/rounded/info-fill.svg?raw";
 import code from "@material-symbols/svg-400/rounded/code-fill.svg?raw";
 import linkOff from "@material-symbols/svg-400/rounded/link_off-fill.svg?raw";
+import copy from "@material-symbols/svg-400/rounded/content_copy-fill.svg?raw";
 import sync from "@material-symbols/svg-400/rounded/sync-fill.svg?raw";
 import save from "@material-symbols/svg-400/rounded/save-fill.svg?raw";
 import catalog from "@material-symbols/svg-400/rounded/explore-fill.svg?raw";
@@ -106,6 +107,7 @@ export const icons = {
   chevron,
   edit,
   linkOff,
+  copy,
   info,
   code,
   update,

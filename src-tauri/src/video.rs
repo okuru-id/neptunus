@@ -47,7 +47,72 @@ pub async fn video_list(app: AppHandle, db: State<'_, Db>) -> Result<Vec<Video>,
     .await
 }
 
+/// Dev builds: what happens to the video playing, on the terminal (`[video] …`). URLs without their
+/// query, headers by name only: both may carry a token.
+macro_rules! vlog {
+    ($($t:tt)*) => { if cfg!(debug_assertions) { println!("[video] {}", format_args!($($t)*)); } };
+}
+/// A URL for the log: no query.
+fn short(url: &str) -> &str {
+    url.split(['?', '#']).next().unwrap_or(url)
+}
+
+/// A subtitle for an outside player's list (mpv, iOS's VLCKit screen): its file, and the name and
+/// language it shows under there (the built-in player's menu label).
+#[derive(serde::Deserialize)]
+#[cfg_attr(not(any(target_os = "linux", target_os = "ios")), allow(dead_code))]
+pub struct Sub {
+    url: String,
+    title: String,
+    lang: String,
+}
+
+/// `subs` as WebVTT files in `dir`, named by their titles (players without a title of their own show the
+/// file's name), fetched side by side (`video_subtitle`: cached). `got` gets each one in their order; the
+/// shown one (`first_now`: the first) as soon as it is there, before the rest.
+#[cfg(any(target_os = "linux", target_os = "ios"))]
+fn fetch_subs(app: &AppHandle, subs: &[Sub], first_now: bool, dir: &Path, mut got: impl FnMut(usize, &Path)) {
+    let _ = std::fs::remove_dir_all(dir);
+    if subs.is_empty() || std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    let fetch = |i: usize| -> Option<std::path::PathBuf> {
+        let vtt = video_subtitle(app.state(), subs[i].url.clone()).ok()?;
+        let name: String = subs[i].title.chars().map(|c| if matches!(c, '/' | '\\' | ':') { '-' } else { c }).collect();
+        let f = dir.join(format!("{name}.vtt"));
+        std::fs::write(&f, vtt).ok().map(|_| f)
+    };
+    let first = usize::from(first_now);
+    if first_now {
+        if let Some(f) = fetch(0) {
+            got(0, &f);
+        }
+    }
+    let idx: Vec<usize> = (first..subs.len()).collect();
+    for chunk in idx.chunks(8) {
+        let done: Vec<_> = std::thread::scope(|sc| {
+            let jobs: Vec<_> = chunk.iter().map(|&i| sc.spawn(move || (i, fetch(i)))).collect();
+            jobs.into_iter().filter_map(|j| j.join().ok()).collect()
+        });
+        for (i, f) in done {
+            if let Some(f) = f {
+                got(i, &f);
+            }
+        }
+    }
+}
+
+/// Dev builds: the player's own events (VideoPlayer.vue) next to the rest.
+#[tauri::command]
+pub fn video_log(msg: String) {
+    vlog!("player: {msg}");
+}
+
 mod fill;
+#[cfg(target_os = "linux")]
+pub mod mpv;
+#[cfg(desktop)]
+pub mod remux;
 mod posters;
 
 /// The file name a remote video is kept under in the cache folder (without `.part`).
@@ -157,6 +222,7 @@ pub fn poster_base(app: AppHandle) -> Option<String> {
 #[tauri::command]
 pub async fn video_url(app: AppHandle, path: String, headers: Option<std::collections::HashMap<String, String>>, title: Option<String>) -> Result<Option<String>, String> {
     let remote = path.starts_with("http://") || path.starts_with("https://");
+    vlog!("open {} (headers: {:?})", short(&path), headers.as_ref().map(|h| h.keys().collect::<Vec<_>>()).unwrap_or_default());
     let url = if path.starts_with("s3://") {
         let (app, path) = (app.clone(), path.clone());
         crate::blocking(move || crate::s3::presigned(&app, &path)).await?
@@ -187,6 +253,100 @@ fn mime(path: &str) -> &'static str {
         Some("mov") => "video/quicktime",
         _ => "video/mp4",
     }
+}
+
+/// iOS: the player apps a film can go to that are installed, of VLC and Infuse. Their URL schemes are
+/// in `LSApplicationQueriesSchemes` (Info.ios.plist), or iOS says no for both.
+#[cfg(target_os = "ios")]
+#[tauri::command]
+pub async fn ios_players(app: AppHandle) -> Vec<&'static str> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _ = app.run_on_main_thread(move || {
+        use objc2::runtime::AnyObject;
+        use objc2::{class, msg_send};
+        let ui: *mut AnyObject = unsafe { msg_send![class!(UIApplication), sharedApplication] };
+        let found = [("vlc", "vlc-x-callback://"), ("infuse", "infuse://")].into_iter().filter(|(_, scheme)| {
+            let s = objc2_foundation::NSString::from_str(scheme);
+            let url: *mut AnyObject = unsafe { msg_send![class!(NSURL), URLWithString: &*s] };
+            !url.is_null() && unsafe { msg_send![ui, canOpenURL: url] }
+        });
+        let _ = tx.send(found.map(|(name, _)| name).collect::<Vec<_>>());
+    });
+    crate::blocking(move || Ok::<_, String>(rx.recv().unwrap_or_default())).await.unwrap_or_default()
+}
+
+/// iOS: the film screen built on VLCKit (`src-tauri/ios/NeptunusPlayer.swift`), there when the build
+/// linked it in (scripts/ios-vlckit.sh).
+#[cfg(target_os = "ios")]
+fn ios_player() -> Option<&'static objc2::runtime::AnyClass> {
+    objc2::runtime::AnyClass::get(c"NeptunusPlayer")
+}
+
+#[cfg(target_os = "ios")]
+static IOS_APP: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
+
+/// iOS: whether films can play in the VLCKit screen rather than the WebView's player.
+#[cfg(target_os = "ios")]
+#[tauri::command]
+pub fn ios_native_available() -> bool {
+    ios_player().is_some()
+}
+
+/// iOS: plays `film` (`{url, title, headers, position}`, ms) in the VLCKit screen. The subtitles follow
+/// as files once fetched, named for the menu (VLCKit shows a file's name); the first shown when
+/// `sub_on`. Where it got to comes back as the `native-video-closed` event.
+#[cfg(target_os = "ios")]
+#[tauri::command]
+pub fn ios_play_native(app: AppHandle, film: String, subs: Vec<Sub>, sub_on: bool) -> Result<(), String> {
+    use objc2::msg_send;
+    use objc2_foundation::NSString;
+    let _ = IOS_APP.set(app.clone());
+    let cls = ios_player().ok_or("Pemutar VLC tidak ada di build ini.")?;
+    let dir = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("vlc-subs");
+    app.run_on_main_thread(move || {
+        let s = NSString::from_str(&film);
+        let _: () = unsafe { msg_send![cls, play: &*s] };
+    })
+    .map_err(|e| e.to_string())?;
+    std::thread::spawn(move || {
+        fetch_subs(&app, &subs, sub_on, &dir, |i, f| {
+            let (path, select) = (f.to_string_lossy().into_owned(), i == 0 && sub_on);
+            let _ = app.run_on_main_thread(move || {
+                let s = NSString::from_str(&path);
+                let _: () = unsafe { msg_send![cls, addSubtitle: &*s, select: select] };
+            });
+        });
+    });
+    Ok(())
+}
+
+/// Called by NeptunusPlayer.swift as its screen closes, with `{pos, duration, eof, error}`.
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub extern "C" fn neptunus_video_closed(json: *const std::ffi::c_char) {
+    use tauri::Emitter;
+    let json = unsafe { std::ffi::CStr::from_ptr(json) }.to_string_lossy();
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap_or_default();
+    if let Some(app) = IOS_APP.get() {
+        let _ = app.emit("native-video-closed", v);
+    }
+}
+
+/// iOS: a film handed to VLC or Infuse (`ios_players`), by their x-callback URL.
+#[cfg(target_os = "ios")]
+#[tauri::command]
+pub fn ios_play_in(app: AppHandle, url: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    if !url.starts_with("vlc-x-callback://x-callback-url/") && !url.starts_with("infuse://x-callback-url/") {
+        return Err("Pemutar tidak dikenal.".into());
+    }
+    app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
+}
+
+/// Why the source wouldn't give the video being downloaded (`fill`), if it wouldn't.
+#[tauri::command]
+pub fn video_source_error() -> Option<String> {
+    serve::FILL.lock().unwrap().as_ref()?.1.error()
 }
 
 /// How far the playing video is downloaded ahead of `at` (a fraction of it), as a fraction of it.
@@ -251,6 +411,7 @@ mod serve {
         }
         let (d, keep) = (dir.to_owned(), path.clone());
         std::thread::spawn(move || prune(&d, &keep, days));
+        vlog!("fill #{id}: {} -> {}", super::short(&url), path.display());
         *cur = Some((id, super::fill::Fill::start(url, headers, path)));
         Ok(format!("http://127.0.0.1:{port}/{token}/~fill/{id}"))
     }
@@ -273,6 +434,12 @@ mod serve {
                 total -= size;
             }
         }
+    }
+
+    #[cfg(desktop)]
+    pub fn remux_base() -> Result<String, String> {
+        let (port, token) = server()?;
+        Ok(format!("http://127.0.0.1:{port}/{token}/~remux/"))
     }
 
     pub fn poster_base() -> Result<String, String> {
@@ -360,6 +527,31 @@ mod serve {
                 None => stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
             };
         }
+        // `~remux/<id>/<file>`: the HLS playlist and segments ffmpeg writes (`remux`)
+        #[cfg(desktop)]
+        if let Some(rest) = target.strip_prefix(&format!("/{token}/~remux/")) {
+            let file = rest.split_once('/').and_then(|(id, name)| super::remux::file(id, name)).filter(|_| method == "GET" || method == "HEAD");
+            let Some(file) = file else {
+                return stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            };
+            if file.extension().is_some_and(|x| x == "m3u8") {
+                // still growing: from the start, not the live edge
+                let list = std::fs::read_to_string(&file)?.replacen("#EXTM3U\n", "#EXTM3U\n#EXT-X-START:TIME-OFFSET=0\n", 1);
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.apple.mpegurl\r\nContent-Length: {}\r\nCache-Control: no-cache\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n", list.len())?;
+                if method == "GET" {
+                    stream.write_all(list.as_bytes())?;
+                }
+                return Ok(());
+            }
+            let mut f = File::open(&file)?;
+            let len = f.metadata()?.len();
+            let (start, end) = head(&mut stream, range, len, "video/mp4")?;
+            if method == "GET" {
+                f.seek(SeekFrom::Start(start))?;
+                std::io::copy(&mut f.take(end + 1 - start), &mut stream)?;
+            }
+            return Ok(());
+        }
         if let Some(id) = target.strip_prefix(&format!("/{token}/~fill/")) {
             let f = FILL.lock().unwrap().as_ref().filter(|(n, _)| id == n.to_string()).map(|(_, f)| f.clone());
             return match f {
@@ -398,7 +590,7 @@ mod serve {
             .map_or((0, len.saturating_sub(1), false), |(s, e)| (s, e, true));
         write!(
             stream,
-            "HTTP/1.1 {}\r\nContent-Type: {}\r\nAccept-Ranges: bytes\r\nContent-Length: {}\r\n{}Connection: close\r\n\r\n",
+            "HTTP/1.1 {}\r\nContent-Type: {}\r\nAccept-Ranges: bytes\r\nContent-Length: {}\r\n{}Access-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
             if partial { "206 Partial Content" } else { "200 OK" },
             mime,
             end + 1 - start,

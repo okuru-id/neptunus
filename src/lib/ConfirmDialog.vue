@@ -3,16 +3,20 @@ import { reactive } from "vue";
 import type { IconName } from "./icons";
 
 type Opts = { title: string; message: string; confirm?: string; cancel?: string; icon?: IconName; danger?: boolean };
-const state = reactive<{ opts: Opts | null; resolve: (ok: boolean) => void }>({ opts: null, resolve: () => {} });
+const state = reactive<{ opts: Opts | null; resolve: (ok: boolean | null) => void }>({ opts: null, resolve: () => {} });
 
-/** In-app replacement for the system `ask()` dialog; resolves true when confirmed. */
-export function confirm(opts: Opts): Promise<boolean> {
-  state.resolve(false); // a dialog already open counts as cancelled
+/** A choice between two answers: true for `confirm`, false for `cancel`, null when dismissed (Esc,
+ *  a click beside it). */
+export function choose(opts: Opts): Promise<boolean | null> {
+  state.resolve(null); // a dialog already open counts as dismissed
   return new Promise((resolve) => {
     state.opts = opts;
     state.resolve = resolve;
   });
 }
+
+/** In-app replacement for the system `ask()` dialog; resolves true when confirmed. */
+export const confirm = (opts: Opts) => choose(opts).then((ok) => ok === true);
 </script>
 
 <script setup lang="ts">
@@ -21,7 +25,7 @@ import Icon from "./Icon.vue";
 
 // M3 basic dialog. Mount once (in App); open it with `confirm()`.
 const cancelBtn = ref<HTMLButtonElement>();
-function close(ok: boolean) {
+function close(ok: boolean | null) {
   state.opts = null;
   state.resolve(ok);
   state.resolve = () => {};
@@ -32,7 +36,7 @@ watch(() => state.opts, async (o) => o && (await nextTick(), cancelBtn.value?.fo
 
 <template>
   <Transition name="dialog">
-    <div v-if="state.opts" class="scrim" @pointerdown.self="close(false)" @keydown.esc="close(false)">
+    <div v-if="state.opts" class="scrim" @pointerdown.self="close(null)" @keydown.esc="close(null)">
       <div class="dialog" :class="{ danger: state.opts.danger }" role="alertdialog" aria-modal="true" aria-labelledby="dlg-title" aria-describedby="dlg-msg">
         <span v-if="state.opts.icon" class="badge" :style="{ clipPath: 'url(#shape-cookie9)' }"><Icon :name="state.opts.icon" :size="32" /></span>
         <h2 id="dlg-title">{{ state.opts.title }}</h2>

@@ -6,6 +6,7 @@ import VideoPlayer from "./VideoPlayer.vue";
 import { vlib } from "./vlibrary";
 import VideoCatalogs from "./VideoCatalogs.vue";
 import { refreshCached, remember } from "./vcache";
+import { mpv, nativePlayer, pickEngine, playInMpv } from "./mpv";
 import type { ExtInfo } from "./ext";
 import type { SubtitleQuery } from "./videoext";
 
@@ -15,7 +16,7 @@ type Video = { path: string; title: string; size?: number; sub?: SubtitleQuery; 
 type Tab = "local" | "cloud" | "ext";
 
 const props = defineProps<{ query: string; exts: ExtInfo[]; home?: number }>();
-const emit = defineEmits<{ play: []; count: [n: number]; exts: [list: ExtInfo[]]; detail: [on: boolean]; watching: [on: boolean] }>();
+const emit = defineEmits<{ play: []; count: [n: number]; exts: [list: ExtInfo[]]; detail: [on: boolean]; watching: [on: boolean]; notice: [text: string] }>();
 
 const TAB_KEY = "neptunus.videoTab";
 const TABS: { id: Tab; label: string; icon: "folder" | "cloud" | "extension" }[] = [
@@ -56,9 +57,27 @@ onUnmounted(() => emit("watching", false));
 const size = (b?: number) =>
   b == null ? "" : b >= 1 << 30 ? `${(b / (1 << 30)).toFixed(1)} GB` : `${Math.round(b / (1 << 20))} MB`;
 
-function play(v: Video) {
+async function play(v: Video) {
+  const engine = await pickEngine(v.path);
+  if (!engine) return;
   emit("play"); // the music pauses while a video plays
-  open.value = v;
+  if (engine === "mpv" || nativePlayer()) inMpv(v, engine !== "mpv");
+  else open.value = v;
+}
+// Settings › Tampilan (or the built-in player's error): the outside player plays it (mpv in its own
+// window, a phone's player app); `native`: Android's own ExoPlayer screen
+function inMpv(v: Video, native = false) {
+  open.value = null;
+  const who = native ? "Pemutar" : mpv.label;
+  playInMpv(v, (secs, error) => {
+    if (error) emit("notice", `${who} tidak bisa memutar film ini: ${error}${native && mpv.available ? `. Coba ${mpv.label}.` : ""}`);
+    if (secs > 1 && v.cached) remember(v.cached, v.path);
+    refreshCached();
+    vlib.seen++;
+  }, native).catch((e) => {
+    open.value = v; // the WebView's player instead, saying why the other one didn't start
+    emit("notice", `${who} tidak bisa memutar film ini: ${e?.message ?? e}`);
+  });
 }
 
 onMounted(async () => {
@@ -103,7 +122,7 @@ onMounted(async () => {
     </div>
   </template>
 
-  <VideoPlayer v-if="open" :key="open.path" :path="open.path" :title="open.title" :sub="open.sub" :resume="open.resume" :headers="open.headers" @close="open = null"
+  <VideoPlayer v-if="open" :key="open.path" :path="open.path" :title="open.title" :sub="open.sub" :resume="open.resume" :headers="open.headers" @close="open = null" @mpv="open && inMpv(open)"
     @played="open?.cached && remember(open.cached, open.path)" />
 </template>
 

@@ -18,6 +18,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.Parcelable
 import android.provider.Settings
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
@@ -53,6 +54,9 @@ class MediaService : Service() {
     private fun js(code: String) {
       webView?.evaluateJavascript(code, null)
     }
+
+    // PlayerActivity closed: where it got to, for the page to keep (`json` is ours, built by JSONObject)
+    fun videoClosed(json: String) = Handler(Looper.getMainLooper()).post { js("window.__nativeVideoClosed?.($json)") }
 
     private fun changed(ctx: Context) {
       val s = instance
@@ -103,6 +107,47 @@ class MediaService : Service() {
       }
       return allowed
     }
+
+    // a film in PlayerActivity (ExoPlayer) instead of the WebView's player
+    @JavascriptInterface
+    fun playNative(json: String) = ours {
+      view.context.startActivity(Intent(view.context, PlayerActivity::class.java).putExtra("json", json))
+    }
+
+    // another player app for a film (VLC, MX Player, Just Player…): whether one is installed
+    @JavascriptInterface
+    fun hasVideoPlayer(): Boolean =
+      view.context.packageManager.queryIntentActivities(viewVideo(Uri.parse("https://example.com/film.mkv")), 0)
+        .any { it.activityInfo.packageName != view.context.packageName }
+
+    // the film in the player app picked from the system's list: `{url, title, headers, subs: [{url, name}],
+    // subOn, position}` (ms). Headers and subtitles go in the extras MX Player and Just Player read, the
+    // shown subtitle and the position also in VLC's. False when no player app is installed.
+    @JavascriptInterface
+    fun openVideo(json: String): Boolean {
+      val o = org.json.JSONObject(json)
+      val intent = viewVideo(Uri.parse(o.getString("url"))).putExtra("title", o.optString("title"))
+      o.optJSONObject("headers")?.let { h ->
+        intent.putExtra("headers", h.keys().asSequence().flatMap { sequenceOf(it, h.getString(it)) }.toList().toTypedArray())
+      }
+      val subs = o.optJSONArray("subs")
+      if (subs != null && subs.length() > 0) {
+        val uris = Array<Parcelable>(subs.length()) { Uri.parse(subs.getJSONObject(it).getString("url")) }
+        intent.putExtra("subs", uris)
+        intent.putExtra("subs.name", Array(subs.length()) { subs.getJSONObject(it).optString("name") })
+        if (o.optBoolean("subOn")) {
+          intent.putExtra("subs.enable", arrayOf(uris[0]))
+          intent.putExtra("subtitles_location", uris[0].toString())
+        }
+      }
+      val pos = o.optLong("position")
+      if (pos > 0) intent.putExtra("position", pos.toInt())
+      if (!hasVideoPlayer()) return false
+      ours { view.context.startActivity(Intent.createChooser(intent, "Putar dengan").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+      return true
+    }
+
+    private fun viewVideo(uri: Uri) = Intent(Intent.ACTION_VIEW).setDataAndType(uri, "video/*")
 
     // the video player's fullscreen: the WebView's own requestFullscreen does nothing here, so hide
     // the system bars and turn to landscape ourselves

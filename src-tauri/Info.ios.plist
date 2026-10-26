@@ -3,7 +3,8 @@
 <!-- Merged into the iOS app's Info.plist: the app's Documents folder shows up in the Files app
      (On My iPhone › Neptunus), so songs copied there become the local library, and audio keeps
      playing in the background. Streams from addons are often plain http (a local server, a debrid
-     link), which App Transport Security blocks unless arbitrary loads are allowed. -->
+     link), which App Transport Security blocks unless arbitrary loads are allowed. Films can go to VLC
+     or Infuse ("Pemutar lain"), whose URL schemes iOS only says are there when listed here. -->
 <plist version="1.0">
 <dict>
 	<key>UIFileSharingEnabled</key>
@@ -21,6 +22,11 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>vlc-x-callback</string>
+		<string>infuse</string>
+	</array>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>

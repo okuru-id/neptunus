@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { mpv } from "./mpv";
+import { byLang, langName, subLabels } from "./videoext";
 import { computed, onBeforeUnmount, onMounted, onUnmounted, ref, watch } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import Icon from "./Icon.vue";
@@ -9,7 +11,7 @@ import type Hls from "hls.js";
 // `headers`: sent with every request for the video (the stream's host wants them, see `videoext`)
 const props = defineProps<{ path: string; title: string; sub?: SubtitleQuery; resume?: string; headers?: Record<string, string> }>();
 // `played`: the video really ran (a few seconds of it), unlike a source that never starts
-const emit = defineEmits<{ close: []; played: [] }>();
+const emit = defineEmits<{ close: []; played: []; mpv: [] }>();
 
 const ext = (p: string) => p.split(/[?#]/)[0].split(".").pop()?.toLowerCase() ?? "";
 
@@ -25,6 +27,15 @@ let closed = false; // the player is closing (or closed): late events and async 
 let lastFill = 0;
 let filled = 0; // seconds the app has downloaded from the playhead on (`video_buffered`)
 let resolvedUrl = "";
+// desktop: what the player refused, remuxed by ffmpeg into HLS (Rust `video::remux`), and its length
+let remuxed = false;
+let remuxDur = 0;
+// set once the URL is known: tries the remux, false when it can't (or did already)
+let tryRemux = async (_why: string) => false;
+// desktop without ffmpeg: how to install it, for the errors a remux would have avoided
+let ffmpegHint = "";
+// dev builds: the player's events on the terminal, next to the Rust side's `[video]` lines
+const log = (msg: string) => import.meta.env.DEV && invoke("video_log", { msg }).catch(() => {});
 
 // Watched to the end, credits included: played again, it starts over.
 const finished = (t: number, d: number) => d > 0 && (d - t < 10 || t / d > 0.95);
@@ -89,7 +100,7 @@ function sync() {
       emit("played");
     }
   }
-  duration.value = isFinite(v.duration) ? v.duration : 0;
+  duration.value = isFinite(v.duration) && v.duration > 0 ? v.duration : remuxDur;
   // the webview's own buffer, or what the app downloaded when that reaches further (kept between checks,
   // or every timeupdate would cut the bar back to the webview's few seconds)
   let own = 0;
@@ -123,10 +134,10 @@ function tap() {
 let pictureTimer: ReturnType<typeof setTimeout> | undefined;
 function checkPicture() {
   clearTimeout(pictureTimer);
-  pictureTimer = setTimeout(() => {
+  pictureTimer = setTimeout(async () => {
     const v = video.value;
-    if (v && !v.paused && v.currentTime > 1 && !v.videoWidth && !error.value)
-      error.value = "Gambar video ini tidak bisa ditampilkan di perangkat ini (codec tidak didukung), hanya suaranya. Coba sumber lain, misalnya yang H.264/x264.";
+    if (v && !v.paused && v.currentTime > 1 && !v.videoWidth && !error.value && !(await tryRemux("tanpa gambar")))
+      error.value = `Gambar video ini tidak bisa ditampilkan di perangkat ini (codec tidak didukung), hanya suaranya. ${ffmpegHint ? `${ffmpegHint}, lalu putar lagi: Neptunus akan mengubah formatnya.` : "Coba sumber lain, misalnya yang H.264/x264."}`;
   }, 3000);
 }
 // iOS takes the picture away from a video while the app is in the background (the screen locked, say)
@@ -227,21 +238,7 @@ const subPick = ref<Subtitle | null>(null);
 const subLoading = ref(false);
 const cue = ref("");
 const menu = ref(false);
-const langName = (l?: string) => {
-  if (!l) return "Lainnya";
-  try { return new Intl.DisplayNames(["id"], { type: "language" }).of(l.length === 3 ? ({ ind: "id", eng: "en", may: "ms", jpn: "ja", kor: "ko", chi: "zh", zho: "zh", spa: "es", fre: "fr", fra: "fr", ger: "de", deu: "de", por: "pt", ara: "ar", tha: "th", vie: "vi", rus: "ru", ita: "it", hin: "hi" }[l] ?? l) : l) ?? l; } catch { return l; }
-};
-// "Indonesia - Subtitle Translator", numbered when one addon offers several files for a language
-const subList = computed(() => {
-  const seen: Record<string, number> = {};
-  return [...(subs.value ?? [])]
-    .sort((a, b) => langName(a.lang).localeCompare(langName(b.lang)) || a.source.localeCompare(b.source))
-    .map((s) => {
-      const k = `${s.lang}|${s.source}`;
-      const n = (seen[k] = (seen[k] ?? 0) + 1);
-      return { s, label: `${langName(s.lang)}${n > 1 ? ` ${n}` : ""} - ${s.source}` };
-    });
-});
+const subList = computed(() => subLabels([...(subs.value ?? [])].sort(byLang)));
 
 // --- audio tracks (dubbing): hls.js's list for HLS it plays, else the system player's ---
 const audios = ref<string[]>([]);
@@ -311,7 +308,8 @@ async function pickSub(s: Subtitle | null) {
   subLoading.value = true;
   try {
     const vtt = await invoke<string>("video_subtitle", { url: s.url });
-    if (subPick.value !== s) return;
+    // by URL: the ref holds a reactive copy, not `s` itself
+    if (subPick.value?.url !== s.url) return;
     cues = parseVtt(vtt);
     tick();
   } catch (e) {
@@ -421,32 +419,74 @@ onMounted(async () => {
     }, { once: true });
     v.addEventListener("loadedmetadata", readAudios);
     (v as any).audioTracks?.addEventListener?.("addtrack", readAudios);
-    const fail = (why: string) => {
-      error.value = `Format video ini tidak didukung di perangkat ini. Coba sumber lain, misalnya yang H.264/x264. [${why}]`;
+    // what the source answered, when it wouldn't give the video: that, not the player's guess at a format
+    const sourceError = () => invoke<string | null>("video_source_error").catch(() => null);
+    const fail = async (why: string) => {
+      const refused = await sourceError();
+      if (closed) return;
+      log(`failed: ${refused ?? why}`);
+      error.value = refused
+        ? `Film tidak bisa diambil: ${refused}. Coba lagi nanti atau pilih sumber lain.`
+        : `Format video ini tidak didukung di perangkat ini. ${ffmpegHint ? `${ffmpegHint}, lalu putar lagi: Neptunus akan mengubah formatnya.` : "Coba sumber lain, misalnya yang H.264/x264."} [${why}]`;
       buffering.value = false;
     };
     // the system player first: GStreamer (Linux), WebKit (Apple) and Android play HLS themselves and,
     // unlike hls.js, fetch segments without CORS. hls.js only steps in when that fails, which in
     // practice is WebView2 on Windows.
+    let src = url;
+    // a container or audio it won't take (MKV, AC3/DTS), or one it sits on without a word: once more,
+    // remuxed by ffmpeg. False when that isn't possible (or was done already).
+    const remux = async (why: string) => {
+      if (remuxed || hls || ext(props.path) === "m3u8") return false;
+      // desktop without ffmpeg: say how to get it (phones have no remux at all: the command isn't there)
+      const missing = await invoke<string | null>("remux_missing").catch(() => "");
+      if (missing !== null) return (ffmpegHint = missing), false;
+      if (await sourceError()) return false; // nothing to remux: the source is refusing it
+      log(`remux (${why})`);
+      remuxed = true;
+      buffering.value = true;
+      try {
+        const [u, d] = await invoke<[string, number]>("video_remux", { url });
+        if (closed) return true;
+        remuxDur = d;
+        log(`remux ready, ${Math.round(d)}s`);
+        src = u;
+        v.src = u;
+      } catch (e) {
+        log(`remux failed: ${e}`);
+        fail(`${why} · ffmpeg: ${e}`);
+      }
+      return true;
+    };
+    tryRemux = remux;
     v.addEventListener("error", async () => {
       if (closed) return;
       const native = `${v.error?.code ?? "?"}${v.error?.message ? `: ${v.error.message}` : ""}`;
-      if (ext(props.path) === "m3u8" && !hls) {
+      log(`error ${native}`);
+      if (await remux(`sistem ${native}`)) return;
+      if (remuxed && src === url) return; // the remux under way plays it, or says why not
+      if ((ext(props.path) === "m3u8" || remuxed) && !hls) {
         const Hls = (await import("hls.js")).default;
         if (Hls.isSupported()) {
           const h = new Hls({ maxBufferLength: 60, maxMaxBufferLength: 180, backBufferLength: 30, startPosition: start ?? -1 });
           hls = h;
           h.on(Hls.Events.AUDIO_TRACKS_UPDATED, readAudios);
           h.on(Hls.Events.AUDIO_TRACK_SWITCHED, readAudios);
-          h.on(Hls.Events.ERROR, (_, d) => d.fatal && fail(`sistem ${native} · hls.js ${d.details}${d.response?.code ? ` ${d.response.code}` : ""}`));
-          h.loadSource(url);
+          log("hls.js");
+          h.on(Hls.Events.ERROR, (_, d) => d.fatal && (log(`hls.js ${d.details}`), fail(`sistem ${native} · hls.js ${d.details}${d.response?.code ? ` ${d.response.code}` : ""}`)));
+          h.loadSource(src);
           h.attachMedia(v);
           return;
         }
       }
       fail(native);
     });
+    log(`load ${url.split("?")[0]}`);
+    v.addEventListener("loadedmetadata", () => log(`metadata ${v.videoWidth}x${v.videoHeight}, ${Math.round(v.duration)}s`));
+    v.addEventListener("playing", () => log(`playing at ${Math.round(v.currentTime)}s`));
     v.src = url;
+    // still nothing to show after a while: GStreamer can load a file it can't demux forever
+    setTimeout(() => !closed && !error.value && v.readyState < 2 && remux("tidak termuat"), 5000);
   } catch (e: any) {
     error.value = typeof e === "string" ? e : `Video tidak bisa diputar (${e?.message ?? e}).`;
     buffering.value = false;
@@ -481,6 +521,7 @@ onUnmounted(() => {
   cancelAnimationFrame(raf);
   if (saveTimer) flushPrefs();
   invoke("video_stop", { url: resolvedUrl }).catch(() => {});
+  if (remuxed) invoke("video_remux_stop").catch(() => {});
   if (full.value) droid?.fullscreen?.(false);
 });
 </script>
@@ -494,7 +535,9 @@ onUnmounted(() => {
       @waiting="buffering = true" @loadstart="buffering = true" @playing="onPlaying" @canplay="buffering = false" @seeked="buffering = false; keepResume()"></video>
     <div v-if="buffering && !error" class="spin" aria-label="Memuat"></div>
     <p v-if="cueText" class="cue" :class="{ preview }" :style="cueStyle">{{ cueText }}</p>
-    <p v-if="error" class="err">{{ error }}</p>
+    <p v-if="error" class="err">{{ error }}
+      <button v-if="mpv.available" class="err-mpv" @click="emit('mpv')"><Icon name="play" :size="20" />Putar di {{ mpv.label }}</button>
+    </p>
 
     <!-- subtitle panel: over the right of the video; a click anywhere else closes it -->
     <div v-if="menu" class="scrim" @pointerdown.stop="menu = false"></div>
@@ -721,6 +764,10 @@ input::-moz-range-thumb { width: 12px; height: 12px; border: 0; border-radius: 5
   border: 5px solid rgb(255 255 255 / 0.25); border-top-color: #fff; animation: spin 0.9s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+.err-mpv {
+  display: flex; align-items: center; gap: 6px; margin: 12px auto 0; height: 40px; padding: 0 18px 0 14px; border-radius: 20px;
+  font-size: 14px; font-weight: 650; background: #fff; color: #000;
+}
 .err { position: absolute; background: rgb(0 0 0 / 0.75); padding: 12px 20px; border-radius: 16px; margin: 0 16px; text-align: center; }
 @media (max-width: 600px) {
   .bar button { width: 40px; height: 40px; }

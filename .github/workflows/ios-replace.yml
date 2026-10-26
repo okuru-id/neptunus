@@ -1,0 +1,70 @@
+name: iOS replace in release
+
+# Run by hand (Actions › iOS replace in release › Run workflow) to put an iOS test build into a release
+# that's already out, when only iOS needed fixing: the test run's IPA replaces the release's unsigned one,
+# and is signed with a new manifest.plist like the ios-ota job does (with the IOS_P12 secrets), in a minute
+# instead of a whole release build. The test build should carry the release's version.
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "iOS test build run id (from its URL)"
+        required: true
+      tag:
+        description: "Release tag, e.g. v0.3.8"
+        required: true
+
+jobs:
+  replace:
+    permissions:
+      contents: write
+      actions: read
+    runs-on: ubuntu-24.04
+    env:
+      IOS_P12: ${{ secrets.IOS_P12 }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: neptunus-ios-test
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - run: mv *.ipa "Neptunus_${TAG#v}_unsigned.ipa"
+
+      - name: Sign the IPA and write its manifest
+        if: env.IOS_P12 != ''
+        env:
+          IOS_P12_PASSWORD: ${{ secrets.IOS_P12_PASSWORD }}
+          IOS_PROFILE: ${{ secrets.IOS_PROFILE }}
+        run: |
+          curl -fsSL -o zsign.tgz https://github.com/zhlynn/zsign/releases/download/v1.1.2/zsign-linux-x86_64.tar.gz
+          echo "d55e6a8650949a260892a9687ac1dfe4a9c79c2e3ecfe00a0eeb09b7b694282e  zsign.tgz" | sha256sum -c -
+          tar xzf zsign.tgz zsign
+          umask 077
+          echo "$IOS_P12" | base64 -d > cert.p12
+          echo "$IOS_PROFILE" | base64 -d > app.mobileprovision
+          v=${TAG#v}
+          ./zsign -q -k cert.p12 -p "$IOS_P12_PASSWORD" -m app.mobileprovision -o "Neptunus_${v}.ipa" "Neptunus_${v}_unsigned.ipa"
+          rm -f cert.p12 app.mobileprovision
+          cat > manifest.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict><key>items</key><array><dict>
+            <key>assets</key><array><dict>
+              <key>kind</key><string>software-package</string>
+              <key>url</key><string>https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/Neptunus_${v}.ipa</string>
+            </dict></array>
+            <key>metadata</key><dict>
+              <key>bundle-identifier</key><string>id.neptunus.desktop</string>
+              <key>bundle-version</key><string>${v}</string>
+              <key>kind</key><string>software</string>
+              <key>title</key><string>Neptunus</string>
+            </dict>
+          </dict></array></dict></plist>
+          EOF
+
+      - name: Replace the release's IPAs
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+        run: gh release upload "$TAG" Neptunus_*.ipa $( [ -f manifest.plist ] && echo manifest.plist ) --clobber --repo "$GITHUB_REPOSITORY"

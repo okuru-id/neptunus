@@ -17,6 +17,8 @@ use std::time::{Duration, Instant};
 pub const CHUNK: u64 = 1 << 20;
 /// Failed requests in a row before giving up on the download.
 const TRIES: u32 = 5;
+/// Sent instead of a browser user-agent when a host refuses those, naming the app as itself.
+const APP_UA: &str = concat!("Neptunus/", env!("CARGO_PKG_VERSION"));
 
 pub struct Fill {
     pub url: String,
@@ -231,12 +233,12 @@ impl Fill {
         self.cv.notify_all();
     }
 
-    /// One request from `start` on, written to the file until the player needs another part of it.
-    /// `Ok(false)` when there's nothing more to do.
-    fn fetch(&self, file: &File, start: u64) -> Result<bool, String> {
+    /// One GET from `start` on: the extension's headers with a range, and `ua` for the user-agent
+    /// unless the extension named its own.
+    fn request(&self, start: u64, ua: &str) -> Result<attohttpc::Response, String> {
         let mut req = attohttpc::get(&self.url);
         if !self.headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("user-agent")) {
-            req = req.header("User-Agent", "Mozilla/5.0");
+            req = req.header("User-Agent", ua);
         }
         for (k, v) in &self.headers {
             // the range is ours to set, and the rest of these belong to the connection
@@ -248,12 +250,24 @@ impl Fill {
                 }
             }
         }
-        let res = req
-            .header("Range", format!("bytes={start}-"))
+        req.header("Range", format!("bytes={start}-"))
             .connect_timeout(Duration::from_secs(15))
             .read_timeout(Duration::from_secs(30))
             .send()
-            .map_err(|e| format!("server sumber tidak bisa dihubungi ({e})"))?;
+            .map_err(|e| format!("server sumber tidak bisa dihubungi ({e})"))
+    }
+
+    /// One request from `start` on, written to the file until the player needs another part of it.
+    /// `Ok(false)` when there's nothing more to do.
+    fn fetch(&self, file: &File, start: u64) -> Result<bool, String> {
+        let ours = !self.headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("user-agent"));
+        let mut res = self.request(start, "Mozilla/5.0")?;
+        // a host that refuses browser user-agents (some CDNs answer 428/403 to them) gets one more
+        // try as the app itself, which such hosts allow
+        if ours && res.status().is_client_error() {
+            vlog!("fill: source refuses a browser user-agent ({}), retrying as the app", res.status());
+            res = self.request(start, APP_UA)?;
+        }
         let (status, headers, mut body) = res.split();
         vlog!("fill: GET from {start} -> {status}");
         if !status.is_success() {
@@ -504,6 +518,40 @@ mod tests {
         // no .meta: nothing to go by but the length
         std::fs::remove_file(path.with_extension("meta")).unwrap();
         assert_eq!(stored(&path), 100 * CHUNK);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A host that refuses the browser user-agents some CDNs ban (428), answering the app's own.
+    fn browser_shy_host(body: &'static [u8]) -> String {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/film.mp4", l.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for mut s in l.incoming().flatten() {
+                let mut head = String::new();
+                let mut r = BufReader::new(s.try_clone().unwrap());
+                while r.read_line(&mut head).map_or(false, |n| n > 2) {}
+                if head.to_lowercase().contains("user-agent: mozilla/") {
+                    let _ = s.write_all(b"HTTP/1.1 428 Precondition Required\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    continue;
+                }
+                let _ = write!(s, "HTTP/1.1 206 Partial Content\r\nContent-Type: video/mp4\r\nContent-Range: bytes 0-{}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len() - 1, body.len(), body.len());
+                let _ = s.write_all(body);
+            }
+        });
+        url
+    }
+
+    #[test]
+    fn retries_a_browser_shy_host_as_the_app() {
+        let dir = std::env::temp_dir().join(format!("neptunus-shy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let url = browser_shy_host(b"0123456789");
+        let f = Fill::start(url, vec![], dir.join("film.part"));
+        assert_eq!(f.head().map(|(len, _)| len), Some(10));
+        let file = f.file().unwrap();
+        assert_eq!(f.read(&file, 0, 10).unwrap(), b"0123456789");
+        f.close();
         let _ = std::fs::remove_dir_all(dir);
     }
 

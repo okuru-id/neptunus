@@ -72,6 +72,9 @@ fileprivate final class PlayerController: UIViewController, VLCMediaPlayerDelega
     view.backgroundColor = .black
     videoView.frame = view.bounds
     videoView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    // VLC puts a tap recognizer of its own on the view it draws in, which would win over ours below
+    // (a tap with the controls hidden would never bring them back): the picture takes no touches
+    videoView.isUserInteractionEnabled = false
     view.addSubview(videoView)
     buildControls()
     view.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(toggleControls)))

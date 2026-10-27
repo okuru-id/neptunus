@@ -3083,6 +3083,7 @@ dependencies = [
  "hmac 0.13.0",
  "image",
  "ksni",
+ "libc",
  "lofty",
  "md-5",
  "objc2",

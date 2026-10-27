@@ -448,7 +448,7 @@ onMounted(async () => {
       remuxed = true;
       buffering.value = true;
       try {
-        const [u, d] = await invoke<[string, number]>("video_remux", { url });
+        const [u, d] = await invoke<[string, number]>("video_remux", { url, headers: props.headers ?? null });
         if (closed) return true;
         remuxDur = d;
         log(`remux ready, ${Math.round(d)}s`);

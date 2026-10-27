@@ -8,6 +8,8 @@ import Icon from "./Icon.vue";
 const win = getCurrentWindow();
 // macOS draws its own traffic lights; iOS/Android have no window to minimize or close
 const native = ["mac", "mobile"].some((c) => document.documentElement.classList.contains(c));
+// the overlay title bar on macOS is covered by the page, so it is dragged by this bar too; phones have no window
+const mobile = document.documentElement.classList.contains("mobile");
 defineProps<{ noSettings?: boolean }>();
 defineEmits<{ settings: [] }>();
 const maximized = ref(false);
@@ -26,7 +28,7 @@ onUnmounted(() => off?.then((f) => f()));
 </script>
 
 <template>
-  <header class="titlebar" :data-tauri-drag-region="native ? undefined : ''">
+  <header class="titlebar" :data-tauri-drag-region="mobile ? undefined : ''">
     <!-- pointer-events: none so clicks on the brand still land on the drag region -->
     <div class="brand">
       <span class="mark" :style="{ clipPath: 'url(#shape-cookie9)' }"><Icon name="note" :size="18" /></span>

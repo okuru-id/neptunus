@@ -1,6 +1,6 @@
 [package]
 name = "neptunus"
-version = "0.3.8"
+version = "0.3.9"
 description = "Neptunus, a lightweight desktop music player"
 authors = ["you"]
 edition = "2024"

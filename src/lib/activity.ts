@@ -8,6 +8,9 @@ listen<{ ext: string; text: string }>("ext-activity", ({ payload }) => {
   activity[payload.ext] = payload.text;
 });
 
+// mixes being made in the catalog (seed song id -> its title), for the bell
+export const mixing = reactive<Record<string, string>>({});
+
 // catalog downloads by key, kept here so the bell lists them after the catalog is left
 export const catalogDl = reactive<Record<string, { title: string; ext: string; pct: number }>>({});
 listen<{ key: string; pct: number }>("ext-download", ({ payload }) => {

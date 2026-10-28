@@ -451,7 +451,8 @@ fn cover_cache(app: &tauri::AppHandle, path: &str, tag: &str) -> Option<(std::pa
 /// caches it as the song's cover (the file itself is left alone). None when nothing matches well.
 #[tauri::command]
 async fn find_cover(app: tauri::AppHandle, db: State<'_, Db>, path: String) -> R<Option<String>> {
-    let Some(t) = db.track(&path).map_err(e)? else { return Ok(None) };
+    // a streamed song is not in the library: its own tags then
+    let Some(t) = db.track(&path).map_err(e)?.or_else(|| read_track(&path)) else { return Ok(None) };
     let (title, artist) = (spotify::norm(&t.title), spotify::norm(t.artist.split([',', '&', ';']).next().unwrap_or("")));
     if title.is_empty() {
         return Ok(None);
@@ -699,6 +700,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             scan_folder,
             spotify::spotify_import,
+            spotify::playlist_from,
             spotify::playlist_pending,
             spotify::pending_remove,
             spotify::pending_download,
@@ -781,6 +783,10 @@ pub fn run() {
             ext::ext_call,
             ext::ext_call_cached,
             ext::ext_download,
+            ext::ext_stream,
+            ext::stream_cache_list,
+            ext::stream_cache_remove,
+            ext::stream_cache_clear,
             ext::ext_redownload,
             ext::session::ext_session_verify,
             ext::session::ext_session_poll,

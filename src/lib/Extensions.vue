@@ -4,7 +4,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import Icon from "./Icon.vue";
 import { confirm } from "./ConfirmDialog.vue";
-import { extName, has, newer, unsupported, type ExtInfo, type RepoExt } from "./ext";
+import { extName, has, newer, streamExt, streamQuality, unsupported, type ExtInfo, type RepoExt } from "./ext";
 import { rowCatalogs, sourceInfo, type SourceInfo } from "./videoext";
 import { FEATURES, featureOn, loadFeatures, setFeature } from "./videoprefs";
 import { pasted, verified, verify, verifyError, waiting } from "./verify";
@@ -282,6 +282,18 @@ onMounted(() => {
               <input v-model="pasted" placeholder="spotiflac://session-grant?grant=…&state=…" spellcheck="false" />
             </div>
           </div>
+          <!-- only one extension streams: picking another moves it there -->
+          <div v-if="kind === 'music' && e.enabled && has(e, 'download_provider')" class="feats" role="group" aria-label="Stream">
+            <button type="button" role="switch" :aria-checked="streamExt === e.id" :class="{ on: streamExt === e.id }"
+              title="Lagu dari katalog diputar lewat ekstensi ini tanpa disimpan ke library (cache sementara, paling banyak 1 GB). Hanya satu ekstensi."
+              @click="streamExt = streamExt === e.id ? '' : e.id">
+              <Icon :name="streamExt === e.id ? 'done' : 'close'" :size="16" />Stream
+            </button>
+            <!-- a smaller quality starts sooner: the whole file is fetched before it plays -->
+            <select v-if="streamExt === e.id && e.qualityOptions?.length" v-model="streamQuality" class="sq" title="Kualitas stream: makin kecil makin cepat mulai">
+              <option v-for="(q, i) in e.qualityOptions" :key="q.id" :value="i ? q.id : ''">{{ q.label }}</option>
+            </select>
+          </div>
           <div v-if="kind === 'video' && e.enabled && offers(e).length" class="feats" role="group" aria-label="Fitur yang dipakai">
             <button v-for="f in offers(e)" :key="f.id" type="button" role="switch" :aria-checked="featureOn(e.id, f.id)"
               :class="{ on: featureOn(e.id, f.id) }" @click="setFeature(e.id, f.id, !featureOn(e.id, f.id))">
@@ -339,6 +351,7 @@ onMounted(() => {
   color: var(--on-surface-variant); border: 1px solid var(--outline-variant); transition: background 0.2s, color 0.2s, border-color 0.2s;
 }
 .feats button:hover { background: var(--surface-container-highest); }
+.sq { height: 30px; padding: 0 8px; border-radius: 15px; font: inherit; font-size: 13px; font-weight: 600; color: var(--on-surface); background: var(--surface-container-high); border: 1px solid var(--outline-variant); }
 .feats button.on { background: var(--secondary-container); color: var(--on-secondary-container); border-color: transparent; }
 .panel { padding: 28px; border-radius: 28px; background: var(--surface-container-low); display: flex; flex-direction: column; gap: 20px; }
 .head { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }

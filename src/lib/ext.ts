@@ -1,3 +1,5 @@
+import { ref, watch } from "vue";
+
 // Installed extensions as `ext_list` returns them: the manifest plus a few runtime fields.
 export type ExtSetting = {
   key: string; type: string; label: string; description?: string; secret?: boolean;
@@ -19,6 +21,18 @@ export type RepoExt = {
   download_url?: string; downloadUrl?: string; icon_url?: string; iconUrl?: string; category?: string;
   sha256?: string; checksum_sha256?: string;
 };
+
+/** The one download extension songs from the catalog stream with (played without being kept), or "". */
+export const streamExt = ref((() => { try { return localStorage.getItem("neptunus.streamExt") ?? ""; } catch { return ""; } })());
+watch(streamExt, (id) => { try { localStorage.setItem("neptunus.streamExt", id); } catch {} });
+/** The quality it streams in ("": the extension's first, usually the best and largest). */
+export const streamQuality = ref((() => { try { return localStorage.getItem("neptunus.streamQuality") ?? ""; } catch { return ""; } })());
+watch(streamQuality, (q) => { try { localStorage.setItem("neptunus.streamQuality", q); } catch {} });
+watch(streamExt, () => (streamQuality.value = ""));
+
+type Track = { path: string; title: string; artist: string; album: string; duration_secs: number };
+/** The song after one played from a catalog list, with what comes after it in turn. */
+export type More = () => Promise<[Track, More] | null>;
 
 export const extName = (e: ExtInfo) => e.displayName || e.name;
 export const has = (e: ExtInfo, t: string) => e.type?.includes(t);

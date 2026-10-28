@@ -2,8 +2,10 @@
 import { reactive } from "vue";
 import type { IconName } from "./icons";
 
-type Opts = { title: string; message: string; confirm?: string; cancel?: string; icon?: IconName; danger?: boolean };
-const state = reactive<{ opts: Opts | null; resolve: (ok: boolean | null) => void }>({ opts: null, resolve: () => {} });
+type Opts = { title: string; message: string; confirm?: string; cancel?: string; icon?: IconName; danger?: boolean;
+  /** shows a text field holding this, its text what `prompt` resolves to */
+  input?: string; placeholder?: string };
+const state = reactive<{ opts: Opts | null; text: string; resolve: (ok: boolean | null) => void }>({ opts: null, text: "", resolve: () => {} });
 
 /** A choice between two answers: true for `confirm`, false for `cancel`, null when dismissed (Esc,
  *  a click beside it). */
@@ -11,12 +13,16 @@ export function choose(opts: Opts): Promise<boolean | null> {
   state.resolve(null); // a dialog already open counts as dismissed
   return new Promise((resolve) => {
     state.opts = opts;
+    state.text = opts.input ?? "";
     state.resolve = resolve;
   });
 }
 
 /** In-app replacement for the system `ask()` dialog; resolves true when confirmed. */
 export const confirm = (opts: Opts) => choose(opts).then((ok) => ok === true);
+
+/** The dialog with a text field: its trimmed text when confirmed, null otherwise. */
+export const prompt = (opts: Opts) => choose({ ...opts, input: opts.input ?? "" }).then((ok) => (ok ? state.text.trim() || null : null));
 </script>
 
 <script setup lang="ts">
@@ -25,13 +31,14 @@ import Icon from "./Icon.vue";
 
 // M3 basic dialog. Mount once (in App); open it with `confirm()`.
 const cancelBtn = ref<HTMLButtonElement>();
+const field = ref<HTMLInputElement>();
 function close(ok: boolean | null) {
   state.opts = null;
   state.resolve(ok);
   state.resolve = () => {};
 }
 // destructive actions start on Cancel, so a stray Enter doesn't delete anything
-watch(() => state.opts, async (o) => o && (await nextTick(), cancelBtn.value?.focus()));
+watch(() => state.opts, async (o) => o && (await nextTick(), field.value ? field.value.select() : cancelBtn.value?.focus()));
 </script>
 
 <template>
@@ -41,6 +48,8 @@ watch(() => state.opts, async (o) => o && (await nextTick(), cancelBtn.value?.fo
         <span v-if="state.opts.icon" class="badge" :style="{ clipPath: 'url(#shape-cookie9)' }"><Icon :name="state.opts.icon" :size="32" /></span>
         <h2 id="dlg-title">{{ state.opts.title }}</h2>
         <p id="dlg-msg">{{ state.opts.message }}</p>
+        <input v-if="state.opts.input !== undefined" ref="field" v-model="state.text" class="field" :placeholder="state.opts.placeholder"
+          :aria-label="state.opts.title" @keydown.enter="close(true)" />
         <div class="actions">
           <button ref="cancelBtn" class="btn tonal" @click="close(false)">{{ state.opts.cancel ?? "Batal" }}</button>
           <button class="btn filled" @click="close(true)">{{ state.opts.confirm ?? "OK" }}</button>
@@ -79,6 +88,11 @@ h2 {
   font-variation-settings: "wdth" 112; overflow-wrap: anywhere;
 }
 p { margin: 0; font-size: 15px; line-height: 1.5; color: var(--on-surface-variant); max-width: 34ch; }
+.field {
+  width: 100%; height: 48px; margin-top: 20px; padding: 0 16px; border-radius: 16px; font: inherit; font-size: 15px;
+  color: var(--on-surface); background: var(--surface-container-highest); border: 1px solid var(--outline-variant); outline: none;
+}
+.field:focus { border-color: var(--primary); }
 .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; margin-top: 28px; }
 .btn {
   height: 48px; padding: 0 20px; border-radius: 24px; font-size: 15px; font-weight: 600;

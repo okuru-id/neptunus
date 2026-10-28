@@ -1091,6 +1091,91 @@ pub async fn ext_download(app: AppHandle, id: String, track: Value, quality: Opt
     crate::blocking(move || fetch(&app, &id, &track, quality, &key)).await
 }
 
+/// Streaming without keeping: what the stream cache holds at most, the oldest played going first.
+const STREAM_CACHE: u64 = 1 << 30;
+
+/// Like `ext_download`, but into the app's cache (`stream/`) and not into the library: the song is only
+/// played. Extensions write whole files (decrypted, joined), so it plays once fetched; a song still in
+/// the cache plays from there.
+#[tauri::command]
+pub async fn ext_stream(app: AppHandle, id: String, track: Value, quality: Option<String>, key: String) -> R<crate::db::Track> {
+    crate::blocking(move || {
+        let dir = stream_dir(&app)?;
+        let t = fetch_into(&app, &id, &track, quality, &key, Some(dir.clone()))?;
+        // over the limit: drop the files played longest ago, never the one about to play
+        let mut files: Vec<_> = walkdir(&dir).into_iter().filter_map(|p| Some((p.metadata().ok()?, p))).collect();
+        files.sort_by_key(|(m, _)| std::cmp::Reverse(m.modified().ok()));
+        let mut total = 0;
+        for (m, p) in files {
+            total += m.len();
+            if total > STREAM_CACHE && p != Path::new(&t.path) {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+        Ok(t)
+    })
+    .await
+}
+
+fn stream_dir(app: &AppHandle) -> R<PathBuf> {
+    app.path().app_cache_dir().map(|d| d.join("stream")).map_err(|e| e.to_string())
+}
+
+#[derive(serde::Serialize)]
+pub struct CachedSong {
+    path: String,
+    title: String,
+    artist: String,
+    size: u64,
+    /// last played, seconds since the epoch
+    used: u64,
+}
+
+/// The songs in the stream cache, last played first (unfinished fetches in `.part` are left out).
+#[tauri::command]
+pub fn stream_cache_list(app: AppHandle) -> R<Vec<CachedSong>> {
+    let dir = stream_dir(&app)?;
+    let mut out: Vec<CachedSong> = walkdir(&dir).into_iter()
+        .filter(|p| !p.components().any(|c| c.as_os_str() == ".part"))
+        .filter_map(|p| {
+            let m = p.metadata().ok()?;
+            let t = crate::read_track(&p.to_string_lossy())?;
+            let used = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+            Some(CachedSong { path: t.path, title: t.title, artist: t.artist, size: m.len(), used })
+        })
+        .collect();
+    out.sort_by(|a, b| b.used.cmp(&a.used));
+    Ok(out)
+}
+
+/// Deletes the cached songs `paths` (from `stream_cache_list`); nothing outside the cache is touched.
+#[tauri::command]
+pub fn stream_cache_remove(app: AppHandle, paths: Vec<String>) -> R<()> {
+    let dir = stream_dir(&app)?;
+    for p in paths {
+        let p = PathBuf::from(p);
+        if p.starts_with(&dir) && !p.components().any(|c| c.as_os_str() == "..") {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+    Ok(())
+}
+
+/// Empties the stream cache.
+#[tauri::command]
+pub fn stream_cache_clear(app: AppHandle) -> R<()> {
+    let dir = stream_dir(&app)?;
+    match std::fs::remove_dir_all(&dir) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+        _ => Ok(()),
+    }
+}
+
+fn walkdir(dir: &Path) -> Vec<PathBuf> {
+    let Ok(rd) = std::fs::read_dir(dir) else { return vec![] };
+    rd.flatten().flat_map(|e| if e.path().is_dir() { walkdir(&e.path()) } else { vec![e.path()] }).collect()
+}
+
 /// Downloads the library song at `path` again with extension `id`. With the extension it first came
 /// from, its own track id is reused; with any other one the song is looked up by title and artist.
 /// When the new file lands elsewhere, playlists follow it and the old file goes to the trash.
@@ -1145,8 +1230,13 @@ fn finish_stream(path: &Path, res: &Value) -> R<PathBuf> {
 }
 
 pub(crate) fn fetch(app: &AppHandle, id: &str, track: &Value, quality: Option<String>, key: &str) -> R<crate::db::Track> {
+    fetch_into(app, id, track, quality, key, None)
+}
+
+/// `stream`: the cache folder a streamed song goes into instead of the library
+fn fetch_into(app: &AppHandle, id: &str, track: &Value, quality: Option<String>, key: &str, stream: Option<PathBuf>) -> R<crate::db::Track> {
     CANCELLED.lock().unwrap().retain(|k| k != key);
-    let out = fetch_inner(app, id, track, quality, key);
+    let out = fetch_inner(app, id, track, quality, key, stream);
     if cancelled(key) {
         CANCELLED.lock().unwrap().retain(|k| k != key);
         return Err(CANCELLED_MSG.into());
@@ -1154,7 +1244,7 @@ pub(crate) fn fetch(app: &AppHandle, id: &str, track: &Value, quality: Option<St
     out
 }
 
-fn fetch_inner(app: &AppHandle, id: &str, track: &Value, quality: Option<String>, key: &str) -> R<crate::db::Track> {
+fn fetch_inner(app: &AppHandle, id: &str, track: &Value, quality: Option<String>, key: &str, stream: Option<PathBuf>) -> R<crate::db::Track> {
     {
         let (id, key) = (id.to_owned(), key.to_owned());
         let exts = app.state::<Exts>();
@@ -1181,8 +1271,9 @@ fn fetch_inner(app: &AppHandle, id: &str, track: &Value, quality: Option<String>
         // read-only, or on iOS one from before the app was reinstalled (its container path changes).
         // Then the app's own download folder.
         let library = db.folders().ok().and_then(|f| f.into_iter().next()).map(PathBuf::from);
-        let (dir, folder) = match library.and_then(|d| writable(&d).ok().map(|f| (d, f))) {
+        let (dir, folder) = match stream.clone().or(library).and_then(|d| writable(&d).ok().map(|f| (d, f))) {
             Some(found) => found,
+            None if stream.is_some() => return Err("folder cache tidak bisa ditulis".into()),
             None => {
                 let d = crate::download_dir(&app)?;
                 let f = writable(&d).map_err(|e| format!("{}: {e}", d.display()))?;
@@ -1193,6 +1284,24 @@ fn fetch_inner(app: &AppHandle, id: &str, track: &Value, quality: Option<String>
             .or_else(|| manifest["qualityOptions"][0]["id"].as_str().map(str::to_owned))
             .unwrap_or_else(|| "LOSSLESS".into());
         let out = folder.join(format!("{}.flac", clean(&format!("{artists} - {}", text("name")))));
+        // streamed before and still cached (whatever the file type it ended up as): played from there
+        if stream.is_some() {
+            let cached = std::fs::read_dir(&folder).into_iter().flatten().flatten().map(|e| e.path())
+                .find(|p| p.file_stem() == out.file_stem());
+            if let Some(t) = cached.and_then(|p| crate::read_track(&p.to_string_lossy())) {
+                let _ = std::fs::File::options().append(true).open(&t.path).and_then(|f| f.set_modified(std::time::SystemTime::now()));
+                return Ok(t);
+            }
+        }
+        // a stream is fetched aside and moved in only once whole, so a cancelled one is never played from the cache
+        let out = match stream {
+            Some(_) => {
+                let part = folder.join(".part");
+                std::fs::create_dir_all(&part).map_err(|e| e.to_string())?;
+                part.join(out.file_name().unwrap_or_default())
+            }
+            None => out,
+        };
         let emit = {
             let (app, key) = (app.clone(), key.clone());
             move |pct: f64| {
@@ -1223,7 +1332,12 @@ fn fetch_inner(app: &AppHandle, id: &str, track: &Value, quality: Option<String>
         }
         let path = ["file_path", "filePath", "path"].iter().find_map(|k| res[k].as_str()).map(PathBuf::from).unwrap_or(out);
         // encrypted / MP4-wrapped streams become a plain playable file
-        let path = finish_stream(&path, &res)?;
+        let mut path = finish_stream(&path, &res)?;
+        if stream.is_some() {
+            let dst = folder.join(path.file_name().unwrap_or_default());
+            std::fs::rename(&path, &dst).map_err(|e| e.to_string())?;
+            path = dst;
+        }
         activity(&id, "Menyimpan tag dan sampul…");
         tag_file(&path, &track);
         // a cover lookup that came up empty before the tags were written is cached as "none"
@@ -1236,6 +1350,9 @@ fn fetch_inner(app: &AppHandle, id: &str, track: &Value, quality: Option<String>
             t.artist = text("artists");
             t.title = text("name");
             t.album = text("album_name");
+        }
+        if stream.is_some() {
+            return Ok(t);
         }
         db.upsert(std::slice::from_ref(&t)).map_err(|e| e.to_string())?;
         // the source track (with its provider_id) is what a later re-download starts from

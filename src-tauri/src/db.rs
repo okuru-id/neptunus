@@ -22,6 +22,8 @@ pub struct Pending {
     pub duration_secs: u64,
     /// `spotify:track:<id>`: finds the song's full metadata and cover art when downloading
     pub uri: String,
+    /// cover art URL from the catalog the song was saved from ("" when none)
+    pub cover: String,
 }
 
 #[derive(Serialize)]
@@ -66,6 +68,7 @@ impl Db {
         )?;
         // tables made before the Spotify uri column (fails harmlessly once it exists)
         let _ = c.execute("ALTER TABLE playlist_pending ADD COLUMN uri TEXT NOT NULL DEFAULT ''", []);
+        let _ = c.execute("ALTER TABLE playlist_pending ADD COLUMN cover TEXT NOT NULL DEFAULT ''", []);
         Ok(Self(Mutex::new(c)))
     }
 
@@ -128,25 +131,25 @@ impl Db {
 
     pub fn add_pending(&self, id: i64, t: &Pending, pos: i64) -> rusqlite::Result<()> {
         self.0.lock().unwrap().execute(
-            "INSERT INTO playlist_pending (playlist_id, title, artist, album, duration_secs, pos, uri) VALUES (?1,?2,?3,?4,?5,?6,?7)",
-            params![id, t.title, t.artist, t.album, t.duration_secs as i64, pos, t.uri],
+            "INSERT INTO playlist_pending (playlist_id, title, artist, album, duration_secs, pos, uri, cover) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+            params![id, t.title, t.artist, t.album, t.duration_secs as i64, pos, t.uri, t.cover],
         ).map(|_| ())
     }
 
     pub fn pending(&self, id: i64) -> rusqlite::Result<Vec<Pending>> {
         let c = self.0.lock().unwrap();
         let mut s = c.prepare(
-            "SELECT id, title, artist, album, duration_secs, uri FROM playlist_pending WHERE playlist_id = ?1 ORDER BY pos")?;
+            "SELECT id, title, artist, album, duration_secs, uri, cover FROM playlist_pending WHERE playlist_id = ?1 ORDER BY pos")?;
         s.query_map([id], |r| Ok(Pending {
-            id: r.get(0)?, title: r.get(1)?, artist: r.get(2)?, album: r.get(3)?, duration_secs: r.get::<_, i64>(4)? as u64, uri: r.get(5)?,
+            id: r.get(0)?, title: r.get(1)?, artist: r.get(2)?, album: r.get(3)?, duration_secs: r.get::<_, i64>(4)? as u64, uri: r.get(5)?, cover: r.get(6)?,
         }))?.collect()
     }
 
     pub fn pending_one(&self, id: i64) -> rusqlite::Result<Option<Pending>> {
         let c = self.0.lock().unwrap();
-        let mut s = c.prepare("SELECT id, title, artist, album, duration_secs, uri FROM playlist_pending WHERE id = ?1")?;
+        let mut s = c.prepare("SELECT id, title, artist, album, duration_secs, uri, cover FROM playlist_pending WHERE id = ?1")?;
         let mut rows = s.query_map([id], |r| Ok(Pending {
-            id: r.get(0)?, title: r.get(1)?, artist: r.get(2)?, album: r.get(3)?, duration_secs: r.get::<_, i64>(4)? as u64, uri: r.get(5)?,
+            id: r.get(0)?, title: r.get(1)?, artist: r.get(2)?, album: r.get(3)?, duration_secs: r.get::<_, i64>(4)? as u64, uri: r.get(5)?, cover: r.get(6)?,
         }))?;
         rows.next().transpose()
     }

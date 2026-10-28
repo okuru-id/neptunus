@@ -71,6 +71,7 @@ import fullscreen from "@material-symbols/svg-400/rounded/fullscreen-fill.svg?ra
 import fullscreenExit from "@material-symbols/svg-400/rounded/fullscreen_exit-fill.svg?raw";
 import subtitles from "@material-symbols/svg-400/rounded/subtitles-fill.svg?raw";
 import replay10 from "@material-symbols/svg-400/rounded/replay_10-fill.svg?raw";
+import storage from "@material-symbols/svg-400/rounded/database-fill.svg?raw";
 import forward10 from "@material-symbols/svg-400/rounded/forward_10-fill.svg?raw";
 
 export const icons = {
@@ -145,6 +146,7 @@ export const icons = {
   bookmarkOn,
   checkOn,
   checkOff,
+  storage,
 };
 
 export type IconName = keyof typeof icons;

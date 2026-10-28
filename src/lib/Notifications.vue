@@ -23,6 +23,8 @@ function toggle() {
   window.addEventListener("pointerdown", outside);
 }
 onUnmounted(close);
+// opened and closed by the app too: while a mix is made
+defineExpose({ show: () => open.value || toggle(), close });
 
 const ICON = { error: "error", done: "downloadDone", update: "update" } as const;
 const time = (t: number) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -39,7 +41,7 @@ const badge = () => props.jobs.length + props.unread;
       <div v-if="open" class="panel" role="dialog" aria-label="Notifikasi">
         <section v-if="jobs.length">
           <header>
-            <h3>Unduhan</h3>
+            <h3>Sedang berjalan</h3>
             <button v-if="jobs.some((j) => j.cancel)" class="txt" @click="emit('cancelAll')">Batalkan semua</button>
           </header>
           <ul>
@@ -48,7 +50,7 @@ const badge = () => props.jobs.length + props.unread;
               <div class="body">
                 <strong>{{ j.title }}</strong>
                 <span v-if="j.queued">Dalam antrean</span>
-                <span v-else class="bar"><i :style="{ width: `${j.pct ?? 0}%` }"></i></span>
+                <span v-else-if="j.pct != null" class="bar"><i :style="{ width: `${j.pct}%` }"></i></span>
                 <span v-if="!j.queued && j.detail" class="detail">{{ j.detail }}</span>
               </div>
               <span v-if="!j.queued && j.pct != null" class="pct">{{ Math.round(j.pct) }}%</span>

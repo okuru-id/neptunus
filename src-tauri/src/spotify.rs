@@ -83,10 +83,22 @@ fn library_matcher(db: &Db) -> Result<impl Fn(&str, &str) -> Option<String>, Str
 pub async fn spotify_import(db: State<'_, Db>, url: String) -> Result<Import, String> {
     let (kind, id) = parse(&url).ok_or("Link Spotify tidak dikenali")?;
     let (name, wanted) = crate::blocking(move || fetch(kind, &id)).await?;
-    let find = library_matcher(&db)?;
+    fill(&db, name, wanted.into_iter().map(|(t, a, al, s, u)| (t, a, al, s, u, String::new())).collect())
+}
+
+/// A new playlist `name` from songs found elsewhere (title, artists, album, seconds, uri): the ones in
+/// the library are added, the rest wait as pending songs to download or stream.
+#[tauri::command]
+pub fn playlist_from(db: State<Db>, name: String, tracks: Vec<(String, String, String, u64, String, String)>) -> Result<Import, String> {
+    fill(&db, name, tracks)
+}
+
+/// songs as (title, artists, album, seconds, uri, cover URL)
+fn fill(db: &Db, name: String, wanted: Vec<(String, String, String, u64, String, String)>) -> Result<Import, String> {
+    let find = library_matcher(db)?;
     let pl = db.create_playlist(&name).map_err(|e| e.to_string())?;
     let (mut added, mut pending) = (0, 0);
-    for (pos, (title, artists, album, secs, uri)) in wanted.into_iter().enumerate() {
+    for (pos, (title, artists, album, secs, uri, cover)) in wanted.into_iter().enumerate() {
         let pos = pos as i64 + 1;
         match find(&title, &artists) {
             Some(path) => {
@@ -94,7 +106,7 @@ pub async fn spotify_import(db: State<'_, Db>, url: String) -> Result<Import, St
                 added += 1;
             }
             None => {
-                let p = Pending { id: 0, title, artist: artists, album, duration_secs: secs, uri };
+                let p = Pending { id: 0, title, artist: artists, album, duration_secs: secs, uri, cover };
                 db.add_pending(pl, &p, pos).map_err(|e| e.to_string())?;
                 pending += 1;
             }
@@ -181,7 +193,7 @@ pub async fn pending_download(app: AppHandle, id: i64, ext: String, quality: Opt
             if blank(&track, "deezer_id") { track["deezer_id"] = deezer_id.into(); }
         }
         if ["cover_url", "images", "image_url"].iter().all(|k| blank(&track, k)) {
-            track["cover_url"] = cover(&p.uri).into();
+            track["cover_url"] = if p.cover.is_empty() { cover(&p.uri).into() } else { p.cover.clone().into() };
         }
         let t = crate::ext::fetch(&app, &ext, &track, quality, &format!("pending:{id}"))?;
         db.resolve_pending(id, &t.path).map_err(|e| e.to_string())?;

@@ -4,17 +4,15 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import Icon from "./Icon.vue";
 import SongMenu from "./SongMenu.vue";
-import { extName, has, unsupported, type ExtInfo } from "./ext";
+import { extName, has, streamExt, streamQuality, unsupported, type ExtInfo, type More } from "./ext";
 import { withVerify } from "./verify";
-import { activity, catalogDl } from "./activity";
+import { activity, catalogDl, mixing as mixJobs } from "./activity";
+import { confirm } from "./ConfirmDialog.vue";
+import { buildMix, coverOf as cover, find as findIn, kind, savePlaylist, type Item } from "./mix";
 
 // Katalog from metadata-provider extensions: home feed, search, album/playlist/artist pages,
 // and downloading tracks into the library with a download-provider extension.
-type Item = {
-  id: string; name: string; artists?: string; album_name?: string; cover_url?: string; images?: string;
-  image_url?: string; duration_ms?: number; item_type?: string; type?: string; provider_id?: string;
-  release_date?: string; isrc?: string; description?: string; owner?: string;
-};
+
 type Section = { title: string; items: Item[] };
 type Page = { kind: string; title: string; sub: string; cover?: string; tracks: Item[]; albums: Item[] };
 type Track = { path: string; title: string; artist: string; album: string; duration_secs: number };
@@ -23,7 +21,7 @@ type Track = { path: string; title: string; artist: string; album: string; durat
 // `redl`: re-download progress per library path (kept by the app, which runs the re-download)
 const props = defineProps<{ exts: ExtInfo[]; library: Track[]; query: string; nowPath?: string; playing?: boolean; redl: Record<string, number> }>();
 // `play`: a song in the library was clicked; `downloaded`: a download finished (it is not played)
-const emit = defineEmits<{ play: [Track]; downloaded: [Track]; failed: [string, string, unknown]; toggle: []; redownload: [Track, string, string | null]; remove: [Track] }>();
+const emit = defineEmits<{ play: [Track, More?]; downloaded: [Track]; failed: [string, string, unknown]; toggle: []; saved: [number, string]; mixed: [string, number | string]; redownload: [Track, string, string | null]; remove: [Track] }>();
 
 const SRC_KEY = "neptunus.extSource";
 // only sources that can show a catalog (home feed); search-only ones stay available as download providers
@@ -44,10 +42,10 @@ const home = ref<Section[]>([]);
 const results = ref<Item[] | null>(null);
 const pages = ref<Page[]>([]);
 const page = computed(() => pages.value[pages.value.length - 1]);
+// an artist, album, playlist or mix opens at its top, wherever the list it was picked from was scrolled to
+watch(() => pages.value.length, (n, old) => n > old && requestAnimationFrame(() => document.querySelector("main")?.scrollTo({ top: 0 })));
 const homeCache = new Map<string, { at: number; sections: Section[] }>();
 
-const kind = (i: Item) => (i.item_type || i.type || "track").toLowerCase();
-const cover = (i: Item) => i.cover_url || i.images || i.image_url || "";
 const sub = (i: Item) => {
   const k = kind(i);
   if (k === "artist") return "Artis";
@@ -87,27 +85,57 @@ async function loadHome() {
   });
 }
 
+const find = (q: string) => findIn(cur.value!.id, q);
 async function search() {
   const q = props.query.trim();
   pages.value = [];
   if (!q) return void (results.value = null);
-  await run(async () => {
-    let res: Item[] | null;
-    try {
-      res = await call<Item[]>("customSearch", [q, {}]);
-    } catch (e) {
-      if (!String(e).includes("not defined")) throw e;
-      res = await call<Item[]>("searchTracks", [q, 30]);
-    }
-    // some providers wrap results ({ tracks: [...] })
-    const list = Array.isArray(res) ? res : ((res as unknown as { tracks?: Item[] })?.tracks ?? []);
-    results.value = list.filter((i) => i && i.id);
-  });
+  await run(async () => void (results.value = await find(q)));
 }
 
-async function openItem(i: Item) {
+// ---- mix: a playlist made from one song (mix.ts)
+// the song a mix is being made from, for its spinner and the line at the top
+const mixing = ref<Item | null>(null);
+async function mix(seed: Item) {
+  if (mixing.value) return;
+  const ok = await confirm({
+    title: "Buat mix?",
+    message: `Playlist sampai 30 lagu dimulai dari “${seed.name}”${seed.artists ? ` (${seed.artists})` : ""}: lagu artisnya dan artis yang sering berkolaborasi dengannya, dari ${cur.value ? extName(cur.value) : "katalog ini"}.`,
+    confirm: "Buat mix", icon: "playlist",
+  });
+  if (!ok || mixing.value) return;
+  mixing.value = seed;
+  const job = keyOf(seed);
+  mixJobs[job] = seed.name;
+  error.value = "";
+  // not run(): its "Memuat…" line would show too; the bell shows this one
+  try {
+    const { tracks: out, from } = await buildMix(cur.value!.id, seed);
+    pages.value.push({ kind: "playlist", title: `Mix · ${seed.name}`, sub: `${out.length} lagu dari ${from.slice(0, 3).join(", ")}`,
+      cover: cover(seed), tracks: out, albums: [] });
+    emit("mixed", seed.name, out.length);
+  } catch (e) {
+    error.value = String(e);
+    emit("mixed", seed.name, String(e));
+  } finally {
+    mixing.value = null;
+    delete mixJobs[job];
+  }
+}
+// the page on screen (a mix, album, artist or playlist) becomes a playlist: songs in the library join it, the rest wait to be downloaded
+async function saveMix() {
+  const p = page.value!;
+  try {
+    const r = await savePlaylist(p.title, p.tracks);
+    emit("saved", r.id, r.name);
+  } catch (e) {
+    error.value = String(e);
+  }
+}
+
+async function openItem(i: Item, list?: Item[]) {
   const k = kind(i);
-  if (k === "track") return download(i);
+  if (k === "track") return play(i, list);
   const method = k === "artist" ? "getArtist" : k === "playlist" ? "getPlaylist" : "getAlbum";
   await run(async () => {
     const r = await call<Item & { tracks?: Item[]; albums?: Item[]; top_tracks?: Item[]; error?: string }>(method, [i.id]);
@@ -148,14 +176,51 @@ const local = (t: Item) => {
   const d = done.get(keyOf(t));
   return (d && props.library.some((l) => l.path === d.path) ? d : undefined) ?? inLibrary(t);
 };
-// the play button of a finished song turns into pause while that song is playing
-const playIcon = (t: Item) => (local(t)?.path === props.nowPath && props.playing ? "pause" : "play");
 // progress / "done" / error text of a song; a song in the library counts as done, a deleted one does not
 const state = (t: Item) => {
   const s = dl[keyOf(t)];
   if (s === "done" || s === undefined) return kind(t) === "track" && local(t) ? "done" : undefined;
   return s;
 };
+// the extension set to stream in Settings (enabled and usable), if any
+const streamer = computed(() => downloaders.value.find((e) => e.id === streamExt.value));
+// a click on a song: the downloaded copy plays offline, else it streams, else it is downloaded
+// `list`: the songs it was clicked among, which then play on after it
+async function play(t: Item, list: Item[] = [t]) {
+  const have = local(t);
+  if (have?.path === props.nowPath) return emit("toggle");
+  if (!have && !streamer.value) return download(t);
+  const track = have ?? (await stream(t));
+  if (track) emit("play", track, after(list, list.indexOf(t)));
+}
+// the next song of `list` after index `i` that is downloaded or streams; a song that fails is passed over
+function after(list: Item[], i: number): More {
+  return async () => {
+    for (let j = i + 1; j < list.length; j++) {
+      const t = list[j];
+      if (kind(t) !== "track") continue;
+      const track = local(t) ?? (streamer.value ? await stream(t) : null);
+      if (track) return [track, after(list, j)];
+    }
+    return null;
+  };
+}
+async function stream(t: Item): Promise<Track | null> {
+  const id = streamer.value!.id, key = keyOf(t);
+  if (typeof dl[key] === "number") return null;
+  dl[key] = 0;
+  dlExt[key] = id;
+  activity[id] = "";
+  try {
+    const track = await withVerify(id, () => invoke<Track>("ext_stream", { id, key, quality: streamQuality.value || null, track: { ...t, cover_url: cover(t), provider_id: t.provider_id || cur.value?.id } }));
+    delete dl[key];
+    return track;
+  } catch (e) {
+    dl[key] = String(e);
+    emit("failed", t.name, id, e);
+    return null;
+  }
+}
 // the sheet: pick a download extension, then a quality
 const picking = ref<{ t: Item; ext?: ExtInfo } | null>(null);
 function download(t: Item) {
@@ -214,6 +279,11 @@ watch(() => props.query, () => {
   timer = setTimeout(search, 600);
 });
 
+// the arrows beside a row move it about a screen's width (touch screens swipe it instead)
+function slide(e: MouseEvent, dir: number) {
+  const row = (e.currentTarget as HTMLElement).closest(".row-wrap")!.querySelector<HTMLElement>(".row")!;
+  row.scrollBy({ left: dir * row.clientWidth * 0.9, behavior: "smooth" });
+}
 const tracks = computed(() => results.value?.filter((i) => kind(i) === "track") ?? []);
 const others = computed(() => results.value?.filter((i) => kind(i) !== "track") ?? []);
 </script>
@@ -226,6 +296,7 @@ const others = computed(() => results.value?.filter((i) => kind(i) !== "track") 
           <img v-if="e.iconData" :src="e.iconData" alt="" /><Icon v-else name="extension" :size="18" />{{ extName(e) }}
         </button>
       </div>
+
     </div>
 
     <p v-if="error" class="note err">{{ error }}</p>
@@ -240,54 +311,71 @@ const others = computed(() => results.value?.filter((i) => kind(i) !== "track") 
         <button class="icon-btn tonal" title="Kembali" @click="pages.pop()"><Icon name="back" /></button>
         <img v-if="page.cover" :src="page.cover" class="page-art" :class="{ round: page.kind === 'artist' }" alt="" />
         <div><h2>{{ page.title }}</h2><span>{{ page.sub }}</span></div>
+        <button v-if="page.tracks.length" class="save-mix" @click="saveMix"><Icon name="playlistAdd" :size="20" />Simpan sebagai playlist</button>
       </div>
       <ul v-if="page.tracks.length" class="tracks">
-        <li v-for="(t, i) in page.tracks" :key="t.id + i" @click="download(t)">
+        <li v-for="(t, i) in page.tracks" :key="t.id + i" @click="play(t, page.tracks)">
           <span class="thumb">
             <img v-if="cover(t)" :src="cover(t)" alt="" loading="lazy" />
-            <Icon v-if="state(t) === 'done'" name="done" :size="18" class="mark" />
           </span>
           <span class="t-meta"><strong>{{ t.name }}</strong><span :class="{ live: busyText(t) }">{{ busyText(t) || t.artists }}</span></span>
           <span class="t-dur">{{ dur(t.duration_ms) }}</span>
-          <button v-if="downloader" class="icon-btn dl" :class="{ ok: state(t) === 'done' }"
-            :title="state(t) === 'done' ? 'Putar' : typeof state(t) === 'string' ? `Gagal: ${state(t)}` : 'Unduh ke library'">
+          <button class="icon-btn mixb" title="Buat mix dari lagu ini" :disabled="!!mixing" @click.stop="mix(t)"><span v-if="mixing === t" class="spin"></span><Icon v-else name="playlist" :size="20" /></button>
+          <button v-if="downloader" class="icon-btn dl" :class="{ ok: state(t) === 'done' }" @click.stop="download(t)"
+            :title="state(t) === 'done' ? 'Sudah diunduh, diputar offline' : typeof state(t) === 'string' ? `Gagal: ${state(t)}` : 'Unduh ke library'">
             <span v-if="typeof state(t) === 'number'" class="ring" :style="{ '--p': state(t) }"></span>
-            <Icon v-else :name="state(t) === 'done' ? playIcon(t) : typeof state(t) === 'string' ? 'refresh' : 'download'" />
+            <Icon v-else :name="state(t) === 'done' ? 'downloadDone' : typeof state(t) === 'string' ? 'refresh' : 'download'" :size="state(t) === 'done' ? 16 : 24" />
           </button>
           <SongMenu v-if="local(t)" :title="t.name" :downloaders="downloaders" :busy="props.redl[local(t)!.path] ?? null"
             @click.stop @redownload="(id, q) => emit('redownload', local(t)!, id, q)" @remove="emit('remove', local(t)!)" />
         </li>
       </ul>
-      <div v-if="page.albums.length" class="row">
+      <div v-if="page.albums.length" class="row-wrap">
+        <header class="row-head"><h3>Album</h3>
+          <div class="nav">
+            <button title="Geser kiri" @click="slide($event, -1)"><Icon name="back" :size="20" /></button>
+            <button title="Geser kanan" class="fwd" @click="slide($event, 1)"><Icon name="back" :size="20" /></button>
+          </div>
+        </header>
+        <div class="row">
         <button v-for="a in page.albums" :key="a.id" class="tile" @click="openItem(a)">
           <img :src="cover(a)" alt="" loading="lazy" /><strong>{{ a.name }}</strong><span>{{ sub(a) }}</span>
         </button>
+        </div>
       </div>
     </div>
 
     <!-- search results -->
     <template v-else-if="results">
       <ul v-if="tracks.length" class="tracks">
-        <li v-for="(t, i) in tracks.slice(0, 20)" :key="t.id + i" @click="download(t)">
+        <li v-for="(t, i) in tracks.slice(0, 20)" :key="t.id + i" @click="play(t, tracks.slice(0, 20))">
           <span class="thumb">
             <img v-if="cover(t)" :src="cover(t)" alt="" loading="lazy" />
-            <Icon v-if="state(t) === 'done'" name="done" :size="18" class="mark" />
           </span>
           <span class="t-meta"><strong>{{ t.name }}</strong><span :class="{ live: busyText(t) }">{{ busyText(t) || [t.artists, t.album_name].filter(Boolean).join(" · ") }}</span></span>
           <span class="t-dur">{{ dur(t.duration_ms) }}</span>
-          <button v-if="downloader" class="icon-btn dl" :class="{ ok: state(t) === 'done' }"
-            :title="state(t) === 'done' ? 'Putar' : typeof state(t) === 'string' ? `Gagal: ${state(t)}` : 'Unduh ke library'">
+          <button class="icon-btn mixb" title="Buat mix dari lagu ini" :disabled="!!mixing" @click.stop="mix(t)"><span v-if="mixing === t" class="spin"></span><Icon v-else name="playlist" :size="20" /></button>
+          <button v-if="downloader" class="icon-btn dl" :class="{ ok: state(t) === 'done' }" @click.stop="download(t)"
+            :title="state(t) === 'done' ? 'Sudah diunduh, diputar offline' : typeof state(t) === 'string' ? `Gagal: ${state(t)}` : 'Unduh ke library'">
             <span v-if="typeof state(t) === 'number'" class="ring" :style="{ '--p': state(t) }"></span>
-            <Icon v-else :name="state(t) === 'done' ? playIcon(t) : typeof state(t) === 'string' ? 'refresh' : 'download'" />
+            <Icon v-else :name="state(t) === 'done' ? 'downloadDone' : typeof state(t) === 'string' ? 'refresh' : 'download'" :size="state(t) === 'done' ? 16 : 24" />
           </button>
           <SongMenu v-if="local(t)" :title="t.name" :downloaders="downloaders" :busy="props.redl[local(t)!.path] ?? null"
             @click.stop @redownload="(id, q) => emit('redownload', local(t)!, id, q)" @remove="emit('remove', local(t)!)" />
         </li>
       </ul>
-      <div v-if="others.length" class="row">
+      <div v-if="others.length" class="row-wrap">
+        <header class="row-head"><h3>Album, artis &amp; playlist</h3>
+          <div class="nav">
+            <button title="Geser kiri" @click="slide($event, -1)"><Icon name="back" :size="20" /></button>
+            <button title="Geser kanan" class="fwd" @click="slide($event, 1)"><Icon name="back" :size="20" /></button>
+          </div>
+        </header>
+        <div class="row">
         <button v-for="a in others" :key="a.id" class="tile" :class="{ artist: kind(a) === 'artist' }" @click="openItem(a)">
           <img :src="cover(a)" alt="" loading="lazy" /><strong>{{ a.name }}</strong><span>{{ sub(a) }}</span>
         </button>
+        </div>
       </div>
       <p v-if="!loading && !results.length" class="note">Tidak ada hasil di {{ cur ? extName(cur) : "" }} untuk “{{ props.query }}”.</p>
     </template>
@@ -295,19 +383,30 @@ const others = computed(() => results.value?.filter((i) => kind(i) !== "track") 
     <!-- home feed -->
     <template v-else>
       <section v-for="s in home" :key="s.title" class="shelf">
-        <h2>{{ s.title }}</h2>
-        <div class="row">
-          <button v-for="(a, i) in s.items" :key="a.id + i" class="tile" :class="{ artist: kind(a) === 'artist' }" @click="openItem(a)"
-            :title="kind(a) === 'track' && downloader ? 'Unduh ke library' : undefined">
+        <div class="row-wrap">
+          <header class="row-head"><h2>{{ s.title }}</h2>
+            <div class="nav">
+              <button title="Geser kiri" @click="slide($event, -1)"><Icon name="back" :size="20" /></button>
+              <button title="Geser kanan" class="fwd" @click="slide($event, 1)"><Icon name="back" :size="20" /></button>
+            </div>
+          </header>
+          <div class="row">
+          <button v-for="(a, i) in s.items" :key="a.id + i" class="tile" :class="{ artist: kind(a) === 'artist' }" @click="openItem(a, s.items)"
+            :title="kind(a) === 'track' && downloader ? (streamer ? 'Putar (stream)' : 'Unduh ke library') : undefined">
             <span class="art">
               <img :src="cover(a)" alt="" loading="lazy" />
-              <span v-if="kind(a) === 'track' && state(a) !== undefined" class="badge">
+              <!-- inside the tile's button, so a span: a click on it makes a mix instead of playing -->
+              <span v-if="kind(a) === 'track'" class="tile-mix" :class="{ busy: mixing === a }" role="button" title="Buat mix dari lagu ini" @click.stop="mix(a)">
+                <span v-if="mixing === a" class="spin"></span><Icon v-else name="playlist" :size="18" />
+              </span>
+              <span v-if="kind(a) === 'track' && state(a) !== undefined" class="badge" :class="{ ok: state(a) === 'done' }">
                 <span v-if="typeof state(a) === 'number'" class="ring" :style="{ '--p': state(a) }"></span>
-                <Icon v-else :name="state(a) === 'done' ? playIcon(a) : 'refresh'" :size="20" />
+                <Icon v-else :name="state(a) === 'done' ? 'downloadDone' : 'refresh'" :size="state(a) === 'done' ? 14 : 20" />
               </span>
             </span>
             <strong>{{ a.name }}</strong><span>{{ sub(a) }}</span>
           </button>
+          </div>
         </div>
       </section>
     </template>
@@ -367,10 +466,24 @@ const others = computed(() => results.value?.filter((i) => kind(i) !== "track") 
 .shelf h2, .page-head h2 { margin: 0 0 16px; font-size: 24px; font-weight: 750; letter-spacing: -0.01em; font-variation-settings: "wdth" 112; }
 .row {
   display: grid; grid-auto-flow: column; grid-auto-columns: 168px; gap: 20px;
-  overflow-x: auto; padding: 4px 4px 12px; margin: -4px -4px 0;
+  overflow-x: auto; padding: 4px 4px 12px; margin: -4px -4px 0; scrollbar-width: none;
 }
+.row::-webkit-scrollbar { display: none; }
+/* title with ‹ › on the right, as in the video catalog; touch screens swipe instead */
+.row-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.row-head h2, .row-head h3 { flex: 1; margin: 0; }
+.row-head h3 { font-size: 18px; font-weight: 700; }
+.nav { display: flex; gap: 4px; }
+.nav button { width: 36px; height: 36px; border-radius: 18px; display: grid; place-items: center; color: var(--on-surface-variant); transition: background 0.2s; }
+.nav button:hover { background: var(--surface-container-highest); }
+.nav .fwd .icon { transform: scaleX(-1); }
+@media (hover: none) { .nav { display: none; } }
 .tile { display: flex; flex-direction: column; gap: 4px; text-align: left; min-width: 0; }
 .tile .art { position: relative; display: block; }
+.tile-mix { position: absolute; top: 8px; right: 8px; width: 32px; height: 32px; border-radius: 16px; display: grid; place-items: center;
+  background: color-mix(in srgb, var(--surface) 85%, transparent); color: var(--on-surface); opacity: 0; transition: opacity 0.2s; }
+.tile:hover .tile-mix, .tile-mix.busy, .tile:focus-visible .tile-mix { opacity: 1; }
+@media (hover: none) { .tile-mix { opacity: 1; } }
 .tile img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 20px; margin-bottom: 10px; background: var(--surface-container-high); transition: transform 0.45s var(--spring), border-radius 0.45s var(--spring); }
 .tile:hover img { transform: scale(1.04); border-radius: 32px; }
 .tile.artist { align-items: center; text-align: center; }
@@ -383,21 +496,30 @@ const others = computed(() => results.value?.filter((i) => kind(i) !== "track") 
 .tracks li { display: flex; align-items: center; gap: 16px; padding: 8px 12px; border-radius: 16px; transition: background 0.2s; }
 .tracks li:hover { background: var(--surface-container); }
 .thumb { position: relative; flex: none; display: block; width: 48px; height: 48px; }
-.thumb .mark, .badge .mark { position: absolute; right: -4px; bottom: -4px; border-radius: 50%; color: var(--primary); background: var(--surface); }
 .tracks img { width: 48px; height: 48px; border-radius: 12px; object-fit: cover; flex: none; }
 .t-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .t-meta strong { font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .t-meta span { font-size: 13px; color: var(--on-surface-variant); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .t-meta span.live { color: var(--primary); font-family: ui-monospace, monospace; font-size: 12px; }
 .t-dur { font-size: 13px; color: var(--on-surface-variant); font-variant-numeric: tabular-nums; }
-.dl.ok { color: var(--primary); }
+/* downloaded: only a small mark, not a button-sized circle */
+.mixb { color: var(--on-surface-variant); }
+.save-mix {
+  margin-left: auto; flex: none; display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 18px 0 14px; border-radius: 20px;
+  background: var(--secondary-container); color: var(--on-secondary-container); font-size: 14px; font-weight: 600; transition: border-radius 0.3s var(--spring);
+}
+.save-mix:active { border-radius: 12px; }
+.page-head .save-mix span { color: inherit; }
+.dl.ok { width: 28px; height: 28px; color: var(--primary); }
+.badge.ok { width: 24px; height: 24px; right: 10px; bottom: 26px; }
 /* download progress ring (--p: 0-100) */
 .ring { width: 22px; height: 22px; border-radius: 50%; background: conic-gradient(var(--primary) calc(var(--p) * 1%), color-mix(in srgb, var(--primary) 20%, transparent) 0);
   mask: radial-gradient(circle, transparent 6px, #000 7px); }
 .badge .ring { background: conic-gradient(var(--on-primary) calc(var(--p) * 1%), color-mix(in srgb, var(--on-primary) 30%, transparent) 0); }
 
 .page { display: flex; flex-direction: column; gap: 20px; }
-.page-head { display: flex; align-items: center; gap: 20px; }
+.page-head { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+.page-head > div { flex: 1; min-width: 0; }
 .page-head h2 { margin: 0 0 4px; }
 .page-head span { color: var(--on-surface-variant); }
 .page-art { width: 120px; height: 120px; border-radius: 24px; object-fit: cover; flex: none; }

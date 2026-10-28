@@ -4,11 +4,12 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { documentDir } from "@tauri-apps/api/path";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { computed, onMounted, onUnmounted, ref, watch, watchEffect } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref, watch, watchEffect } from "vue";
 import CoverArt from "./lib/CoverArt.vue";
 import { covers } from "./lib/covers";
 import Icon from "./lib/Icon.vue";
-import ConfirmDialog, { confirm } from "./lib/ConfirmDialog.vue";
+import ConfirmDialog, { confirm, prompt } from "./lib/ConfirmDialog.vue";
+import { buildMix, find as findIn, kind as mixKind, savePlaylist } from "./lib/mix";
 import Dropdown from "./lib/Dropdown.vue";
 import FolderPicker, { chooseFolder } from "./lib/FolderPicker.vue";
 import FileManager from "./lib/FileManager.vue";
@@ -19,11 +20,11 @@ import ExtCatalog from "./lib/ExtCatalog.vue";
 import VideoLibrary from "./lib/VideoLibrary.vue";
 import { installUpdate, updater } from "./lib/updater";
 import SongMenu from "./lib/SongMenu.vue";
-import { downloadError, extName, has, unsupported, type ExtInfo } from "./lib/ext";
+import { downloadError, extName, has, streamExt, streamQuality, unsupported, type ExtInfo, type More } from "./lib/ext";
 import { asked, needsVerify, verified, withVerify } from "./lib/verify";
 import { refreshCached } from "./lib/vcache";
 import { mpv, setEngine, type Engine } from "./lib/mpv";
-import { activity, catalogDl } from "./lib/activity";
+import { activity, catalogDl, mixing } from "./lib/activity";
 import { loadQuality, longQuality, qualities, shortQuality } from "./lib/quality";
 import TitleBar from "./lib/TitleBar.vue";
 import Notifications, { type Job, type Note } from "./lib/Notifications.vue";
@@ -180,8 +181,10 @@ const subtitle = computed(() => {
   if (view.value === "catalog") return `${library.value.length} lagu · ${albums.value.length} album · ${artists.value.length} artis`;
   if (view.value === "albums" && group.value === null) return `${albums.value.length} album`;
   if (view.value === "artists" && group.value === null) return `${artists.value.length} artis`;
-  const total = shown.value.reduce((s, t) => s + t.duration_secs, 0);
-  return `${shown.value.length} lagu · ${Math.round(total / 60)} menit`;
+  // a playlist counts its songs not yet downloaded too
+  const songs = [...shown.value, ...(view.value === "playlists" ? plPending.value : [])];
+  const total = songs.reduce((s, t) => s + t.duration_secs, 0);
+  return `${songs.length} lagu · ${Math.round(total / 60)} menit`;
 });
 
 async function refreshPlaylists() {
@@ -199,7 +202,7 @@ async function showPlaylist(id: number) {
   setView("playlists");
   await openPlaylist(id);
 }
-type Pending = { id: number; title: string; artist: string; album: string; duration_secs: number; uri: string };
+type Pending = { id: number; title: string; artist: string; album: string; duration_secs: number; uri: string; cover: string };
 // songs of an imported playlist that are not in the library yet; downloaded one by one on click
 const plPending = ref<Pending[]>([]);
 async function openPlaylist(id: number) {
@@ -210,6 +213,45 @@ async function openPlaylist(id: number) {
   ]);
 }
 const plNote = ref("");
+// a mix being made opens the bell (its progress shows there); done, the bell closes and says so
+const bell = ref<{ show: () => void; close: () => void }>();
+watch(() => Object.keys(mixing).length, (n, old) => (n && !old ? bell.value?.show() : !n && old && bell.value?.close()));
+// Playlist › Buat mix: from a song or artist typed in (the playing song to start with), searched in the
+// catalog picked last, saved straight away as a playlist
+async function mixPlaylist() {
+  const metas = exts.value.filter((e) => e.enabled && has(e, "metadata_provider"));
+  const ext = metas.find((e) => e.id === localStorage.getItem("neptunus.extSource")) ?? metas[0];
+  if (!ext) return notify("Pasang ekstensi katalog (misalnya Spotify Web) untuk membuat mix.");
+  const q = await prompt({
+    title: "Buat mix", icon: "playlist", confirm: "Buat mix", placeholder: "Judul lagu atau artis",
+    message: `Ketik lagu atau artis. Playlist sampai 30 lagu dibuat dari lagu teratas hasil pencariannya di ${extName(ext)}.`,
+    input: now.value ? `${now.value.title} ${now.value.artist}` : "",
+  });
+  if (!q) return;
+  const job = `pl:${q}`;
+  mixing[job] = q;
+  try {
+    const seed = (await findIn(ext.id, q)).find((i) => mixKind(i) === "track");
+    if (!seed) throw `tidak ada lagu yang cocok dengan “${q}”`;
+    const { tracks } = await buildMix(ext.id, seed);
+    const r = await savePlaylist(`Mix · ${seed.name}`, tracks);
+    await refreshPlaylists();
+    await openPlaylist(r.id);
+    notify(`Mix “${seed.name}” selesai: ${tracks.length} lagu`, "done");
+  } catch (e) {
+    notify(`Mix gagal: ${e}`);
+  } finally {
+    delete mixing[job];
+  }
+}
+function mixed(title: string, res: number | string) {
+  if (typeof res === "number") notify(`Mix “${title}” selesai: ${res} lagu`, "done");
+  else notify(`Mix “${title}” gagal: ${res}`);
+}
+async function mixSaved(id: number, name: string) {
+  await refreshPlaylists();
+  notify(`Playlist “${name}” disimpan`, "done", { label: "Buka", run: () => { setView("playlists"); openPlaylist(id); } });
+}
 async function importSpotify(url: string) {
   plNote.value = "Membaca playlist Spotify…";
   try {
@@ -288,21 +330,22 @@ function setView(v: View) {
   if (v === "playlists" && plId.value !== null) openPlaylist(plId.value);
 }
 
-type SettingsTab = "local" | "s3" | "eq" | "look" | "ext" | "about";
+type SettingsTab = "local" | "cache" | "s3" | "eq" | "look" | "ext" | "about";
 const SETTINGS_TABS: { id: SettingsTab; label: string; icon: IconName }[] = [
+  { id: "about", label: "Tentang", icon: "info" },
   { id: "local", label: "Lokal", icon: "folder" },
+  { id: "cache", label: "Cache", icon: "storage" },
   { id: "s3", label: "Cloud", icon: "cloud" },
   { id: "eq", label: "Equalizer", icon: "equalizer" },
   { id: "look", label: "Tampilan", icon: "palette" },
   { id: "ext", label: "Ekstensi", icon: "extension" },
-  { id: "about", label: "Tentang", icon: "info" },
 ];
 const THEME_MODES: { id: ThemeMode; label: string; icon: IconName }[] = [
   { id: "system", label: "Sistem", icon: "autoMode" },
   { id: "light", label: "Terang", icon: "lightMode" },
   { id: "dark", label: "Gelap", icon: "darkMode" },
 ];
-const settingsTab = ref<SettingsTab>(SETTINGS_TABS.some((t) => t.id === page.settingsTab) ? page.settingsTab! : "local");
+const settingsTab = ref<SettingsTab>(SETTINGS_TABS.some((t) => t.id === page.settingsTab) ? page.settingsTab! : "about");
 watch([view, group, plId, settingsTab], ([view, group, plId, settingsTab]) => {
   try { sessionStorage.setItem(PAGE_KEY, JSON.stringify({ view, group, plId, settingsTab })); } catch {}
 });
@@ -313,7 +356,7 @@ const ENGINES: { id: Engine; label: string; icon: IconName }[] = [
   { id: "mpv", label: "", icon: "play" }, // `mpv.label`
 ];
 
-// Settings › Lokal: the disk cache online films play from (Rust `video_cache_*`, `serve::prune`)
+// Settings › Cache: the disk cache online films play from (Rust `video_cache_*`, `serve::prune`)
 const CACHE_DAYS = [1, 3, 7, 14, 30].map((d) => ({ value: d, label: `${d} hari` }));
 const cacheSize = ref<number | null>(null);
 const cacheDays = ref(7);
@@ -364,7 +407,36 @@ async function clearCache() {
   await loadCache();
   refreshCached();
 }
-watch(() => view.value === "s3" && settingsTab.value === "local", (on) => on && loadCache(), { immediate: true });
+// Settings › Cache: songs played by streaming (Rust `ext_stream`), kept until the 1 GB limit pushes them out
+type CachedSong = { path: string; title: string; artist: string; size: number; used: number };
+const cacheSongs = ref<CachedSong[]>([]);
+// the cache cards start folded: only their size shows until opened
+const cacheOpen = reactive({ film: false, music: false });
+const songPick = ref(new Set<string>());
+const songsSize = computed(() => cacheSongs.value.reduce((n, f) => n + f.size, 0));
+const pickedSongsSize = computed(() => cacheSongs.value.filter((f) => songPick.value.has(f.path)).reduce((n, f) => n + f.size, 0));
+function toggleSong(path: string) {
+  const s = new Set(songPick.value);
+  if (!s.delete(path)) s.add(path);
+  songPick.value = s;
+}
+const pickAllSongs = () => (songPick.value = songPick.value.size === cacheSongs.value.length ? new Set() : new Set(cacheSongs.value.map((f) => f.path)));
+async function loadSongs() {
+  cacheSongs.value = await invoke<CachedSong[]>("stream_cache_list").catch(() => []);
+  songPick.value = new Set([...songPick.value].filter((k) => cacheSongs.value.some((f) => f.path === k)));
+}
+async function removeSongs(all: boolean) {
+  const n = all ? cacheSongs.value.length : songPick.value.size;
+  const ok = await confirm({
+    title: all ? "Hapus cache musik?" : `Hapus ${n} lagu dari cache?`,
+    message: `${bytes(all ? songsSize.value : pickedSongsSize.value)} dikosongkan. Lagu itu diambil lagi kalau diputar nanti.`,
+    confirm: "Hapus", icon: "trash", danger: true,
+  });
+  if (!ok) return;
+  await (all ? invoke("stream_cache_clear") : invoke("stream_cache_remove", { paths: [...songPick.value] })).catch((e) => notify(String(e)));
+  await loadSongs();
+}
+watch(() => view.value === "s3" && settingsTab.value === "cache", (on) => on && (loadCache(), loadSongs()), { immediate: true });
 
 function openSettings(tab: SettingsTab) {
   settingsTab.value = tab;
@@ -444,6 +516,18 @@ watch(asked, (a) => {
 });
 // pending playlist song -> why its last download failed
 const pfail = ref<Record<number, string>>({});
+// a pending playlist song as the catalog knows it (full metadata, cover, album), so it downloads the same way
+async function catalogTrack(p: Pending) {
+  const meta = exts.value.find((e) => e.enabled && e.id === "spotify-web");
+  const sid = p.uri.split(":")[2];
+  return meta && sid
+    ? await invoke<Record<string, unknown> | null>("ext_call", { id: meta.id, method: "getTrack", args: [sid] })
+        .then((t) => (t ? { ...t, provider_id: meta.id } : null)).catch(() => null)
+    : null;
+}
+// for streaming, where nothing else fills it in: what the playlist knows, looked up by the extension
+const pendingTrack = async (p: Pending) => (await catalogTrack(p)) ??
+  { id: "", name: p.title, artists: p.artist, album_name: p.album, duration_ms: p.duration_secs * 1000, cover_url: p.cover, provider_id: "playlist" };
 async function downloadPending(p: Pending, ext: string, quality: string | null) {
   const { [p.id]: _, ...ok } = pfail.value;
   pfail.value = ok;
@@ -452,13 +536,7 @@ async function downloadPending(p: Pending, ext: string, quality: string | null) 
   pdl.value = { ...pdl.value, [p.id]: 0 };
   activity[ext] = "";
   try {
-    // the song as the catalog knows it (full metadata, cover, album), so it downloads the same way
-    const meta = exts.value.find((e) => e.enabled && e.id === "spotify-web");
-    const sid = p.uri.split(":")[2];
-    const track = meta && sid
-      ? await invoke<Record<string, unknown> | null>("ext_call", { id: meta.id, method: "getTrack", args: [sid] })
-          .then((t) => (t ? { ...t, provider_id: meta.id } : null)).catch(() => null)
-      : null;
+    const track = await catalogTrack(p);
     await withVerify(ext, () => invoke("pending_download", { id: p.id, ext, quality, track }));
     addNote("done", `“${p.title}” selesai diunduh.`);
     setLibrary(await invoke<Track[]>("load_library"));
@@ -514,6 +592,7 @@ const pendingFailed = computed(() => plPending.value.filter((p) => p.id in pfail
 const jobs = computed<Job[]>(() => [
   ...downloads.value.map((d) => ({ key: `s3:${d.path}`, title: d.title, pct: d.pct })),
   ...Object.entries(redl.value).map(([path, pct]) => ({ key: `re:${path}`, title: rawLibrary.value.find((t) => t.path === path)?.title ?? path, pct })),
+  ...Object.entries(mixing).map(([key, title]) => ({ key: `m:${key}`, title: `Mix · ${title}`, pct: null, detail: "Membuat mix…" })),
   ...Object.entries(catalogDl).map(([key, d]) => ({ key: `c:${key}`, title: d.title, pct: d.pct, detail: activity[d.ext], cancel: () => invoke("ext_cancel", { key }) })),
   ...Object.entries(pdl.value).map(([id, pct]) => ({ key: `p:${id}`, title: pdlTitle[+id] ?? "", pct, detail: activity[pdlExt[+id]], cancel: () => invoke("ext_cancel", { key: `pending:${id}` }) })),
   ...pqueue.value.map((q) => ({ key: `q:${q.p.id}`, title: q.p.title, pct: null, queued: true, cancel: () => cancelPending(q.p) })),
@@ -651,6 +730,7 @@ function source(t: Track): string {
 const loadingPath = ref("");
 async function playAt(list: Track[], i: number) {
   if (!list[i]) return;
+  if (list !== queue.value) followMore = followNext = null; // another list: what followed the old one stops
   loadingPath.value = list[i].path;
   try {
     if (!(await invoke<boolean>("play", { path: source(list[i]), volume: volume.value }))) return;
@@ -690,15 +770,85 @@ async function restorePlayer() {
 function nextIndex(auto: boolean): number | null {
   if (!queue.value.length) return null;
   if (auto && repeat.value === "one") return current.value;
-  if (shuffle.value) return Math.floor(Math.random() * queue.value.length);
+  // catalog songs follow their list in order
+  if (shuffle.value && !followMore) return Math.floor(Math.random() * queue.value.length);
   if (current.value + 1 < queue.value.length) return current.value + 1;
   return repeat.value === "all" ? 0 : null;
 }
 
-function next(auto = false) {
+// Songs that follow the queue once it runs out: the rest of a catalog list, or a playlist's songs not yet
+// downloaded. The next one is fetched (streamed) while the queue's last song plays, then added to it.
+let followMore: More | null = null;
+let followNext: ReturnType<More> | null = null;
+function follow(more: More | null) {
+  followMore = more;
+  followNext = null;
+  prefetch();
+}
+function prefetch() {
+  if (followMore && !followNext && current.value === queue.value.length - 1) followNext = followMore();
+}
+watch(current, prefetch);
+async function playCatalog(t: Track, more?: More) {
+  await playAt([t], 0);
+  follow(more ?? null);
+}
+
+async function next(auto = false) {
   const i = nextIndex(auto);
-  if (i === null) current.value = -1;
-  else playAt(queue.value, i);
+  if (i !== null) return playAt(queue.value, i);
+  const more = followMore;
+  if (!more) return void (current.value = -1);
+  const n = await (followNext ?? more()).catch(() => null);
+  if (followMore !== more) return; // something else was played meanwhile
+  if (!n) return void ((current.value = -1), (followMore = null));
+  await playAt([...queue.value, n[0]], queue.value.length);
+  follow(n[1]);
+}
+
+// A playlist plays on into its songs not yet downloaded, streamed with the stream extension (Settings › Ekstensi).
+const pstream = ref<Record<number, true>>({});
+// streamed file -> the pending song it came from, so the playing one is marked in the playlist
+const streamedFrom = reactive<Record<string, number>>({});
+async function streamPending(p: Pending): Promise<Track | null> {
+  const id = streamExt.value;
+  if (!exts.value.some((e) => e.enabled && e.id === id)) return null;
+  pstream.value = { ...pstream.value, [p.id]: true };
+  try {
+    const track = await pendingTrack(p);
+    const t = await withVerify(id, () => invoke<Track>("ext_stream", { id, key: `stream:${p.id}`, quality: streamQuality.value || null, track }));
+    streamedFrom[t.path] = p.id;
+    return t;
+  } catch (e) {
+    onDownloadFailed(p.title, id, e);
+    return null;
+  } finally {
+    const { [p.id]: _, ...rest } = pstream.value;
+    pstream.value = rest;
+  }
+}
+const pendingMore = (list: Pending[], j: number): More => async () => {
+  for (let k = j + 1; k < list.length; k++) {
+    const t = await streamPending(list[k]);
+    if (t) return [t, pendingMore(list, k)];
+  }
+  return null;
+};
+// the open playlist from song i: its downloaded songs, then (streamed) the rest
+async function playList(i: number) {
+  const pending = view.value === "playlists" && streamExt.value ? [...plPending.value] : [];
+  if (shown.value.length) {
+    await playAt(shown.value, i);
+    follow(pending.length ? pendingMore(pending, -1) : null);
+  } else if (pending.length) {
+    const t = await streamPending(pending[0]);
+    if (t) await playCatalog(t, pendingMore(pending, 0));
+  }
+}
+async function playPending(j: number) {
+  const pending = [...plPending.value];
+  const t = await streamPending(pending[j]);
+  if (t) await playCatalog(t, pendingMore(pending, j));
 }
 
 function prev() {
@@ -959,8 +1109,8 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
 
   <ConfirmDialog />
   <FolderPicker />
-  <TitleBar :no-settings="watching" @settings="openSettings('local')">
-    <Notifications :jobs="jobs" :notes="notes" :unread="unread" @read="unread = 0" @clear="notes = []" @cancel-all="cancelAll" @open="openUrl" />
+  <TitleBar :no-settings="watching" @settings="openSettings('about')">
+    <Notifications ref="bell" :jobs="jobs" :notes="notes" :unread="unread" @read="unread = 0" @clear="notes = []" @cancel-all="cancelAll" @open="openUrl" />
   </TitleBar>
 
   <div class="app" :class="{ collapsed: !sidebarOpen || narrow }">
@@ -993,8 +1143,8 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
           <button v-if="query" class="icon-btn" @click="query = ''" title="Hapus pencarian"><Icon name="close" :size="20" /></button>
         </label>
         <div v-if="showingList && (view !== 'playlists' || plId !== null) && (shown.length || (view === 'playlists' && plPending.length))" class="btn-group actions">
-          <template v-if="shown.length">
-            <button class="btn filled big" @click="playAt(shown, 0)"><Icon name="play" :size="28" />Putar</button>
+          <template v-if="shown.length || (view === 'playlists' && streamExt)">
+            <button class="btn filled big" @click="playList(0)"><Icon name="play" :size="28" />Putar</button>
             <button class="btn tonal big" @click="playShuffled"><Icon name="shuffle" />Acak</button>
           </template>
           <SongMenu v-if="view === 'playlists' && plPending.length" download title="semua lagu yang belum diunduh" :downloaders="downloaders"
@@ -1041,16 +1191,21 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
               </span>
             </div>
           </section>
-          <section class="panel conn">
+          <FileManager v-if="curFolder" ref="localFiles" :key="curFolder" kind="local" :root="`${curFolder.replace(/\/+$/, '')}/`" :label="baseName(curFolder)"
+            @library="setLibrary" />
+        </template>
+        <template v-else-if="settingsTab === 'cache'">
+          <section class="panel conn cache-card">
             <div class="conn-head">
-              <span class="conn-mark" :style="{ clipPath: 'url(#shape-cookie9)' }"><Icon name="movie" :size="28" /></span>
+              <button class="icon-btn fold" :class="{ open: cacheOpen.film }" :aria-expanded="cacheOpen.film" :title="cacheOpen.film ? 'Tutup' : 'Lihat isi'" @click="cacheOpen.film = !cacheOpen.film"><Icon name="chevron" /></button>
+              <span class="conn-mark" :style="{ clipPath: 'url(#shape-cookie9)' }"><Icon name="movie" :size="22" /></span>
               <div class="conn-id">
                 <strong>Cache film</strong>
                 <span>{{ cacheSize === null ? "Menghitung…" : `${bytes(cacheSize)} dipakai untuk buffer film online dan poster katalog` }}</span>
               </div>
               <button class="btn tonal" :disabled="!cacheSize" @click="clearCache"><Icon name="trash" />Hapus cache</button>
             </div>
-            <div v-if="cacheFilms.length" class="cfilms">
+            <div v-if="cacheOpen.film && cacheFilms.length" class="cfilms">
               <div class="cf-head">
                 <button class="cf-all" @click="pickAll">
                   <Icon :name="cachePick.size === cacheFilms.length ? 'checkOn' : 'checkOff'" :size="20" />Pilih semua
@@ -1072,13 +1227,44 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
                 </li>
               </ul>
             </div>
-            <div class="look-row">
+            <div v-if="cacheOpen.film" class="look-row">
               <div class="look-text"><strong>Simpan selama</strong><span>Film yang tidak diputar lebih lama dari ini dihapus otomatis. Total cache paling banyak 10 GB.</span></div>
               <Dropdown class="cache-days" label="Simpan selama" :model-value="cacheDays" :options="CACHE_DAYS" @update:model-value="setCacheDays" />
             </div>
           </section>
-          <FileManager v-if="curFolder" ref="localFiles" :key="curFolder" kind="local" :root="`${curFolder.replace(/\/+$/, '')}/`" :label="baseName(curFolder)"
-            @library="setLibrary" />
+          <section class="panel conn cache-card">
+            <div class="conn-head">
+              <button class="icon-btn fold" :class="{ open: cacheOpen.music }" :aria-expanded="cacheOpen.music" :title="cacheOpen.music ? 'Tutup' : 'Lihat isi'" :disabled="!cacheSongs.length" @click="cacheOpen.music = !cacheOpen.music"><Icon name="chevron" /></button>
+              <span class="conn-mark" :style="{ clipPath: 'url(#shape-cookie9)' }"><Icon name="note" :size="22" /></span>
+              <div class="conn-id">
+                <strong>Cache musik</strong>
+                <span>{{ cacheSongs.length ? `${cacheSongs.length} lagu stream, ${bytes(songsSize)} dari paling banyak 1 GB` : "Lagu yang diputar dengan stream disimpan di sini sementara." }}</span>
+              </div>
+              <button class="btn tonal" :disabled="!cacheSongs.length" @click="removeSongs(true)"><Icon name="trash" />Hapus cache</button>
+            </div>
+            <div v-if="cacheOpen.music && cacheSongs.length" class="cfilms">
+              <div class="cf-head">
+                <button class="cf-all" @click="pickAllSongs">
+                  <Icon :name="songPick.size === cacheSongs.length ? 'checkOn' : 'checkOff'" :size="20" />Pilih semua
+                </button>
+                <button class="btn filled" :disabled="!songPick.size" @click="removeSongs(false)">
+                  <Icon name="trash" />{{ songPick.size ? `Hapus ${songPick.size} (${bytes(pickedSongsSize)})` : "Hapus yang dipilih" }}
+                </button>
+              </div>
+              <ul class="cf-list">
+                <li v-for="f in cacheSongs" :key="f.path">
+                  <button class="cf-row" role="checkbox" :aria-checked="songPick.has(f.path)" :class="{ on: songPick.has(f.path) }" @click="toggleSong(f.path)">
+                    <Icon :name="songPick.has(f.path) ? 'checkOn' : 'checkOff'" :size="22" class="cf-box" />
+                    <span class="cf-text">
+                      <strong>{{ f.title || "Tanpa judul" }}</strong>
+                      <span>{{ [f.artist, playedOn(f.used) && `diputar ${playedOn(f.used)}`].filter(Boolean).join(" · ") }}</span>
+                    </span>
+                    <span class="cf-size">{{ bytes(f.size) }}</span>
+                  </button>
+                </li>
+              </ul>
+            </div>
+          </section>
         </template>
         <Equalizer v-else-if="settingsTab === 'eq'" />
         <section v-else-if="settingsTab === 'look'" class="panel look">
@@ -1145,6 +1331,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
             <button @click="openPlaylist(p.id)">{{ p.name }}</button>
             <button v-if="plId === p.id" class="chip-x" :title="`Hapus playlist ${p.name}`" @click="deletePlaylist(p.id)"><Icon name="close" :size="18" /></button>
           </span>
+          <button class="chip mix-chip" title="Buat playlist dari lagu atau artis" @click="mixPlaylist"><Icon name="playlist" :size="18" />Buat mix</button>
           <form class="chip new" @submit.prevent="createPlaylist">
             <Icon name="add" :size="18" />
             <input placeholder="Playlist baru / link Spotify" v-model="newPlaylist" aria-label="Nama playlist baru" />
@@ -1157,7 +1344,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
 
         <div v-if="view === 'catalog'" class="catalog">
           <ExtCatalog :exts="exts" :library="visibleLibrary" :query="query" :now-path="now?.path" :playing="playing" :redl="redl"
-            @downloaded="onDownloaded" @failed="onDownloadFailed" @play="(t) => playAt([t], 0)" @toggle="togglePause" @redownload="redownload" @remove="removeSong" />
+            @downloaded="onDownloaded" @failed="onDownloadFailed" @play="playCatalog" @saved="mixSaved" @mixed="mixed" @toggle="togglePause" @redownload="redownload" @remove="removeSong" />
           <section v-if="albums.length" class="shelf">
             <div class="shelf-head"><h2>Album</h2><button class="more" @click="setView('albums')">Lihat semua</button></div>
             <div class="shelf-row">
@@ -1200,7 +1387,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
         </div>
         <ul v-else-if="showingList" class="songs">
           <li v-for="(t, i) in shown" :key="t.path" :class="{ active: now?.path === t.path }">
-            <button class="row" @click="playAt(shown, i)">
+            <button class="row" @click="playList(i)">
               <span v-if="view === 'playlists'" class="no">{{ i + 1 }}</span>
               <span class="art-wrap">
                 <CoverArt :path="t.path" />
@@ -1251,17 +1438,25 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
             <span class="dur">{{ fmt(t.duration_secs) }}</span>
           </li>
           <template v-if="view === 'playlists'">
-            <li v-for="(p, j) in plPending" :key="`p${p.id}`" class="pending">
-              <div class="row">
+            <li v-for="(p, j) in plPending" :key="`p${p.id}`" class="pending" :class="{ active: now && streamedFrom[now.path] === p.id }">
+              <component :is="streamExt ? 'button' : 'div'" class="row" :title="streamExt ? 'Putar (stream)' : undefined" @click="streamExt && playPending(j)">
                 <span class="no">{{ shown.length + j + 1 }}</span>
-                <span class="art-wrap"><span class="pend-art"><Icon name="note" :size="24" /></span></span>
+                <span class="art-wrap"><img v-if="p.cover" :src="p.cover" class="pend-art" alt="" loading="lazy" /><span v-else class="pend-art"><Icon name="note" :size="24" /></span>
+                  <span v-if="now && streamedFrom[now.path] === p.id" class="art-overlay">
+                    <span class="eq" :class="{ still: paused }" aria-label="Sedang diputar"><i></i><i></i><i></i></span>
+                  </span>
+                  <span v-else-if="p.id in pstream" class="art-overlay">
+                    <span class="spinner" :style="{ clipPath: 'url(#shape-cookie12)' }" aria-label="Memuat"></span>
+                  </span>
+                </span>
                 <span class="meta">
                   <strong>{{ p.title }}</strong>
-                  <span v-if="p.id in pdl" class="live">{{ activity[pdlExt[p.id]] || "Memulai…" }}</span>
+                  <span v-if="p.id in pstream" class="live">Memuat stream…</span>
+                  <span v-else-if="p.id in pdl" class="live">{{ activity[pdlExt[p.id]] || "Memulai…" }}</span>
                   <span v-else-if="queuedIds.has(p.id)">Dalam antrean</span>
                   <span v-else>{{ unknown(p.artist) }}<template v-if="p.album"> · {{ p.album }}</template> · belum diunduh</span>
                 </span>
-              </div>
+              </component>
               <SongMenu class="row-act" :class="{ busy: p.id in pdl || p.id in pfail }" download :title="p.title" :downloaders="downloaders"
                 :busy="pdl[p.id] ?? null" :failed="pfail[p.id]"
                 @redownload="(id, q) => queuePending(p, id, q)" />
@@ -1602,12 +1797,15 @@ li:hover .row-act, .row-act:focus-visible, .row-menu.open .row-act, .row-act.ope
 .chip.sel { background: var(--secondary-container); color: var(--on-secondary-container); border-color: transparent; border-radius: 20px; }
 .chip.sel > button:first-child { padding-right: 4px; }
 .chip-x { width: 32px; height: 32px; margin-right: 4px; border-radius: 16px; display: grid; place-items: center; }
+.mix-chip { gap: 6px; padding: 0 14px 0 10px; font-size: 14px; font-weight: 600; }
 .chip.new { gap: 6px; padding: 0 6px 0 12px; border-style: dashed; }
 .pl-note { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; font-size: 14px; color: var(--on-surface-variant); }
-.songs li.pending .row, .songs li.pending .dur { opacity: 0.75; }
+.songs li.pending:not(.active) .row, .songs li.pending:not(.active) .dur { opacity: 0.75; }
 .songs li.pending .row { cursor: default; }
+.songs li.pending button.row { cursor: pointer; } /* streams when tapped */
 .meta span.live { color: var(--primary); font-family: ui-monospace, monospace; font-size: 12px; }
-.pend-art { width: 100%; height: 100%; display: grid; place-items: center; border-radius: 12px; background: var(--surface-container-high); color: var(--on-surface-variant); }
+.pend-art { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 12px; background: var(--surface-container-high); color: var(--on-surface-variant); }
+img.pend-art { object-fit: cover; }
 .chip.new input { width: 190px; border: 0; background: none; outline: none; font-size: 14px; }
 
 /* ---------- empty state ---------- */
@@ -1633,6 +1831,13 @@ li:hover .row-act, .row-act:focus-visible, .row-menu.open .row-act, .row-act.ope
 .look-text { flex: 1; min-width: 180px; display: flex; flex-direction: column; gap: 2px; font-size: 13px; color: var(--on-surface-variant); }
 .look-text strong { font-size: 15px; font-weight: 700; color: var(--on-surface); }
 .cache-days { width: min(100%, 220px); }
+/* the Cache tab's cards: smaller than the other panels, folded open with the chevron */
+.cache-card { padding: 16px 20px; gap: 12px; }
+.cache-card .conn-head { gap: 12px; }
+.cache-card .conn-mark { width: 40px; height: 40px; }
+.cache-card .cf-list { max-height: 240px; }
+.fold :deep(svg) { transition: transform 0.2s; }
+.fold.open :deep(svg) { transform: rotate(90deg); }
 .cfilms { display: flex; flex-direction: column; gap: 8px; }
 .cf-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 .cf-all { display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 12px 0 8px; border-radius: 20px; font: inherit; font-size: 14px; font-weight: 600; color: var(--on-surface); }

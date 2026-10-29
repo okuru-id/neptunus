@@ -128,6 +128,14 @@ Updates install over the previous version: **Unduh & pasang** in the app downloa
 
 iOS only runs signed apps, so the IPA has to be signed before installing.
 
+**Install the signed build over the air (registered iPhones).** Copy this into Safari's address bar on the iPhone, open it and tap **Install**. It always installs the latest release:
+
+```
+itms-services://?action=download-manifest&url=https://github.com/okuru-id/neptunus/releases/latest/download/manifest.plist
+```
+
+Only iPhones whose UDID is in the signing profile can install it (see *Your own Apple Developer account* below); on any other one iOS says it can't install the app. Tapping a downloaded `.ipa` in the Files app does nothing; this link is the way to install that build.
+
 **Free Apple ID (re-sign every 7 days).** Use [SideStore](https://sidestore.io), [iloader](https://github.com/nab138/iloader) or [Sideloader](https://github.com/Dadoum/Sideloader): log in with an Apple ID (a separate one is a good idea), pick the IPA, and it is signed and installed for 7 days. A free Apple ID can keep at most 3 apps signed at a time, SideStore included.
 
 <details>

@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Neptunus — one small, beautiful player</title>
+  <meta name="description" content="Neptunus is a small, beautiful player for your music and videos, on Linux, Windows, macOS, Android and iOS. Local files, your own S3 bucket, and extensions." />
+  <meta name="theme-color" content="#091518" media="(prefers-color-scheme: dark)" />
+  <meta name="theme-color" content="#f0fbff" media="(prefers-color-scheme: light)" />
+  <meta property="og:title" content="Neptunus" />
+  <meta property="og:description" content="One small, beautiful player for your music and your videos, on every device." />
+  <meta property="og:image" content="assets/screenshots/desktop-lyrics.webp" />
+  <link rel="icon" href="assets/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="assets/icon.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Roboto+Flex:opsz,wdth,wght@8..144,25..151,100..1000&display=swap" rel="stylesheet" />
+  <script>document.documentElement.classList.add("js");</script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    const role = (name) => `rgb(var(--${name}) / <alpha-value>)`;
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['"Roboto Flex"', "system-ui", "-apple-system", "Segoe UI", "sans-serif"],
+          },
+          colors: Object.fromEntries(
+            [
+              "primary", "on-primary", "primary-container", "on-primary-container",
+              "secondary-container", "on-secondary-container",
+              "tertiary", "tertiary-container", "on-tertiary-container",
+              "surface", "surface-container-low", "surface-container", "surface-container-high",
+              "on-surface", "on-surface-variant", "outline-variant",
+            ].map((n) => [n, role(n)])
+          ),
+          transitionTimingFunction: {
+            spring: "cubic-bezier(0.3, 1.3, 0.5, 1)",
+            emph: "cubic-bezier(0.2, 0, 0, 1)",
+          },
+          keyframes: {
+            spin: { to: { transform: "rotate(360deg)" } },
+            drift: {
+              "0%, 100%": { transform: "translate(0, 0) scale(1)" },
+              "50%": { transform: "translate(4%, 6%) scale(1.08)" },
+            },
+            hue: { "0%, 100%": { filter: "hue-rotate(-25deg)" }, "50%": { filter: "hue-rotate(35deg)" } },
+            wave: { to: { transform: "translateX(-40px)" } },
+            eq: { "0%, 100%": { transform: "scaleY(0.35)" }, "50%": { transform: "scaleY(1)" } },
+          },
+          animation: {
+            "spin-slow": "spin 24s linear infinite",
+            drift: "drift 18s ease-in-out infinite",
+            hue: "hue 24s ease-in-out infinite",
+            wave: "wave 1.6s linear infinite",
+            eq: "eq 1.1s ease-in-out infinite",
+          },
+        },
+      },
+    };
+  </script>
+  <style type="text/tailwindcss">
+    /* Material 3 colour roles from an ocean teal seed #0091a8 (SchemeVibrant) as RGB triplets so Tailwind can add alpha. */
+    :root {
+      --primary: 0 104 121;
+      --on-primary: 255 255 255;
+      --primary-container: 169 237 255;
+      --on-primary-container: 0 78 91;
+      --secondary-container: 196 232 254;
+      --on-secondary-container: 39 75 93;
+      --tertiary: 59 97 135;
+      --tertiary-container: 207 228 255;
+      --on-tertiary-container: 33 73 109;
+      --surface: 240 251 255;
+      --surface-container-low: 233 246 250;
+      --surface-container: 227 240 244;
+      --surface-container-high: 221 234 238;
+      --on-surface: 18 29 32;
+      --on-surface-variant: 58 73 78;
+      --outline-variant: 185 201 206;
+      color-scheme: light;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --primary: 0 217 251;
+        --on-primary: 0 54 64;
+        --primary-container: 0 78 91;
+        --on-primary-container: 169 237 255;
+        --secondary-container: 39 75 93;
+        --on-secondary-container: 196 232 254;
+        --tertiary: 164 202 245;
+        --tertiary-container: 33 73 109;
+        --on-tertiary-container: 207 228 255;
+        --surface: 9 21 24;
+        --surface-container-low: 18 29 32;
+        --surface-container: 22 33 36;
+        --surface-container-high: 32 44 47;
+        --on-surface: 216 229 233;
+        --on-surface-variant: 185 201 206;
+        --outline-variant: 58 73 78;
+        color-scheme: dark;
+      }
+    }
+    :root[data-theme="dark"] {
+      --primary: 0 217 251;
+      --on-primary: 0 54 64;
+      --primary-container: 0 78 91;
+      --on-primary-container: 169 237 255;
+      --secondary-container: 39 75 93;
+      --on-secondary-container: 196 232 254;
+      --tertiary: 164 202 245;
+      --tertiary-container: 33 73 109;
+      --on-tertiary-container: 207 228 255;
+      --surface: 9 21 24;
+      --surface-container-low: 18 29 32;
+      --surface-container: 22 33 36;
+      --surface-container-high: 32 44 47;
+      --on-surface: 216 229 233;
+      --on-surface-variant: 185 201 206;
+      --outline-variant: 58 73 78;
+      color-scheme: dark;
+    }
+
+    html { scroll-behavior: smooth; }
+    body { @apply bg-surface font-sans text-on-surface antialiased; }
+
+    @layer components {
+      .display { font-stretch: 118%; @apply font-extrabold tracking-[-0.03em]; }
+      .btn {
+        /* Radius is the real pill size (half of 48px), not 9999px, so the morph interpolates smoothly. */
+        @apply inline-flex min-h-12 items-center justify-center gap-2 rounded-[24px] px-6 font-semibold no-underline
+          transition-[border-radius,transform,box-shadow] duration-500 ease-spring
+          hover:rounded-[16px] active:scale-95 active:rounded-[12px] active:duration-150;
+      }
+      .btn-filled { @apply btn bg-primary text-on-primary shadow-lg shadow-primary/25; }
+      .btn-tonal { @apply btn bg-secondary-container text-on-secondary-container; }
+      .nav-link {
+        @apply rounded-full px-4 py-2 text-sm font-medium text-on-surface-variant no-underline
+          transition-colors duration-200 ease-emph hover:bg-on-surface/[0.08] hover:text-on-surface;
+      }
+      .card {
+        @apply relative overflow-hidden rounded-[28px] bg-surface-container p-7
+          transition-[transform,border-radius] duration-500 ease-spring hover:-translate-y-1 hover:rounded-[40px];
+      }
+      .icon-tile { @apply mb-5 grid h-14 w-14 place-items-center rounded-[18px]; }
+      .icon-tile svg { @apply h-7 w-7 fill-current; }
+      .file { @apply rounded-full bg-surface-container-high px-2.5 py-1 font-mono text-xs text-on-surface-variant; }
+    }
+
+    /* Scroll reveal, only when JS runs. */
+    .js [data-reveal] {
+      opacity: 0;
+      transform: translateY(24px);
+      transition: opacity 700ms cubic-bezier(0.2, 0, 0, 1), transform 900ms cubic-bezier(0.3, 1.3, 0.5, 1);
+    }
+    .js [data-reveal].in { opacity: 1; transform: none; }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      .js [data-reveal] { opacity: 1; transform: none; }
+    }
+  </style>
+</head>
+<body class="overflow-x-hidden text-base leading-relaxed">
+  <!-- Ambient glow: shifts hue slowly, like the app recolouring from each cover -->
+  <div aria-hidden="true" class="pointer-events-none fixed inset-0 -z-10 animate-hue overflow-hidden">
+    <div class="absolute -left-[20%] -top-[25%] h-[70vmax] w-[70vmax] animate-drift rounded-full bg-primary/25 blur-[120px]"></div>
+    <div class="absolute -right-[25%] top-[10%] h-[55vmax] w-[55vmax] animate-drift rounded-full bg-tertiary/20 blur-[120px] [animation-delay:-9s]"></div>
+  </div>
+
+  <!-- Floating nav -->
+  <header class="sticky top-3 z-20 mx-auto mt-3 w-[calc(100%-32px)] max-w-[1120px]">
+    <div class="flex items-center justify-between gap-3 rounded-full border border-outline-variant/40 bg-surface-container/70 py-2 pl-3 pr-2 shadow-lg shadow-black/5 backdrop-blur-xl">
+      <a href="#top" class="inline-flex items-center gap-2.5 text-lg font-bold text-on-surface no-underline" aria-label="Neptunus home">
+        <img src="assets/icon.svg" width="30" height="30" alt="" class="h-[30px] w-[30px]" />
+        <span class="display text-[19px]">Neptunus</span>
+      </a>
+      <nav class="flex items-center gap-1" aria-label="Main">
+        <a href="#features" class="nav-link hidden sm:inline-block">Features</a>
+        <a href="#download" class="nav-link hidden sm:inline-block">Download</a>
+        <a href="https://github.com/okuru-id/neptunus" rel="noopener" class="nav-link inline-flex items-center gap-2" aria-label="GitHub">
+          <svg viewBox="0 0 16 16" class="h-[18px] w-[18px] fill-current" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          <span class="hidden md:inline">GitHub</span>
+        </a>
+        <a href="#download" class="btn-filled ml-1 min-h-10 px-5 text-sm shadow-none">Get it</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="top" class="mx-auto w-full max-w-[1120px] px-4">
+    <!-- Hero -->
+    <section class="pt-14 text-center sm:pt-20">
+      <div data-reveal class="relative mx-auto mb-8 h-28 w-28">
+        <div class="absolute inset-2 -z-10 rounded-full bg-[#ff6e40]/50 blur-2xl"></div>
+        <img src="assets/icon.svg" width="112" height="112" alt="Neptunus logo" class="h-28 w-28 transition-transform duration-700 ease-spring hover:rotate-[40deg] hover:scale-105" />
+      </div>
+
+      <a data-reveal href="https://github.com/okuru-id/neptunus/releases" rel="noopener" class="mb-6 inline-flex items-center gap-2 rounded-full border border-outline-variant/60 bg-surface-container/60 py-1.5 pl-1.5 pr-4 text-sm text-on-surface-variant no-underline backdrop-blur transition-colors hover:text-on-surface">
+        <span class="rounded-full bg-tertiary-container px-2.5 py-0.5 text-xs font-semibold text-on-tertiary-container">New</span>
+        Stream from the catalog, mixes and playlists
+        <svg viewBox="0 0 24 24" class="h-4 w-4 fill-current" aria-hidden="true"><path d="M8.59 16.59 13.17 12 8.59 7.41 10 6l6 6-6 6z"/></svg>
+      </a>
+
+      <h1 data-reveal class="display mx-auto max-w-[15ch] text-[44px] leading-[1.02] sm:text-6xl md:text-[80px]">
+        One small, beautiful player for your
+        <span class="bg-gradient-to-r from-primary via-tertiary to-primary bg-clip-text text-transparent">music and videos.</span>
+      </h1>
+      <p data-reveal class="mx-auto mt-6 max-w-[54ch] text-base text-on-surface-variant sm:text-lg">
+        Local files, your own S3 bucket and streaming extensions, in a Material 3 Expressive
+        interface that takes its colours from what's playing. No account, no tracking.
+      </p>
+      <div data-reveal class="mt-9 flex flex-wrap justify-center gap-3">
+        <a href="#download" class="btn-filled">
+          <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg>
+          Download free
+        </a>
+        <a href="https://github.com/okuru-id/neptunus" rel="noopener" class="btn-tonal">View source</a>
+      </div>
+      <p data-reveal class="mt-5 text-sm text-on-surface-variant">Linux · Windows · macOS · Android · iOS &nbsp;·&nbsp; MIT licensed</p>
+
+      <!-- Device composition -->
+      <div data-reveal class="relative mx-auto mt-16 max-w-[1000px] pb-10 sm:pb-16">
+        <div class="absolute inset-x-[8%] top-[12%] -z-10 h-[70%] rounded-full bg-primary/30 blur-[90px]"></div>
+        <figure class="m-0 overflow-hidden rounded-[22px] shadow-2xl shadow-black/30 ring-1 ring-outline-variant/50 sm:rounded-[28px]">
+          <img src="assets/screenshots/desktop-lyrics.webp" width="1800" height="1125" alt="Now playing with synced lyrics, the interface tinted from the cover art" class="h-auto w-full" />
+        </figure>
+        <figure class="absolute -bottom-2 right-[-2%] m-0 w-[24%] overflow-hidden rounded-[18px] border-[5px] border-surface-container-high shadow-2xl shadow-black/40 sm:right-[-4%] sm:rounded-[34px] sm:border-[8px]">
+          <img src="assets/screenshots/mobile-songs.webp" width="600" height="1298" alt="Song list on a phone" class="h-auto w-full" />
+        </figure>
+      </div>
+      <p class="text-xs text-on-surface-variant/80">Songs, artists and covers in these screenshots are made up.</p>
+    </section>
+
+    <!-- Features bento -->
+    <section id="features" class="scroll-mt-24 py-20 sm:py-28">
+      <div data-reveal class="mb-12 max-w-2xl">
+        <p class="mb-3 text-sm font-semibold uppercase tracking-[0.12em] text-primary">Features</p>
+        <h2 class="display text-4xl leading-tight sm:text-5xl">Everything you play, in one small app.</h2>
+      </div>
+
+      <div class="grid grid-cols-1 gap-4 md:grid-cols-6">
+        <!-- Music (wide) -->
+        <article data-reveal class="card md:col-span-4 bg-primary-container text-on-primary-container">
+          <div class="icon-tile bg-primary text-on-primary">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
+          </div>
+          <h3 class="display mb-2 text-2xl">Your library, gapless</h3>
+          <p class="max-w-md opacity-80">Scan folders and browse by song, album, artist or playlist. Gapless queue, shuffle, repeat and an equalizer. MP3, FLAC, AAC, OGG, Opus and WAV are decoded natively in Rust.</p>
+          <!-- Wavy progress, as in the app's player bar -->
+          <div class="mt-8 flex items-center gap-3" aria-hidden="true">
+            <span class="text-xs tabular-nums opacity-70">1:24</span>
+            <div class="relative h-6 flex-1 overflow-hidden">
+              <svg class="absolute left-0 top-0 h-6 w-[calc(60%+40px)] animate-wave text-primary" preserveAspectRatio="none" viewBox="0 0 440 24">
+                <path d="M0 12 q10 -8 20 0 t20 0 t20 0 t20 0 t20 0 t20 0 t20 0 t20 0 t20 0 t20 0 t20 0 t20 0 t20 0 t20 0 t20 0 t20 0 t20 0 t20 0 t20 0 t20 0 t20 0 t20 0" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+              </svg>
+              <div class="absolute left-[60%] right-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-on-primary-container/20"></div>
+              <div class="absolute right-0 top-1/2 h-1.5 w-1.5 -translate-y-1/2 rounded-full bg-primary"></div>
+            </div>
+            <span class="text-xs tabular-nums opacity-70">3:52</span>
+          </div>
+        </article>
+
+        <!-- Lyrics -->
+        <article data-reveal class="card md:col-span-2">
+          <div class="icon-tile bg-tertiary-container text-on-tertiary-container">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 18h12v-2H3v2zM3 6v2h18V6H3zm0 7h18v-2H3v2z"/></svg>
+          </div>
+          <h3 class="display mb-2 text-2xl">Synced lyrics</h3>
+          <p class="text-on-surface-variant">From a sidecar <code class="file">.lrc</code>, the embedded tag or LRCLIB, cached after the first download.</p>
+          <div class="mt-6 space-y-1.5 text-lg font-bold leading-snug" aria-hidden="true">
+            <p class="text-on-surface-variant/40">and the lights go low</p>
+            <p class="display text-primary">the line you're singing</p>
+            <p class="text-on-surface-variant/40">glows a little brighter</p>
+          </div>
+        </article>
+
+        <!-- Cloud -->
+        <article data-reveal class="card md:col-span-2">
+          <div class="icon-tile bg-secondary-container text-on-secondary-container">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg>
+          </div>
+          <h3 class="display mb-2 text-2xl">Your own cloud</h3>
+          <p class="text-on-surface-variant">Stream from any S3-compatible bucket without downloading. Tags, covers and lyrics are read with range requests.</p>
+        </article>
+
+        <!-- Video (wide) -->
+        <article data-reveal class="card md:col-span-4 bg-tertiary-container text-on-tertiary-container">
+          <div class="icon-tile bg-tertiary text-surface">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4h-4z"/></svg>
+          </div>
+          <h3 class="display mb-2 text-2xl">Video, too</h3>
+          <p class="max-w-lg opacity-80">MP4, MKV, WebM and MOV from your folders or bucket. Paste a Stremio addon to browse catalogs, seasons and episodes, compare sources side by side, and pick subtitles with adjustable delay, size and colour.</p>
+          <div class="mt-6 flex flex-wrap gap-2" aria-hidden="true">
+            <span class="rounded-full bg-on-tertiary-container/10 px-3 py-1 text-sm font-medium">Resume playback</span>
+            <span class="rounded-full bg-on-tertiary-container/10 px-3 py-1 text-sm font-medium">HLS</span>
+            <span class="rounded-full bg-on-tertiary-container/10 px-3 py-1 text-sm font-medium">Subtitles</span>
+            <span class="rounded-full bg-on-tertiary-container/10 px-3 py-1 text-sm font-medium">Open in VLC</span>
+          </div>
+        </article>
+
+        <!-- Extensions -->
+        <article data-reveal class="card md:col-span-3">
+          <div class="icon-tile bg-primary-container text-on-primary-container">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 11H19V7c0-1.1-.9-2-2-2h-4V3.5C13 2.12 11.88 1 10.5 1S8 2.12 8 3.5V5H4c-1.1 0-1.99.9-1.99 2v3.8H3.5c1.49 0 2.7 1.21 2.7 2.7s-1.21 2.7-2.7 2.7H2V20c0 1.1.9 2 2 2h3.8v-1.5c0-1.49 1.21-2.7 2.7-2.7 1.49 0 2.7 1.21 2.7 2.7V22H17c1.1 0 2-.9 2-2v-4h1.5c1.38 0 2.5-1.12 2.5-2.5S21.88 11 20.5 11z"/></svg>
+          </div>
+          <h3 class="display mb-2 text-2xl">Extensions</h3>
+          <p class="text-on-surface-variant">Mornye and SpotiFLAC compatible <code class="file">.sflx</code> extensions add online catalogs, downloads and lyrics. Load the default registry, any repository URL, or a package file.</p>
+        </article>
+
+        <!-- System -->
+        <article data-reveal class="card md:col-span-3">
+          <div class="icon-tile bg-secondary-container text-on-secondary-container">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h18V4H4c-1.1 0-2 .9-2 2v11H0v3h14v-3H4V6zm19 2h-6c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h6c.55 0 1-.45 1-1V9c0-.55-.45-1-1-1zm-1 9h-4v-7h4v7z"/></svg>
+          </div>
+          <h3 class="display mb-2 text-2xl">Feels native</h3>
+          <p class="text-on-surface-variant">MPRIS, SMTC, Now Playing on macOS and the iOS lock screen, the Android media notification and the system tray. Keeps playing in the background on mobile.</p>
+        </article>
+      </div>
+    </section>
+
+    <!-- Colour from the cover -->
+    <section class="py-10 sm:py-16">
+      <div class="grid items-center gap-10 md:grid-cols-2 md:gap-16">
+        <div data-reveal>
+          <p class="mb-3 text-sm font-semibold uppercase tracking-[0.12em] text-primary">Design</p>
+          <h2 class="display mb-5 text-4xl leading-tight sm:text-5xl">The cover sets the colour.</h2>
+          <p class="mb-8 text-lg text-on-surface-variant">The whole interface is recoloured from the art that is playing, with expressive shapes and spring motion, following Material 3 Expressive. Every track looks a little different.</p>
+          <ul class="m-0 grid list-none gap-3 p-0">
+            <li class="flex gap-3"><span class="mt-2 h-2 w-2 shrink-0 rounded-full bg-primary"></span><span><strong>Tiny.</strong> <span class="text-on-surface-variant">Uses the system webview instead of shipping a browser.</span></span></li>
+            <li class="flex gap-3"><span class="mt-2 h-2 w-2 shrink-0 rounded-full bg-tertiary"></span><span><strong>Yours.</strong> <span class="text-on-surface-variant">No account and no tracking. Your files stay where they are.</span></span></li>
+            <li class="flex gap-3"><span class="mt-2 h-2 w-2 shrink-0 rounded-full bg-primary"></span><span><strong>Everywhere.</strong> <span class="text-on-surface-variant">Desktop and mobile from one codebase.</span></span></li>
+          </ul>
+        </div>
+        <div data-reveal class="relative">
+          <div class="absolute inset-[10%] -z-10 rounded-full bg-tertiary/30 blur-[80px]"></div>
+          <figure class="m-0 overflow-hidden rounded-[28px] shadow-2xl shadow-black/30 ring-1 ring-outline-variant/50">
+            <img src="assets/screenshots/desktop-albums.webp" width="1800" height="1125" loading="lazy" alt="Album grid on the desktop" class="h-auto w-full" />
+          </figure>
+          <figure class="absolute -bottom-8 -left-4 m-0 w-[30%] overflow-hidden rounded-[22px] border-[6px] border-surface-container-high shadow-2xl shadow-black/40 sm:-left-8">
+            <img src="assets/screenshots/mobile-lyrics.webp" width="600" height="1298" loading="lazy" alt="Synced lyrics on a phone" class="h-auto w-full" />
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <!-- Download -->
+    <section id="download" class="scroll-mt-24 py-20 sm:py-28">
+      <div data-reveal class="relative overflow-hidden rounded-[40px] bg-surface-container-low p-6 ring-1 ring-outline-variant/40 sm:p-12">
+        <div aria-hidden="true" class="absolute -right-24 -top-24 h-72 w-72 animate-spin-slow text-primary/15">
+          <svg viewBox="0 0 100 100" class="h-full w-full"><path class="cookie" data-points="9" data-depth="0.1" fill="currentColor" /></svg>
+        </div>
+
+        <div class="relative mb-10 flex flex-col gap-6 md:flex-row md:items-end md:justify-between">
+          <div>
+            <h2 class="display mb-3 text-4xl leading-tight sm:text-5xl">Get Neptunus</h2>
+            <p class="max-w-md text-on-surface-variant">Free and open source. Pick your platform and grab the file from the latest GitHub release.</p>
+          </div>
+          <a href="https://github.com/okuru-id/neptunus/releases/latest" rel="noopener" class="btn-filled self-start md:self-auto">
+            <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg>
+            Latest release
+          </a>
+        </div>
+
+        <div class="relative grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          <a href="https://github.com/okuru-id/neptunus/releases/latest" rel="noopener" class="group flex flex-col gap-3 rounded-[24px] bg-surface-container p-5 text-on-surface no-underline transition-[transform,border-radius,background-color] duration-300 ease-spring hover:-translate-y-1 hover:rounded-[32px] hover:bg-surface-container-high">
+            <span class="display text-xl">Linux</span>
+            <span class="flex flex-wrap gap-1.5"><span class="file">.deb</span><span class="file">.rpm</span><span class="file">.AppImage</span></span>
+          </a>
+          <a href="https://github.com/okuru-id/neptunus/releases/latest" rel="noopener" class="group flex flex-col gap-3 rounded-[24px] bg-surface-container p-5 text-on-surface no-underline transition-[transform,border-radius,background-color] duration-300 ease-spring hover:-translate-y-1 hover:rounded-[32px] hover:bg-surface-container-high">
+            <span class="display text-xl">Windows</span>
+            <span class="flex flex-wrap gap-1.5"><span class="file">.msi</span><span class="file">.exe</span></span>
+          </a>
+          <a href="https://github.com/okuru-id/neptunus/releases/latest" rel="noopener" class="group flex flex-col gap-3 rounded-[24px] bg-surface-container p-5 text-on-surface no-underline transition-[transform,border-radius,background-color] duration-300 ease-spring hover:-translate-y-1 hover:rounded-[32px] hover:bg-surface-container-high">
+            <span class="display text-xl">macOS</span>
+            <span class="flex flex-wrap gap-1.5"><span class="file">.dmg</span></span>
+          </a>
+          <a href="https://github.com/okuru-id/neptunus/releases/latest" rel="noopener" class="group flex flex-col gap-3 rounded-[24px] bg-surface-container p-5 text-on-surface no-underline transition-[transform,border-radius,background-color] duration-300 ease-spring hover:-translate-y-1 hover:rounded-[32px] hover:bg-surface-container-high">
+            <span class="display text-xl">Android</span>
+            <span class="flex flex-wrap gap-1.5"><span class="file">.apk</span><span class="text-xs text-on-surface-variant">8.0+</span></span>
+          </a>
+          <a href="https://github.com/okuru-id/neptunus#ios" rel="noopener" class="group flex flex-col gap-3 rounded-[24px] bg-surface-container p-5 text-on-surface no-underline transition-[transform,border-radius,background-color] duration-300 ease-spring hover:-translate-y-1 hover:rounded-[32px] hover:bg-surface-container-high sm:col-span-2 lg:col-span-1">
+            <span class="display text-xl">iOS</span>
+            <span class="flex flex-wrap gap-1.5"><span class="file">.ipa</span><span class="text-xs text-on-surface-variant">sign before install</span></span>
+          </a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="mx-auto w-full max-w-[1120px] px-4 pb-14 text-sm text-on-surface-variant">
+    <div class="flex flex-col items-start justify-between gap-6 border-t border-outline-variant/50 pt-8 md:flex-row md:items-center">
+      <div class="flex items-center gap-3">
+        <img src="assets/icon.svg" width="28" height="28" alt="" class="h-7 w-7" />
+        <span>Neptunus · open source under the <a href="https://github.com/okuru-id/neptunus/blob/main/LICENSE" rel="noopener" class="text-primary">MIT license</a></span>
+      </div>
+      <nav class="flex flex-wrap gap-x-5 gap-y-2" aria-label="Footer">
+        <a href="https://github.com/okuru-id/neptunus" rel="noopener" class="text-on-surface-variant no-underline hover:text-on-surface">GitHub</a>
+        <a href="https://github.com/okuru-id/neptunus/releases" rel="noopener" class="text-on-surface-variant no-underline hover:text-on-surface">Releases</a>
+        <a href="https://github.com/okuru-id/neptunus/issues" rel="noopener" class="text-on-surface-variant no-underline hover:text-on-surface">Issues</a>
+      </nav>
+    </div>
+    <p class="mt-6 max-w-2xl text-xs text-on-surface-variant/80">
+      Design inspired by PixelPlayer for Android. Not affiliated with PixelPlayer or Mornye. Neptunus ships no media and no streaming sources; you choose what to install and play.
+    </p>
+  </footer>
+
+  <script>
+    // Material "cookie" shapes: a circle with a soft scalloped edge.
+    document.querySelectorAll("path.cookie").forEach((el) => {
+      const n = +el.dataset.points, depth = +el.dataset.depth, steps = 240;
+      let d = "";
+      for (let i = 0; i <= steps; i++) {
+        const t = (i / steps) * Math.PI * 2;
+        const r = 50 * (1 - depth) + 50 * depth * Math.cos(n * t);
+        d += `${i ? "L" : "M"}${(50 + r * Math.cos(t)).toFixed(2)} ${(50 + r * Math.sin(t)).toFixed(2)}`;
+      }
+      el.setAttribute("d", d + "Z");
+    });
+
+    // Reveal on scroll.
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach((e) => {
+        if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
+      });
+    }, { rootMargin: "0px 0px -8% 0px" });
+    document.querySelectorAll("[data-reveal]").forEach((el, i) => {
+      el.style.transitionDelay = `${Math.min(i, 5) * 60}ms`;
+      io.observe(el);
+    });
+  </script>
+</body>
+</html>

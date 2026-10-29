@@ -99,6 +99,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: neptunus-${{ github.ref_name }}-${{ matrix.name }}
+          # the files stay in the release; this copy only has to outlive the run
+          retention-days: 7
           if-no-files-found: ignore
           path: |
             src-tauri/target/**/release/bundle/deb/*.deb
@@ -154,6 +156,7 @@ jobs:
         with:
           name: neptunus-${{ github.ref_name }}-ios
           path: Neptunus_*_unsigned.ipa
+          retention-days: 7
 
       - name: Attach IPA to the release
         env:
@@ -282,6 +285,7 @@ jobs:
         with:
           name: neptunus-${{ github.ref_name }}-android
           path: Neptunus_*_arm64.apk
+          retention-days: 7
 
       - name: Attach APK to the release
         env:

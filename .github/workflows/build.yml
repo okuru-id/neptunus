@@ -191,7 +191,8 @@ jobs:
           echo "$IOS_P12" | base64 -d > cert.p12
           echo "$IOS_PROFILE" | base64 -d > app.mobileprovision
           v=${GITHUB_REF_NAME#v}
-          ./zsign -q -k cert.p12 -p "$IOS_P12_PASSWORD" -m app.mobileprovision -o "Neptunus_${v}.ipa" "Neptunus_${v}_unsigned.ipa"
+          # -z 9: zsign repacks the IPA uncompressed by default, twice the size of the unsigned one
+          ./zsign -q -z 9 -k cert.p12 -p "$IOS_P12_PASSWORD" -m app.mobileprovision -o "Neptunus_${v}.ipa" "Neptunus_${v}_unsigned.ipa"
           rm -f cert.p12 app.mobileprovision
           cat > manifest.plist <<EOF
           <?xml version="1.0" encoding="UTF-8"?>

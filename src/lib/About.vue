@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { onMounted, onUnmounted, reactive, ref } from "vue";
 import Icon from "./Icon.vue";
+import { showOnboarding } from "./Onboarding.vue";
 import { installUpdate, openApk, updater } from "./updater";
 import license from "../../LICENSE?raw";
 
@@ -128,6 +129,9 @@ const LINKS = [
     <div class="links">
       <button v-for="l in LINKS" :key="l.url" class="link" @click="openLink(l.url)">
         <Icon :name="l.icon" :size="20" /><span class="label">{{ l.label }}</span><Icon name="chevron" :size="20" class="go" />
+      </button>
+      <button class="link" @click="showOnboarding">
+        <Icon name="info" :size="20" /><span class="label">Pengenalan aplikasi</span><Icon name="chevron" :size="20" class="go" />
       </button>
       <button class="link" :aria-expanded="showReleases" @click="toggleReleases">
         <Icon name="update" :size="20" /><span class="label">Semua rilis</span><Icon name="chevron" :size="20" class="go" :class="{ down: showReleases }" />

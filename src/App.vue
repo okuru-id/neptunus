@@ -16,6 +16,7 @@ import FileManager from "./lib/FileManager.vue";
 import Extensions from "./lib/Extensions.vue";
 import Equalizer from "./lib/Equalizer.vue";
 import About from "./lib/About.vue";
+import Onboarding, { firstRun } from "./lib/Onboarding.vue";
 import ExtCatalog from "./lib/ExtCatalog.vue";
 import VideoLibrary from "./lib/VideoLibrary.vue";
 import { installUpdate, updater } from "./lib/updater";
@@ -1029,6 +1030,7 @@ function onKey(e: KeyboardEvent) {
 
 const subs: Promise<UnlistenFn>[] = [];
 onMounted(async () => {
+  firstRun();
   window.addEventListener("keydown", onKey);
   window.addEventListener("pointerdown", closeMenu);
   invoke<ExtInfo[]>("ext_list").then((l) => (exts.value = l));
@@ -1110,6 +1112,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
 
   <ConfirmDialog />
   <FolderPicker />
+  <Onboarding @done="$event === 'folder' ? pickFolder() : setView('catalog')" />
   <TitleBar :no-settings="watching" @settings="openSettings('about')">
     <Notifications ref="bell" :jobs="jobs" :notes="notes" :unread="unread" @read="unread = 0" @clear="notes = []" @cancel-all="cancelAll" @open="openUrl" />
   </TitleBar>

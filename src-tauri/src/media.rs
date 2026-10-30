@@ -12,7 +12,9 @@ use tauri::AppHandle;
 use tauri::Emitter;
 
 enum Msg {
-    Meta { title: String, artist: String, album: String, secs: f64 },
+    Meta { path: String, title: String, artist: String, album: String, secs: f64, cover: Option<String> },
+    /// The song's cover got cached after its metadata was sent (`file://` URL).
+    Cover { path: String, url: String },
     Playback(Option<(bool, f64)>),
 }
 
@@ -46,10 +48,11 @@ pub fn init(app: &AppHandle) -> Media {
             let (mut meta, mut playback) = ((String::new(), String::new(), String::new(), 0.0), None);
             for msg in rx {
                 match msg {
-                    Msg::Meta { title, artist, album, secs } => {
+                    Msg::Meta { title, artist, album, secs, .. } => {
                         meta = (title, artist, album, secs);
                         playback = playback.map(|(p, _)| (p, 0.0));
                     }
+                    Msg::Cover { .. } => continue,
                     Msg::Playback(p) => playback = p,
                 }
                 crate::media_ios::now_playing(&meta.0, &meta.1, &meta.2, meta.3, playback);
@@ -76,15 +79,21 @@ pub fn init(app: &AppHandle) -> Media {
             MediaControlEvent::SetPosition(p) => { let _ = handle.emit("media-seek", p.0.as_secs_f64()); }
             _ => {}
         });
+        // last metadata, resent when the cover arrives later
+        let mut cur: Option<(String, String, String, String, f64, Option<String>)> = None;
         for msg in rx {
             let _ = match msg {
-                Msg::Meta { title, artist, album, secs } => controls.set_metadata(MediaMetadata {
-                    title: Some(&title),
-                    artist: Some(&artist),
-                    album: Some(&album),
-                    duration: Some(Duration::from_secs_f64(secs)),
-                    cover_url: None,
-                }),
+                Msg::Meta { path, title, artist, album, secs, cover } => {
+                    cur = Some((path, title, artist, album, secs, cover));
+                    set_meta(&mut controls, cur.as_ref().unwrap())
+                }
+                Msg::Cover { path, url } => match cur.as_mut().filter(|c| c.0 == path) {
+                    Some(c) => {
+                        c.5 = Some(url);
+                        set_meta(&mut controls, c)
+                    }
+                    None => Ok(()),
+                },
                 Msg::Playback(p) => controls.set_playback(match p {
                     None => MediaPlayback::Stopped,
                     Some((playing, pos)) => {
@@ -98,10 +107,36 @@ pub fn init(app: &AppHandle) -> Media {
     Media(tx)
 }
 
+#[cfg(desktop)]
+fn set_meta(controls: &mut MediaControls, (_, title, artist, album, secs, cover): &(String, String, String, String, f64, Option<String>)) -> Result<(), souvlaki::Error> {
+    controls.set_metadata(MediaMetadata {
+        title: Some(title),
+        artist: Some(artist),
+        album: Some(album),
+        duration: Some(Duration::from_secs_f64(*secs)),
+        cover_url: cover.as_deref(),
+    })
+}
+
+/// `file://` URL of the song's cached full-size cover (written by `get_cover` / `find_cover`), if any.
+fn cover_url(app: &AppHandle, path: &str) -> Option<String> {
+    let (img, _) = crate::cover_cache(app, path, "")?;
+    img.is_file().then(|| tauri::Url::from_file_path(&img).ok()).flatten().map(|u| u.to_string())
+}
+
 #[tauri::command]
 pub fn media_metadata(app: tauri::AppHandle, m: tauri::State<Media>, path: String, title: String, artist: String, album: String, duration_secs: f64) {
     crate::tray::set_track(&app, &path, &title, &artist);
-    let _ = m.0.send(Msg::Meta { title, artist, album, secs: duration_secs });
+    let cover = cover_url(&app, &path);
+    let _ = m.0.send(Msg::Meta { path, title, artist, album, secs: duration_secs, cover });
+}
+
+/// Called once the UI has the song's cover (it is cached on disk by then).
+#[tauri::command]
+pub fn media_cover(app: tauri::AppHandle, m: tauri::State<Media>, path: String) {
+    if let Some(url) = cover_url(&app, &path) {
+        let _ = m.0.send(Msg::Cover { path, url });
+    }
 }
 
 #[tauri::command]

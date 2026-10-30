@@ -979,6 +979,7 @@ watch(() => now.value?.path, (path) => {
       c = await invoke<string | null>("find_cover", { path }).catch(() => null);
     }
     covers[path] = c;
+    if (c) invoke("media_cover", { path }).catch(() => {});
     const seed = c ? await seedFromImage(c).catch(() => DEFAULT_SEED) : DEFAULT_SEED;
     if (now.value?.path === path) applyTheme(seed);
   });

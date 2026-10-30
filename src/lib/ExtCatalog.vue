@@ -188,7 +188,7 @@ const streamer = computed(() => downloaders.value.find((e) => e.id === streamExt
 // `list`: the songs it was clicked among, which then play on after it
 async function play(t: Item, list: Item[] = [t]) {
   const have = local(t);
-  if (have?.path === props.nowPath) return emit("toggle");
+  if (have && have.path === props.nowPath) return emit("toggle");
   if (!have && !streamer.value) return download(t);
   const track = have ?? (await stream(t));
   if (track) emit("play", track, after(list, list.indexOf(t)));

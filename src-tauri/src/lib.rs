@@ -803,6 +803,7 @@ pub fn run() {
             player::status,
             media::media_metadata,
             media::media_playback,
+            media::media_cover,
         ])
         .on_window_event(|window, event| match (window.label(), event) {
             // While music plays, closing the main window keeps it running in the tray (quit from the

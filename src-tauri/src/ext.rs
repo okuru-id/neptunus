@@ -1123,9 +1123,8 @@ fn stream_dir(app: &AppHandle) -> R<PathBuf> {
 
 #[derive(serde::Serialize)]
 pub struct CachedSong {
-    path: String,
-    title: String,
-    artist: String,
+    #[serde(flatten)]
+    track: crate::db::Track,
     size: u64,
     /// last played, seconds since the epoch
     used: u64,
@@ -1141,7 +1140,7 @@ pub fn stream_cache_list(app: AppHandle) -> R<Vec<CachedSong>> {
             let m = p.metadata().ok()?;
             let t = crate::read_track(&p.to_string_lossy())?;
             let used = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
-            Some(CachedSong { path: t.path, title: t.title, artist: t.artist, size: m.len(), used })
+            Some(CachedSong { track: t, size: m.len(), used })
         })
         .collect();
     out.sort_by(|a, b| b.used.cmp(&a.used));

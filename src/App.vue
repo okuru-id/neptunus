@@ -48,6 +48,10 @@ const NAV: { id: View; label: string; icon: IconName }[] = [
 ];
 
 const rawLibrary = ref<Track[]>([]);
+// songs played by streaming (Rust `ext_stream`); they show under Lagu too, until the cache drops them
+type CachedSong = Track & { size: number; used: number };
+const cacheSongs = ref<CachedSong[]>([]);
+const cachedPaths = computed(() => new Set(cacheSongs.value.map((t) => t.path)));
 // A cloud song is hidden when a local one has the same title and artist (and about the same length).
 const sameSong = (t: Track) => `${t.title.trim().toLowerCase()}\u0000${t.artist.trim().toLowerCase()}`;
 // While S3 is disconnected its songs stay in the database (so reconnecting needs no re-read) but are hidden.
@@ -60,6 +64,8 @@ const library = computed(() => {
     (t) => !t.path.startsWith("s3://") || !local.get(sameSong(t))?.some((d) => Math.abs(d - t.duration_secs) <= 3),
   );
 });
+// Lagu, Album and Artis list the streamed songs too
+const allSongs = computed(() => [...library.value, ...cacheSongs.value]);
 const playlists = ref<Playlist[]>([]);
 const loading = ref(false);
 
@@ -152,7 +158,7 @@ const match = (t: Track) =>
 const unknown = (s: string) => s || "Tidak diketahui";
 const groupBy = (key: "album" | "artist") => {
   const m = new Map<string, Track[]>();
-  for (const t of library.value.filter(match)) {
+  for (const t of allSongs.value.filter(match)) {
     const k = unknown(t[key]);
     m.set(k, [...(m.get(k) ?? []), t]);
   }
@@ -163,7 +169,7 @@ const artists = computed(() => groupBy("artist"));
 
 // tracks shown in the main list, which also becomes the play queue
 const shown = computed(() => {
-  if (view.value === "songs") return library.value.filter(match);
+  if (view.value === "songs") return allSongs.value.filter(match);
   if (view.value === "playlists") return plTracks.value.filter((t) => s3Visible(t) && match(t));
   const g = (view.value === "albums" ? albums.value : artists.value).find(([k]) => k === group.value);
   return g ? g[1] : [];
@@ -179,7 +185,7 @@ const title = computed(() => {
 });
 const subtitle = computed(() => {
   if (view.value === "videos") return `${videoCount.value} video`;
-  if (view.value === "catalog") return `${library.value.length} lagu · ${albums.value.length} album · ${artists.value.length} artis`;
+  if (view.value === "catalog") return `${allSongs.value.length} lagu · ${albums.value.length} album · ${artists.value.length} artis`;
   if (view.value === "albums" && group.value === null) return `${albums.value.length} album`;
   if (view.value === "artists" && group.value === null) return `${artists.value.length} artis`;
   // a playlist counts its songs not yet downloaded too
@@ -408,9 +414,7 @@ async function clearCache() {
   await loadCache();
   refreshCached();
 }
-// Settings › Cache: songs played by streaming (Rust `ext_stream`), kept until the 1 GB limit pushes them out
-type CachedSong = { path: string; title: string; artist: string; size: number; used: number };
-const cacheSongs = ref<CachedSong[]>([]);
+// Settings › Cache: songs played by streaming (`cacheSongs`, kept until the 1 GB limit pushes them out)
 // the cache cards start folded: only their size shows until opened
 const cacheOpen = reactive({ film: false, music: false });
 const songPick = ref(new Set<string>());
@@ -438,6 +442,18 @@ async function removeSongs(all: boolean) {
   await loadSongs();
 }
 watch(() => view.value === "s3" && settingsTab.value === "cache", (on) => on && (loadCache(), loadSongs()), { immediate: true });
+// a streamed song joins the cache when it starts playing; the limit may push older ones out then
+watch(() => now.value?.path, loadSongs, { immediate: true });
+async function removeCached(t: Track) {
+  const ok = await confirm({
+    title: `Hapus “${t.title}” dari cache?`,
+    message: "Lagu ini diambil lagi kalau diputar nanti.",
+    confirm: "Hapus", icon: "trash", danger: true,
+  });
+  if (!ok) return;
+  await invoke("stream_cache_remove", { paths: [t.path] }).catch((e) => notify(String(e)));
+  await loadSongs();
+}
 
 function openSettings(tab: SettingsTab) {
   settingsTab.value = tab;
@@ -1403,7 +1419,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
                 </span>
               </span>
               <span class="meta">
-                <strong><Icon v-if="isS3(t.path)" name="cloud" :size="16" class="cloud-mark" title="Di-stream dari S3" />{{ t.title }}</strong>
+                <strong><Icon v-if="isS3(t.path)" name="cloud" :size="16" class="cloud-mark" title="Di-stream dari S3" /><Icon v-else-if="cachedPaths.has(t.path)" name="storage" :size="16" class="cloud-mark" title="Dari cache stream" />{{ t.title }}</strong>
                 <span>{{ unknown(t.artist) }} · {{ unknown(t.album) }}</span>
               </span>
             </button>
@@ -1415,7 +1431,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
             </button>
             <template v-if="!phone">
             <button v-if="view === 'playlists'" class="icon-btn row-act" title="Hapus dari playlist" @click="removeFrom(t.path)"><Icon name="close" :size="20" /></button>
-            <div v-else-if="playlists.length" class="row-menu" :class="{ open: addMenu === t.path }">
+            <div v-else-if="playlists.length && !cachedPaths.has(t.path)" class="row-menu" :class="{ open: addMenu === t.path }">
               <button class="icon-btn row-act" title="Tambah ke playlist" :aria-label="`Tambah ${t.title} ke playlist`"
                 :aria-expanded="addMenu === t.path" @click="addMenu = addMenu === t.path ? null : t.path">
                 <Icon name="playlistAdd" :size="20" />
@@ -1426,14 +1442,14 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
               </div>
             </div>
             </template>
-            <SongMenu class="row-act" :class="{ busy: t.path in redl }" :title="t.title" :downloaders="isS3(t.path) ? [] : downloaders"
-              :busy="redl[t.path] ?? null" @redownload="(id, q) => redownload(t, id, q)" @remove="removeSong(t)">
+            <SongMenu class="row-act" :class="{ busy: t.path in redl }" :title="t.title" :downloaders="isS3(t.path) || cachedPaths.has(t.path) ? [] : downloaders"
+              :busy="redl[t.path] ?? null" @redownload="(id, q) => redownload(t, id, q)" @remove="cachedPaths.has(t.path) ? removeCached(t) : removeSong(t)">
               <template v-if="phone" #default="{ pick }">
                 <button v-if="isS3(t.path)" role="menuitem" :disabled="t.path in progress" @click="pick(() => download(t.path))">
                   <Icon name="download" :size="20" />{{ t.path in progress ? `Mengunduh ${progress[t.path]}%` : "Unduh ke folder Musik" }}
                 </button>
                 <button v-if="view === 'playlists'" role="menuitem" @click="pick(() => removeFrom(t.path))"><Icon name="close" :size="20" />Hapus dari playlist</button>
-                <template v-else-if="playlists.length">
+                <template v-else-if="playlists.length && !cachedPaths.has(t.path)">
                   <p>Tambah ke playlist</p>
                   <button v-for="p in playlists" :key="p.id" role="menuitem" @click="pick(() => addTo(p.id, t.path))"><Icon name="playlistAdd" :size="20" />{{ p.name }}</button>
                 </template>

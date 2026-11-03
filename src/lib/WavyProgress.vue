@@ -12,7 +12,9 @@ const el = ref<HTMLElement>();
 const width = ref(0);
 const phase = ref(0);
 const amp = ref(0);
+const beat = ref(0); // the Nothing bars' step, about 9 a second
 
+const nothing = computed(() => uiStyle.value === "nothing");
 const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 // The wave rolls while playing and settles flat on pause. The frame loop stops once it is flat, so a
@@ -24,6 +26,7 @@ function tick(t: number) {
   const dt = Math.min((t - last) / 1000, 0.1);
   last = t;
   if (!reduced) phase.value = (phase.value + dt * Math.PI * 2 * 0.8) % (Math.PI * 2);
+  if (!reduced && nothing.value) beat.value = Math.floor(t / 110);
   amp.value += ((props.playing ? 1 : 0) - amp.value) * Math.min(1, dt * 5);
   if (!props.playing && amp.value < 0.005) {
     amp.value = 0;
@@ -59,21 +62,25 @@ const wave = computed(() => {
     d += `L${x} ${(mid.value + a * Math.sin((x / WAVELENGTH) * Math.PI * 2 - phase.value)).toFixed(2)}`;
   return d;
 });
-// the Nothing style draws the same wave out of round dots: the played ones lit and riding the wave,
-// the rest lying flat and dim (brighter as far as a stream has buffered)
+// the Nothing style: music bars made of dots, one column every DOT px. The played columns bounce up and
+// down in steps while it plays and fall back to one dot on pause; the rest stay a dim single dot (brighter as
+// far as a stream has buffered), and the playhead column is red. A column is one dashed line: a dash of 0
+// with round caps draws a dot every DOT px.
 const DOT = 4.5;
-const nothing = computed(() => uiStyle.value === "nothing");
-const dots = computed(() => {
-  const a = (props.height / 6) * amp.value;
-  const out: { x: number; y: number; st: string }[] = [];
-  for (let x = DOT / 2; x < width.value; x += DOT) {
+const ROWS = 5;
+// a fixed random 0-1 for column i at step s, so every column jumps on its own like an equaliser
+const rand = (i: number, s: number) => { const v = Math.sin(i * 12.9898 + s * 78.233) * 43758.5453; return v - Math.floor(v); };
+const bottom = computed(() => mid.value + ((ROWS - 1) / 2) * DOT);
+const cols = computed(() => {
+  const s = beat.value;
+  const out: { x: number; st: string; top: number }[] = [];
+  for (let x = DOT / 2, i = 0; x < width.value; x += DOT, i++) {
     const on = x <= played.value;
-    out.push({
-      x,
-      y: on ? mid.value + a * Math.sin((x / WAVELENGTH) * Math.PI * 2 - phase.value) : mid.value,
-      st: on ? "on" : x <= bufEnd.value ? "buf" : "off",
-    });
+    const level = on ? Math.round((ROWS - 1) * amp.value * rand(i, s)) : 0;
+    out.push({ x, st: on ? "on" : x <= bufEnd.value ? "buf" : "off", top: bottom.value - level * DOT - 0.01 });
   }
+  const head = out.findLastIndex((c) => c.st === "on");
+  if (head >= 0) out[head].st = "head";
   return out;
 });
 const num = (e: Event) => +(e.target as HTMLInputElement).value;
@@ -82,7 +89,7 @@ const num = (e: Event) => +(e.target as HTMLInputElement).value;
 <template>
   <div ref="el" class="wavy" :style="{ height: `${height}px` }">
     <svg v-if="nothing" :width="width" :height="height" aria-hidden="true">
-      <circle v-for="(d, i) in dots" :key="i" :class="['dot', d.st]" :cx="d.x" :cy="d.y" r="1.5" />
+      <line v-for="(c, i) in cols" :key="i" :class="['col', c.st]" :x1="c.x" :y1="bottom" :x2="c.x" :y2="c.top" />
     </svg>
     <svg v-else :width="width" :height="height" aria-hidden="true">
       <path v-if="played > 2" class="active" :d="wave" />
@@ -112,9 +119,11 @@ svg { display: block; overflow: visible; }
 .buffer { stroke: var(--primary); stroke-opacity: 0.35; stroke-width: 4; stroke-linecap: round; }
 .stop { fill: var(--primary); }
 .thumb { fill: var(--primary); opacity: 0; transition: opacity 0.2s; }
-.dot.on { fill: var(--primary); }
-.dot.buf { fill: var(--on-surface-variant); }
-.dot.off { fill: var(--outline); }
+.col { stroke-width: 2.8; stroke-linecap: round; stroke-dasharray: 0 4.5; }
+.col.on { stroke: var(--on-surface); }
+.col.head { stroke: var(--red, var(--primary)); stroke-width: 3.4; }
+.col.buf { stroke: var(--on-surface-variant); opacity: 0.6; }
+.col.off { stroke: var(--outline); opacity: 0.45; }
 .wavy:hover .thumb, .wavy:has(input:focus-visible) .thumb { opacity: 1; }
 input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
 </style>

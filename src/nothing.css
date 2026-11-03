@@ -158,20 +158,6 @@ html.nothing .play:active { transform: scale(0.92); }
 html.nothing .slider { height: 4px; border-radius: 2px; background: linear-gradient(to right, var(--on-surface) var(--p), var(--n-line-strong) var(--p)); }
 html.nothing .slider::-webkit-slider-thumb { width: 12px; height: 12px; border-radius: 50%; background: var(--on-surface); box-shadow: none; }
 html.nothing .slider::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%; background: var(--on-surface); }
-/* the dot-matrix visualiser beside the title: columns of dots that move only while playing */
-html.nothing .viz { display: flex; align-items: flex-end; gap: 3px; height: 24px; flex: none; margin-left: 6px; color: var(--on-surface); }
-html.nothing .viz i {
-  width: 4px; height: 4px; opacity: 0.35;
-  background: radial-gradient(circle, currentColor 1.4px, transparent 1.8px) 0 100% / 4px 5px repeat-y;
-}
-html.nothing .viz.on i { animation: nothing-viz 0.9s steps(4, end) infinite alternate; opacity: 0.9; }
-html.nothing .viz.on i:nth-child(2) { animation-duration: 0.7s; animation-delay: -0.3s; opacity: 0.6; }
-html.nothing .viz.on i:nth-child(3) { animation-duration: 1.1s; animation-delay: -0.5s; }
-html.nothing .viz.on i:nth-child(4) { animation-duration: 0.8s; animation-delay: -0.1s; opacity: 0.7; }
-html.nothing .viz.on i:nth-child(5) { animation-duration: 1.2s; animation-delay: -0.7s; }
-html.nothing .viz.on i:nth-child(6) { animation-duration: 0.75s; animation-delay: -0.4s; opacity: 0.5; }
-html.nothing .viz.on i:nth-child(7) { animation-duration: 1s; animation-delay: -0.2s; opacity: 0.8; }
-@keyframes nothing-viz { from { height: 5px; } to { height: 24px; } }
 
 /* ---------- signals ---------- */
 /* what is playing in a list: a white dot that breathes, not Material's bars */
@@ -196,12 +182,11 @@ html.nothing .meta span.live { color: var(--red); }
   html.nothing .player { min-height: 0; padding: 6px 12px 6px 6px; border-radius: 20px 20px 8px 8px; box-shadow: 0 6px 20px rgb(0 0 0 / 0.4); }
   html.nothing .np .art, html.nothing .np:hover .art { width: 40px; height: 40px; border-radius: 10px; }
   html.nothing .play, html.nothing .play.playing { width: 42px; height: 42px; }
-  html.nothing .viz { display: none; }
   html.nothing h1 { font-size: 40px; }
   html.nothing .heading:has(> .icon-btn) h1 { font-size: 26px; }
   html.nothing .app::after { width: 420px; height: 420px; right: -160px; bottom: -120px; }
   html.nothing .app::before { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  html.nothing .viz.on i, html.nothing .eq::before { animation: none; }
+  html.nothing .eq::before { animation: none; }
 }

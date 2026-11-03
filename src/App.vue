@@ -1622,7 +1622,6 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
         <strong>{{ now.title }}</strong>
         <span>{{ unknown(now.artist) }}<template v-if="qualities[now.path]"> · {{ shortQuality(qualities[now.path]!) }}</template></span>
       </span>
-      <span v-if="nothing" class="viz" :class="{ on: playing }" aria-hidden="true"><i v-for="n in 7" :key="n"></i></span>
     </button>
     <div class="ctrl">
       <div class="transport">
@@ -1664,7 +1663,8 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
   border-radius: var(--sheet-radius) var(--sheet-radius) 0 0; background: var(--surface);
 }
 .app.collapsed { grid-template-columns: 80px 1fr; }
-.collapse-btn { margin-top: auto; align-self: center; }
+.collapse-btn { margin-top: auto; align-self: flex-start; margin-left: 8px; } /* its icon in the column of the menu icons */
+.collapsed .collapse-btn { align-self: center; margin-left: 0; }
 .collapsed .lbl, .collapsed .badge { display: none; }
 .collapsed .fab, .collapsed .dest-item { justify-content: center; padding: 0; }
 .collapsed .fab { align-self: center; width: 56px; }
@@ -1673,7 +1673,8 @@ main { --pad-l: 16px; --pad-r: 8px; overflow-y: auto; padding: 0 var(--pad-r) 40
 main.has-player { padding-bottom: 136px; }
 
 /* ---------- navigation drawer ---------- */
-.drawer { background: var(--surface-container-low); display: flex; flex-direction: column; gap: 16px; padding: 12px 12px 20px; overflow-y: auto; }
+/* overflow-x hidden: a 1px border (the Nothing style) leaves the 56px items a pixel short of 80px, and a sideways scrollbar would show */
+.drawer { background: var(--surface-container-low); display: flex; flex-direction: column; gap: 16px; padding: 12px 12px 20px; overflow: hidden auto; }
 .drawer.has-player { padding-bottom: 148px; } /* keep the last item clear of the full-width player */
 .fab {
   align-self: stretch; display: flex; align-items: center; gap: 12px;

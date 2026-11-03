@@ -14,26 +14,28 @@ html.nothing {
   --n-line: #292929; /* hairlines */
   --n-line-strong: #333333; /* the player's edge */
   --n-dot: rgb(255 255 255 / 0.07); /* decoration dots */
+  --n-astro: rgb(255 255 255 / 0.16); /* the pixel astronaut */
   --spring: cubic-bezier(0.4, 0, 0.2, 1); /* precise, no overshoot */
   --emph: cubic-bezier(0.4, 0, 0.2, 1);
 }
 html.nothing[data-theme="light"] {
-  --n-player: #ffffff; --n-line: #e2e2e2; --n-line-strong: #cfcfcf; --n-dot: rgb(0 0 0 / 0.08);
+  --n-player: #ffffff; --n-line: #e2e2e2; --n-line-strong: #cfcfcf; --n-dot: rgb(0 0 0 / 0.08); --n-astro: rgb(0 0 0 / 0.13);
 }
 html.nothing *, html.nothing *::before, html.nothing *::after { text-shadow: none !important; }
 
 /* ---------- background decoration ---------- */
-/* one large circle of dots in the bottom-right corner, ringed like a Glyph light; faint, behind everything */
+/* a dot-matrix astronaut drifting in the bottom-right corner, inside two hairline orbits; faint, behind everything */
 html.nothing .app { isolation: isolate; background: var(--surface); }
 html.nothing .app::before, html.nothing .app::after {
   content: ""; position: fixed; z-index: -1; pointer-events: none; border-radius: 50%;
 }
 html.nothing .app::after {
-  right: -180px; bottom: -180px; width: 620px; height: 620px;
-  background: radial-gradient(circle, var(--n-dot) 1.4px, transparent 1.8px) 0 0 / 14px 14px;
-  -webkit-mask: radial-gradient(circle closest-side, #000 0 45%, transparent 100%);
-  mask: radial-gradient(circle closest-side, #000 0 45%, transparent 100%);
+  right: 24px; bottom: 150px; width: 476px; height: 336px; border-radius: 0; background: var(--n-astro);
+  -webkit-mask: url("./astronaut.svg") center / contain no-repeat;
+  mask: url("./astronaut.svg") center / contain no-repeat;
+  transform: rotate(-10deg); animation: nothing-drift 14s ease-in-out infinite alternate;
 }
+@keyframes nothing-drift { to { transform: translate(-18px, -22px) rotate(-3deg); } }
 html.nothing .app::before {
   right: -260px; bottom: -260px; width: 780px; height: 780px;
   /* two hairline rings, the outer and an inner one, like the Glyph's light paths */
@@ -184,9 +186,9 @@ html.nothing .meta span.live { color: var(--red); }
   html.nothing .play, html.nothing .play.playing { width: 42px; height: 42px; }
   html.nothing h1 { font-size: 40px; }
   html.nothing .heading:has(> .icon-btn) h1 { font-size: 26px; }
-  html.nothing .app::after { width: 420px; height: 420px; right: -160px; bottom: -120px; }
+  html.nothing .app::after { width: 272px; height: 192px; right: 8px; bottom: 120px; }
   html.nothing .app::before { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  html.nothing .eq::before { animation: none; }
+  html.nothing .eq::before, html.nothing .app::after { animation: none; }
 }

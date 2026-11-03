@@ -31,7 +31,7 @@ import TitleBar from "./lib/TitleBar.vue";
 import Notifications, { type Job, type Note } from "./lib/Notifications.vue";
 import type { IconName } from "./lib/icons";
 import WavyProgress from "./lib/WavyProgress.vue";
-import { applyTheme, DEFAULT_SEED, seedFromImage, setThemeMode, themeMode, type ThemeMode } from "./lib/theme";
+import { applyTheme, DEFAULT_SEED, seedFromImage, setThemeMode, setUiStyle, themeMode, uiStyle, type ThemeMode, type UiStyle } from "./lib/theme";
 import { ART_SHAPES, CLIP_SHAPES } from "./lib/shapes";
 
 type Track = { path: string; title: string; artist: string; album: string; duration_secs: number };
@@ -347,6 +347,7 @@ const SETTINGS_TABS: { id: SettingsTab; label: string; icon: IconName }[] = [
   { id: "look", label: "Tampilan", icon: "palette" },
   { id: "ext", label: "Ekstensi", icon: "extension" },
 ];
+const UI_STYLES: { id: UiStyle; label: string }[] = [{ id: "material", label: "Material" }, { id: "nothing", label: "Nothing" }];
 const THEME_MODES: { id: ThemeMode; label: string; icon: IconName }[] = [
   { id: "system", label: "Sistem", icon: "autoMode" },
   { id: "light", label: "Terang", icon: "lightMode" },
@@ -885,6 +886,16 @@ function playShuffled() {
   playAt(shown.value, Math.floor(Math.random() * shown.value.length));
 }
 
+// the Nothing style's extra shortcuts: play or shuffle a whole album/artist from its card, shuffle everything
+const nothing = computed(() => uiStyle.value === "nothing");
+const tileMenu = ref<string | null>(null);
+function playGroup(list: Track[], shuffled: boolean) {
+  tileMenu.value = null;
+  if (!list.length) return;
+  shuffle.value = shuffled;
+  playAt(list, shuffled ? Math.floor(Math.random() * list.length) : 0);
+}
+
 const cycleRepeat = () => (repeat.value = repeat.value === "off" ? "all" : repeat.value === "all" ? "one" : "off");
 
 async function poll() {
@@ -1172,6 +1183,9 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
             @redownload="downloadAll" />
           <button v-if="view === 'playlists' && pendingLeft" class="btn outlined big" @click="cancelAll"><Icon name="close" />Batalkan</button>
         </div>
+        <div v-if="nothing && (view === 'albums' || view === 'artists') && group === null && allSongs.length" class="btn-group actions">
+          <button class="btn tonal big" @click="playGroup(allSongs, true)"><Icon name="shuffle" />Acak semua</button>
+        </div>
         <div v-if="view === 's3'" class="tabs" role="tablist">
           <button v-for="t in SETTINGS_TABS" :key="t.id" class="tab" :class="{ sel: settingsTab === t.id }" role="tab"
             :aria-selected="settingsTab === t.id" @click="settingsTab = t.id"><span class="tab-c"><Icon :name="t.icon" :size="20" />{{ t.label }}</span></button>
@@ -1295,6 +1309,13 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
                 @click="setThemeMode(m.id)"><Icon :name="m.icon" :size="18" />{{ m.label }}</button>
             </div>
           </div>
+          <div class="look-row">
+            <div class="look-text"><strong>Gaya</strong><span>Material berwarna mengikuti sampul lagu; Nothing hitam-putih dengan huruf titik-titik.</span></div>
+            <div class="seg" role="radiogroup" aria-label="Gaya">
+              <button v-for="g in UI_STYLES" :key="g.id" role="radio" :aria-checked="uiStyle === g.id" :class="{ sel: uiStyle === g.id }"
+                @click="setUiStyle(g.id)">{{ g.label }}</button>
+            </div>
+          </div>
           <div v-if="mpv.available" class="look-row">
             <div class="look-text"><strong>Pemutar film</strong><span>{{ mpv.label }} memutar lebih banyak format (MKV, HEVC, AC3/DTS) dan lebih tahan stream lambat{{ mpv.label === "mpv" ? ", di jendelanya sendiri" : ", dengan subtitle dari ekstensi" }}.</span></div>
             <div class="seg" role="radiogroup" aria-label="Pemutar film">
@@ -1398,11 +1419,27 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
           <p v-if="library.length && !albums.length && !artists.length" class="none">Tidak ada yang cocok dengan “{{ query }}”.</p>
         </div>
         <div v-else-if="(view === 'albums' || view === 'artists') && group === null" class="grid" :class="{ artists: view === 'artists' }">
-          <button v-for="([name, list], i) in view === 'albums' ? albums : artists" :key="name" class="tile" @click="group = name">
-            <CoverArt :path="list[0].path" :shape="view === 'artists' ? 'circle' : shapeOf(i)" />
-            <strong>{{ name }}</strong>
-            <span>{{ view === "albums" ? unknown(list[0].artist) : `${list.length} lagu` }}</span>
+          <div v-for="([name, list], i) in view === 'albums' ? albums : artists" :key="name" class="tile-cell">
+            <button class="tile" @click="group = name">
+              <CoverArt :path="list[0].path" :shape="view === 'artists' ? 'circle' : shapeOf(i)" />
+              <strong>{{ name }}</strong>
+              <span>{{ view === "albums" ? unknown(list[0].artist) : `${list.length} lagu` }}</span>
+            </button>
+            <template v-if="nothing">
+              <button class="tile-more icon-btn" :title="`Pilihan untuk ${name}`" :aria-expanded="tileMenu === name" @click="tileMenu = tileMenu === name ? null : name"><Icon name="moreVert" :size="20" /></button>
+              <div v-if="tileMenu === name" class="tile-menu" role="menu">
+                <button role="menuitem" @click="playGroup(list, false)"><Icon name="play" :size="18" />Putar</button>
+                <button role="menuitem" @click="playGroup(list, true)"><Icon name="shuffle" :size="18" />Acak</button>
+                <button role="menuitem" @click="tileMenu = null; group = name"><Icon name="chevron" :size="18" />Buka</button>
+              </div>
+            </template>
+          </div>
+          <button v-if="nothing && view === 'albums' && !query" class="tile-new" @click="pickFolder" :disabled="loading">
+            <span class="plus"><Icon name="add" :size="32" /></span>
+            <strong>Tambah folder</strong>
+            <span>Pindai album baru</span>
           </button>
+          <button v-if="tileMenu" class="tile-scrim" aria-label="Tutup menu" @click="tileMenu = null"></button>
           <p v-if="!(view === 'albums' ? albums : artists).length" class="none">Tidak ada yang cocok dengan “{{ query }}”.</p>
         </div>
         <ul v-else-if="showingList" class="songs">
@@ -1585,6 +1622,7 @@ const repeatLabel = computed(() => (repeat.value === "off" ? "mati" : repeat.val
         <strong>{{ now.title }}</strong>
         <span>{{ unknown(now.artist) }}<template v-if="qualities[now.path]"> · {{ shortQuality(qualities[now.path]!) }}</template></span>
       </span>
+      <span v-if="nothing" class="viz" :class="{ on: playing }" aria-hidden="true"><i v-for="n in 7" :key="n"></i></span>
     </button>
     <div class="ctrl">
       <div class="transport">
@@ -1707,6 +1745,7 @@ h1 {
 
 /* ---------- grid ---------- */
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 28px 20px; }
+.tile-cell { position: relative; min-width: 0; display: flex; flex-direction: column; }
 .tile { display: flex; flex-direction: column; gap: 4px; text-align: left; min-width: 0; }
 .tile .art { width: 100%; height: auto; aspect-ratio: 1; margin-bottom: 10px; transition: transform 0.45s var(--spring); }
 .tile:hover .art { transform: scale(1.05) rotate(-2deg); }

@@ -1,5 +1,10 @@
 import "@fontsource-variable/roboto-flex/full.css";
+// the Nothing style's faces (Settings › Tampilan › Gaya): Geist, Geist Mono and Doto's round dots
+import "@fontsource-variable/geist";
+import "@fontsource-variable/geist-mono";
+import "@fontsource-variable/doto/full.css";
 import "./app.css";
+import "./nothing.css";
 import { createApp } from "vue";
 import App from "./App.vue";
 

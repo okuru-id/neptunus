@@ -1,0 +1,207 @@
+/* The Nothing style (Settings › Tampilan › Gaya; theme.ts `uiStyle`): Nothing OS's design language on top of
+   the Material UI. Pure black, monochrome and high contrast, with the album artwork as the only colour; a
+   geometric sans for text, Doto's dot matrix for page titles, mono for metadata (durations, counts, quality);
+   dot-grid and Glyph-like decoration kept faint; red only for the play button and real signals.
+   The colours come from theme.ts's NOTHING palette; this file restyles the components. Layout, behaviour and
+   the rounded Material shapes stay as they are. */
+
+html.nothing {
+  --font: "Geist Variable", "Inter", "Roboto", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, monospace;
+  --font-dot: "Doto Variable", "Geist Mono Variable", monospace;
+  --red: #e82027;
+  --n-player: #111111; /* the floating player */
+  --n-line: #292929; /* hairlines */
+  --n-line-strong: #333333; /* the player's edge */
+  --n-dot: rgb(255 255 255 / 0.07); /* decoration dots */
+  --spring: cubic-bezier(0.4, 0, 0.2, 1); /* precise, no overshoot */
+  --emph: cubic-bezier(0.4, 0, 0.2, 1);
+}
+html.nothing[data-theme="light"] {
+  --n-player: #ffffff; --n-line: #e2e2e2; --n-line-strong: #cfcfcf; --n-dot: rgb(0 0 0 / 0.08);
+}
+html.nothing *, html.nothing *::before, html.nothing *::after { text-shadow: none !important; }
+
+/* ---------- background decoration ---------- */
+/* one large circle of dots in the bottom-right corner, ringed like a Glyph light; faint, behind everything */
+html.nothing .app { isolation: isolate; background: var(--surface); }
+html.nothing .app::before, html.nothing .app::after {
+  content: ""; position: fixed; z-index: -1; pointer-events: none; border-radius: 50%;
+}
+html.nothing .app::after {
+  right: -180px; bottom: -180px; width: 620px; height: 620px;
+  background: radial-gradient(circle, var(--n-dot) 1.4px, transparent 1.8px) 0 0 / 14px 14px;
+  -webkit-mask: radial-gradient(circle closest-side, #000 0 45%, transparent 100%);
+  mask: radial-gradient(circle closest-side, #000 0 45%, transparent 100%);
+}
+html.nothing .app::before {
+  right: -260px; bottom: -260px; width: 780px; height: 780px;
+  /* two hairline rings, the outer and an inner one, like the Glyph's light paths */
+  background:
+    radial-gradient(circle closest-side, transparent calc(100% - 1.5px), var(--n-line) calc(100% - 1px), transparent 100%),
+    radial-gradient(circle closest-side, transparent calc(82% - 1.5px), var(--n-line) calc(82% - 1px), transparent 82%);
+}
+
+/* ---------- type ---------- */
+html.nothing h1 {
+  font-family: var(--font-dot); font-weight: 500; font-variation-settings: "ROND" 100;
+  font-size: 52px; letter-spacing: 0.04em; line-height: 1.05; text-transform: uppercase;
+}
+/* an album's or artist's own page: its name is long, so a size down */
+html.nothing .heading:has(> .icon-btn) h1 { font-size: 34px; }
+html.nothing :is(h2, h3, strong) { font-variation-settings: normal; }
+html.nothing :is(h2, h3) { font-weight: 700; letter-spacing: -0.01em; }
+/* section titles: small, bold, uppercase */
+html.nothing :is(.shelf-head h2, .row header h3, .row-head h3) {
+  font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.14em; color: var(--on-surface-variant);
+}
+/* metadata is mono: counts under the title, durations, times, quality, artists on cards */
+html.nothing .sub { font-family: var(--font-mono); font-size: 12px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--on-surface-variant); }
+html.nothing :is(.dur, .seek > span, .no, .pct, .cf-size) { font-family: var(--font-mono); font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
+html.nothing .seek > span { font-size: 12px; font-weight: 500; color: var(--on-surface-variant); }
+/* buttons and tabs: uppercase with tracking */
+html.nothing :is(.btn, .tab, .seg button, .chip, .more, .act) { text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; }
+html.nothing :is(.btn, .btn.big) { font-size: 13px; }
+
+/* ---------- sidebar ---------- */
+@media (min-width: 601px) {
+  html.nothing .drawer {
+    background: var(--surface) radial-gradient(circle, var(--n-dot) 1px, transparent 1.3px) 0 0 / 16px 16px;
+    border-right: 1px solid var(--n-line);
+  }
+}
+html.nothing :is(.fab, .dest-item) {
+  height: 48px; border-radius: 22px; background: none; color: var(--on-surface-variant); box-shadow: none;
+  font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em;
+  transition: background-color 0.2s var(--emph), color 0.2s var(--emph), transform 0.2s var(--emph);
+}
+html.nothing :is(.fab, .dest-item):hover { border-radius: 22px; background: var(--surface-container-high); color: var(--on-surface); }
+html.nothing :is(.fab, .dest-item).sel, html.nothing :is(.fab, .dest-item).sel:hover { background: var(--primary); color: var(--on-primary); }
+html.nothing :is(.fab, .dest-item):active { transform: scale(0.98); }
+/* the playlist count on the right of its entry */
+html.nothing .dest-item .badge { margin-left: auto; background: none; color: inherit; opacity: 0.7; font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.04em; }
+
+/* ---------- header ---------- */
+html.nothing .search {
+  background: transparent; border: 1px solid var(--n-line); transition: border-color 0.2s var(--emph);
+}
+html.nothing .search:focus-within { border-color: var(--on-surface); }
+html.nothing .btn.filled { background: var(--primary); color: var(--on-primary); }
+html.nothing .btn.tonal { background: transparent; color: var(--on-surface); box-shadow: inset 0 0 0 1px var(--n-line-strong); }
+html.nothing .btn:active:not(:disabled) { transform: scale(0.97); }
+
+/* ---------- album / artist grid ---------- */
+html.nothing .grid { grid-template-columns: repeat(auto-fill, minmax(184px, 1fr)); gap: 16px; }
+@media (max-width: 600px) { html.nothing .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; } }
+html.nothing :is(.tile-cell, .tile-new) {
+  border: 1px solid var(--n-line); border-radius: 22px; background: var(--surface-container-low);
+  transition: border-color 0.25s var(--emph), transform 0.25s var(--emph), box-shadow 0.25s var(--emph);
+}
+html.nothing .tile-cell .tile { padding: 12px 12px 14px; gap: 2px; }
+html.nothing .tile-cell .tile strong { font-size: 15px; font-weight: 600; padding-right: 28px; }
+html.nothing .tile-cell .tile > span { font-family: var(--font-mono); font-size: 12px; color: var(--on-surface-variant); padding-right: 28px; }
+/* artwork: one consistent rounded square (artists stay round), the focus of the card */
+html.nothing .grid:not(.artists) .tile .art { clip-path: none !important; border-radius: 14px; }
+html.nothing .tile .art { margin-bottom: 12px; transition: transform 0.25s var(--emph); }
+html.nothing :is(.tile-cell, .tile-new):hover {
+  border-color: var(--on-surface); transform: translateY(-2px); box-shadow: 0 12px 28px rgb(0 0 0 / 0.45);
+}
+html.nothing .tile:hover .art { transform: scale(1.03); }
+/* ⋮ on each card, and its little menu */
+html.nothing .tile-more { position: absolute; right: 6px; bottom: 10px; width: 36px; height: 36px; color: var(--on-surface-variant); }
+html.nothing .tile-more:hover { color: var(--on-surface); }
+html.nothing .tile-cell:has(.tile-menu) { z-index: 7; }
+html.nothing .tile-menu {
+  position: absolute; right: 8px; bottom: 50px; z-index: 7; min-width: 150px; padding: 6px;
+  display: flex; flex-direction: column; border-radius: 18px;
+  background: var(--surface-container-highest); border: 1px solid var(--n-line); box-shadow: 0 12px 28px rgb(0 0 0 / 0.5);
+}
+html.nothing .tile-menu button {
+  display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 12px; border-radius: 12px;
+  font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--on-surface);
+}
+html.nothing .tile-menu button:hover { background: var(--surface-container-high); }
+html.nothing .tile-scrim { position: fixed; inset: 0; z-index: 6; background: none; cursor: default; }
+/* "add folder" card: monochrome, a plus over dots where the artwork would be */
+html.nothing .tile-new { display: flex; flex-direction: column; gap: 2px; padding: 12px 12px 14px; text-align: left; color: var(--on-surface); }
+html.nothing .tile-new .plus {
+  display: grid; place-items: center; aspect-ratio: 1; margin-bottom: 12px; border-radius: 14px;
+  border: 1px dashed var(--n-line-strong);
+  background: radial-gradient(circle, var(--n-dot) 1.2px, transparent 1.6px) 0 0 / 12px 12px;
+}
+html.nothing .tile-new .plus .icon { width: 44px; height: 44px; padding: 6px; border-radius: 50%; background: var(--primary); color: var(--on-primary); }
+html.nothing .tile-new strong { font-size: 15px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; }
+html.nothing .tile-new > span:last-child { font-family: var(--font-mono); font-size: 12px; color: var(--on-surface-variant); }
+
+/* ---------- song lists ---------- */
+html.nothing .songs li.active { background: var(--surface-container-high); }
+
+/* ---------- the floating player ---------- */
+html.nothing .player {
+  min-height: 88px; padding: 10px 20px 10px 14px; border-radius: 28px;
+  background: var(--n-player); border: 1px solid var(--n-line-strong);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.45), 0 0 0 calc(10px - var(--sheet-gap)) var(--surface);
+}
+html.nothing .np .art, html.nothing .np:hover .art { width: 52px; height: 52px; border-radius: 14px; }
+html.nothing .transport .icon-btn.tonal { background: transparent; color: var(--on-surface); }
+html.nothing .transport .icon-btn.tonal:hover { background: var(--surface-container-highest); }
+html.nothing .transport .icon-btn:active { transform: scale(0.92); }
+html.nothing .transport .icon-btn.on { color: var(--on-surface); background: var(--surface-container-highest); }
+/* play/pause: a red circle with a white icon */
+html.nothing .play, html.nothing .play.playing {
+  width: 56px; height: 56px; border-radius: 50%; background: var(--red); color: #fff;
+  transition: filter 0.2s var(--emph), transform 0.2s var(--emph);
+}
+html.nothing .play:hover { filter: brightness(1.12); }
+html.nothing .play:active { transform: scale(0.92); }
+/* volume: a thin white line */
+html.nothing .slider { height: 4px; border-radius: 2px; background: linear-gradient(to right, var(--on-surface) var(--p), var(--n-line-strong) var(--p)); }
+html.nothing .slider::-webkit-slider-thumb { width: 12px; height: 12px; border-radius: 50%; background: var(--on-surface); box-shadow: none; }
+html.nothing .slider::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%; background: var(--on-surface); }
+/* the dot-matrix visualiser beside the title: columns of dots that move only while playing */
+html.nothing .viz { display: flex; align-items: flex-end; gap: 3px; height: 24px; flex: none; margin-left: 6px; color: var(--on-surface); }
+html.nothing .viz i {
+  width: 4px; height: 4px; opacity: 0.35;
+  background: radial-gradient(circle, currentColor 1.4px, transparent 1.8px) 0 100% / 4px 5px repeat-y;
+}
+html.nothing .viz.on i { animation: nothing-viz 0.9s steps(4, end) infinite alternate; opacity: 0.9; }
+html.nothing .viz.on i:nth-child(2) { animation-duration: 0.7s; animation-delay: -0.3s; opacity: 0.6; }
+html.nothing .viz.on i:nth-child(3) { animation-duration: 1.1s; animation-delay: -0.5s; }
+html.nothing .viz.on i:nth-child(4) { animation-duration: 0.8s; animation-delay: -0.1s; opacity: 0.7; }
+html.nothing .viz.on i:nth-child(5) { animation-duration: 1.2s; animation-delay: -0.7s; }
+html.nothing .viz.on i:nth-child(6) { animation-duration: 0.75s; animation-delay: -0.4s; opacity: 0.5; }
+html.nothing .viz.on i:nth-child(7) { animation-duration: 1s; animation-delay: -0.2s; opacity: 0.8; }
+@keyframes nothing-viz { from { height: 5px; } to { height: 24px; } }
+
+/* ---------- signals ---------- */
+/* what is playing in a list: a white dot that breathes, not Material's bars */
+html.nothing .eq { width: 18px; justify-content: center; align-items: center; }
+html.nothing .eq i { display: none; }
+html.nothing .eq::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--primary); animation: nothing-pulse 1.6s ease-in-out infinite; }
+html.nothing .eq.still::before { animation: none; opacity: 0.55; }
+@keyframes nothing-pulse { 50% { opacity: 0.35; } }
+/* an unread notification is red */
+html.nothing .badge { background: var(--red); color: #fff; }
+html.nothing .meta span.live { color: var(--red); }
+
+/* ---------- phones ---------- */
+@media (max-width: 600px) {
+  html.nothing .drawer, html.nothing .drawer.has-player { background: var(--n-player); border: 1px solid var(--n-line-strong); }
+  html.nothing :is(.drawer .fab, .drawer .dest-item), html.nothing :is(.drawer .fab, .drawer .dest-item):hover,
+  html.nothing :is(.drawer .fab.sel, .drawer .dest-item.sel) {
+    height: 56px; background: none; color: var(--on-surface-variant); font-size: 10px; letter-spacing: 0.08em;
+  }
+  html.nothing .drawer .sel { color: var(--on-surface) !important; }
+  html.nothing .drawer .sel .icon { background: var(--primary); color: var(--on-primary); }
+  html.nothing .player { min-height: 0; padding: 6px 12px 6px 6px; border-radius: 20px 20px 8px 8px; box-shadow: 0 6px 20px rgb(0 0 0 / 0.4); }
+  html.nothing .np .art, html.nothing .np:hover .art { width: 40px; height: 40px; border-radius: 10px; }
+  html.nothing .play, html.nothing .play.playing { width: 42px; height: 42px; }
+  html.nothing .viz { display: none; }
+  html.nothing h1 { font-size: 40px; }
+  html.nothing .heading:has(> .icon-btn) h1 { font-size: 26px; }
+  html.nothing .app::after { width: 420px; height: 420px; right: -160px; bottom: -120px; }
+  html.nothing .app::before { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  html.nothing .viz.on i, html.nothing .eq::before { animation: none; }
+}

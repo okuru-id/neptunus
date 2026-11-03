@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { uiStyle } from "./theme";
 
 const props = withDefaults(defineProps<{ value: number; max: number; playing: boolean; height?: number; buffered?: number | null }>(), { height: 28, buffered: null });
 const emit = defineEmits<{ scrub: [v: number]; seek: [v: number] }>();
@@ -58,12 +59,32 @@ const wave = computed(() => {
     d += `L${x} ${(mid.value + a * Math.sin((x / WAVELENGTH) * Math.PI * 2 - phase.value)).toFixed(2)}`;
   return d;
 });
+// the Nothing style draws the same wave out of round dots: the played ones lit and riding the wave,
+// the rest lying flat and dim (brighter as far as a stream has buffered)
+const DOT = 4.5;
+const nothing = computed(() => uiStyle.value === "nothing");
+const dots = computed(() => {
+  const a = (props.height / 6) * amp.value;
+  const out: { x: number; y: number; st: string }[] = [];
+  for (let x = DOT / 2; x < width.value; x += DOT) {
+    const on = x <= played.value;
+    out.push({
+      x,
+      y: on ? mid.value + a * Math.sin((x / WAVELENGTH) * Math.PI * 2 - phase.value) : mid.value,
+      st: on ? "on" : x <= bufEnd.value ? "buf" : "off",
+    });
+  }
+  return out;
+});
 const num = (e: Event) => +(e.target as HTMLInputElement).value;
 </script>
 
 <template>
   <div ref="el" class="wavy" :style="{ height: `${height}px` }">
-    <svg :width="width" :height="height" aria-hidden="true">
+    <svg v-if="nothing" :width="width" :height="height" aria-hidden="true">
+      <circle v-for="(d, i) in dots" :key="i" :class="['dot', d.st]" :cx="d.x" :cy="d.y" r="1.5" />
+    </svg>
+    <svg v-else :width="width" :height="height" aria-hidden="true">
       <path v-if="played > 2" class="active" :d="wave" />
       <line v-if="played + GAP < width - 4" class="track" :x1="played + GAP" :y1="mid" :x2="width - 2" :y2="mid" />
       <line v-if="bufEnd > played + GAP" class="buffer" :x1="played + GAP" :y1="mid" :x2="bufEnd" :y2="mid" />
@@ -91,6 +112,9 @@ svg { display: block; overflow: visible; }
 .buffer { stroke: var(--primary); stroke-opacity: 0.35; stroke-width: 4; stroke-linecap: round; }
 .stop { fill: var(--primary); }
 .thumb { fill: var(--primary); opacity: 0; transition: opacity 0.2s; }
+.dot.on { fill: var(--primary); }
+.dot.buf { fill: var(--on-surface-variant); }
+.dot.off { fill: var(--outline); }
 .wavy:hover .thumb, .wavy:has(input:focus-visible) .thumb { opacity: 1; }
 input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
 </style>
